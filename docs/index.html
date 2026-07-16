@@ -13304,15 +13304,6 @@
                     }
                 }
 
-                // A read/merge/write without a visible ETag can overwrite another device
-                // between the GET and PUT. Fail closed instead of pretending that an
-                // unconditional metadata write was safely committed.
-                if (!remoteResult?.missing && !remoteResult?.etag) {
-                    const error = new Error('R2 CORS 必须在 ExposeHeaders 中暴露 ETag，已停止 metadata 写入以防多设备数据互相覆盖');
-                    error.code = 'R2_ETAG_NOT_EXPOSED';
-                    throw error;
-                }
-
                 const tombstones = mergeClassroomTombstones(
                     remoteMetadata?.classroomTombstones,
                     localMetadata?.classroomTombstones,
@@ -13345,9 +13336,14 @@
                     throw new Error('本地核心数据为空而云端仍有数据，已阻止覆盖云端索引。请先从云端恢复或导入 ZIP 备份确认数据。');
                 }
 
+                // Newer CORS policies expose ETag and get optimistic concurrency control.
+                // Existing installations did not require ExposeHeaders, so preserve their
+                // working sync path instead of disabling every metadata write.
                 const conditions = remoteResult?.missing
                     ? { ifNoneMatch: '*' }
-                    : { ifMatch: remoteResult.etag };
+                    : remoteResult?.etag
+                        ? { ifMatch: remoteResult.etag }
+                        : {};
                 try {
                     await r2PutObject('metadata.json', JSON.stringify(candidate), 'application/json', conditions);
 
@@ -13811,8 +13807,8 @@
                 }
                 if (['classroom_delete', 'classroom_note_delete', 'recording_delete',
                     'classroom_folder_delete'].includes(action) &&
-                    metadataPublishResult?.casCommitted === false) {
-                    throw new Error('R2 CORS 未暴露 ETag，已保留删除任务且不会先删云端正文');
+                    metadataPublishResult?.casCommitted !== true) {
+                    throw new Error('云端元数据尚未提交，已保留删除任务且不会先删云端正文');
                 }
                 
                 // 如果是上传新文件，同步文件数据
@@ -13947,13 +13943,9 @@
                 }
             } catch (err) {
                 console.error('文件变更同步失败:', err);
-                if (err?.code === 'R2_ETAG_NOT_EXPOSED') {
-                    showToast('R2 CORS 需在 ExposeHeaders 中加入 ETag，课堂文件仍安全保存在本地');
-                }
                 const retryableClassroomAction = ['recording_upload', 'classroom_upload',
                     'classroom_note_upload', 'classroom_delete', 'classroom_note_delete',
-                    'recording_delete', 'classroom_folder_delete'].includes(action) &&
-                    err?.code !== 'R2_ETAG_NOT_EXPOSED';
+                    'recording_delete', 'classroom_folder_delete'].includes(action);
                 if (retryableClassroomAction && config.autoSyncOnChange && Number(attempt || 0) < 8) {
                     const key = action + ':' + fileId;
                     if (!r2ClassroomRetryTimers.has(key)) {
@@ -13994,13 +13986,15 @@
                 const testData = 'test';
                 await r2PutObject(testKey, testData, 'text/plain');
                 const readBack = await r2GetObject(testKey, { withMetadata: true });
-                if (!readBack?.etag) {
-                    throw new Error('CORS 未暴露 ETag；请在 R2 CORS 的 ExposeHeaders 中加入 ETag');
+                if (readBack?.missing || readBack?.data !== testData) {
+                    throw new Error('R2 读取校验失败');
                 }
-                // 同时验证浏览器获准发送条件写请求头；metadata CAS 依赖这一点。
-                await r2PutObject(testKey, 'test-conditional', 'text/plain', {
-                    ifMatch: readBack.etag
-                });
+                // ETag 暴露时额外验证条件写；旧 CORS 未暴露时仍可正常同步。
+                if (readBack.etag) {
+                    await r2PutObject(testKey, 'test-conditional', 'text/plain', {
+                        ifMatch: readBack.etag
+                    });
+                }
                 
                 showToast(i18n('toast_connection_success'));
             } catch (err) {

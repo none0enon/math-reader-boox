@@ -352,6 +352,62 @@ test('classroom-only CAS preserves non-classroom fields from its fresh remote re
     assert.deepEqual(plain(uploaded.classroom), intent);
 });
 
+test('metadata sync remains compatible when legacy R2 CORS does not expose ETag', async () => {
+    const html = readIndexHtml();
+    const publishSource = sliceSource(html,
+        'async function r2PublishMetadataWithCas(',
+        'async function r2SyncMetadataOnly(');
+    const remote = {
+        books: [{ id: 'remote-book' }],
+        papers: [],
+        classroom: { courses: [], seminars: [] },
+        classroomTombstones: [],
+        syncedAt: '2026-07-15T12:00:00.000Z'
+    };
+    const local = plain(remote);
+    const intent = { courses: [{ id: 'local-classroom', sessions: [] }], seminars: [] };
+    const appData = {
+        classroom: plain(intent),
+        classroomTombstones: [],
+        classroomSyncOutbox: []
+    };
+    let writeOptions = null;
+    const { fn: publish } = loadIsolatedFunction(publishSource,
+        'r2PublishMetadataWithCas', {
+            appData,
+            r2GetObject: async () => ({
+                data: JSON.stringify(remote), etag: null, missing: false
+            }),
+            r2PutObject: async (_key, _body, _contentType, options) => {
+                writeOptions = plain(options);
+            },
+            stripClassroomData,
+            mergeClassroomTombstones: (...sources) => sources.flat().filter(Boolean),
+            applyClassroomOutboxTombstones: classroom => plain(classroom || {
+                courses: [], seminars: []
+            }),
+            mergeClassroomData: (_cloud, classroomIntent) => plain(classroomIntent),
+            r2ProtectMetadataOverwrite: async () => true,
+            cleanupClassroomEntriesRemovedByMerge: async () => {},
+            markClassroomMetadataCloudCommitted: async () => {},
+            saveData: () => {}
+        });
+
+    const result = await publish(local, intent, { classroomOnly: true, allowEmpty: true });
+    assert.equal(result.casCommitted, true);
+    assert.deepEqual(writeOptions, {}, 'legacy CORS must use the pre-PR #56 write path');
+});
+
+test('R2 connection test treats ETag as an optional conditional-write capability', () => {
+    const html = readIndexHtml();
+    const source = sliceSource(html,
+        'async function testR2Connection()',
+        '// AWS Signature V4 for R2');
+    assert.match(source, /readBack\?\.data\s*!==\s*testData/);
+    assert.match(source, /if\s*\(readBack\.etag\)/);
+    assert.doesNotMatch(source, /R2_ETAG_NOT_EXPOSED|CORS[^\n]*ETag/);
+});
+
 test('classroom cloud writes publish payloads before metadata and acknowledge metadata last', () => {
     const html = fs.readFileSync(path.join(__dirname, '../app/src/main/assets/www/index.html'), 'utf8');
     const triggerStart = html.indexOf('async function triggerSyncOnFileChange(');

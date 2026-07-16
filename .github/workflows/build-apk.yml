@@ -1,0 +1,89 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Run Node regression tests
+        run: node --test tests/*.test.js
+
+      - name: Verify shared classroom and recording assets match
+        run: |
+          cmp app/src/main/assets/www/recording-storage.js docs/recording-storage.js
+          cmp app/src/main/assets/www/classroom-storage.js docs/classroom-storage.js
+          cmp app/src/main/assets/www/recording-ai.js docs/recording-ai.js
+
+      - name: Calculate APK version
+        id: version
+        shell: bash
+        env:
+          VERSION_CODE_BASE: ${{ vars.APK_VERSION_CODE_BASE }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION_CODE_BASE" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_RUN_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          if (( GITHUB_RUN_ATTEMPT < 1 || GITHUB_RUN_ATTEMPT > 99 )); then
+            echo "::error::GITHUB_RUN_ATTEMPT must be between 1 and 99"
+            exit 1
+          fi
+          version_code=$((VERSION_CODE_BASE + GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))
+          if (( version_code > 2100000000 )); then
+            echo "::error::Calculated Android versionCode exceeds 2100000000"
+            exit 1
+          fi
+          version_name="1.0.2-ci.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "code=$version_code"
+            echo "name=$version_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build unsigned release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -PciVersionCode="${{ steps.version.outputs.code }}" \
+            -PciVersionName="${{ steps.version.outputs.name }}"
+          test -f app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Upload unsigned APK for default-branch signing
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: _internal-unsigned-apk-${{ github.run_id }}
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Write build summary
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          {
+            echo "### Unsigned release APK"
+            echo
+            echo "- Version: $VERSION_NAME ($VERSION_CODE)"
+            echo "- Trusted same-repository runs are signed by the default-branch Sign APK workflow."
+          } >> "$GITHUB_STEP_SUMMARY"

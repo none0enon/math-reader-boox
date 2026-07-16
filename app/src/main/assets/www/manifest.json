@@ -1,0 +1,26 @@
+{
+  "name": "数学阅读",
+  "short_name": "数学阅读",
+  "description": "专注数学阅读与笔记",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "icon-infinity-white.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-infinity-white.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

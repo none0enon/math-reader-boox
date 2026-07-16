@@ -1,0 +1,64 @@
+plugins {
+    id 'com.android.application'
+}
+
+def ciVersionCode = (findProperty('ciVersionCode') ?: '3').toString().toInteger()
+def ciVersionName = (findProperty('ciVersionName') ?: '1.0.2').toString()
+
+if (ciVersionCode < 1 || ciVersionCode > 2100000000) {
+    throw new GradleException("ciVersionCode must be between 1 and 2100000000")
+}
+
+android {
+    namespace 'com.mathreader.boox'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.mathreader.boox"
+        minSdk 26
+        targetSdk 30
+        versionCode ciVersionCode
+        versionName ciVersionName
+
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE', 'META-INF/LICENSE.txt',
+                         'META-INF/license.txt', 'META-INF/NOTICE', 'META-INF/NOTICE.txt',
+                         'META-INF/notice.txt', 'META-INF/ASL2.0']
+        }
+        jniLibs {
+            pickFirsts += ['lib/*/libc++_shared.so']
+            excludes += ['lib/*/libc++.so']
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.webkit:webkit:1.8.0'
+
+    // Onyx/Boox 手写 SDK（同官方 OnyxPenDemo）
+    implementation 'com.onyx.android.sdk:onyxsdk-pen:1.4.11'
+    implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:4.3'
+}

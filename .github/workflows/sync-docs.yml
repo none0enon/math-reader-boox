@@ -1,0 +1,36 @@
+name: Sync PWA to docs/
+
+on:
+  push:
+    paths:
+      - 'app/src/main/assets/www/**'
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy www to docs
+        run: |
+          cp app/src/main/assets/www/index.html docs/
+          cp app/src/main/assets/www/manifest.json docs/
+          cp app/src/main/assets/www/sw.js docs/
+          cp app/src/main/assets/www/icon-infinity-white.svg docs/
+          cp app/src/main/assets/www/recording-storage.js docs/
+          cp app/src/main/assets/www/classroom-storage.js docs/
+          cp app/src/main/assets/www/recording-ai.js docs/
+          cp app/src/main/assets/www/pdf.min.js docs/
+          cp app/src/main/assets/www/pdf.worker.min.js docs/
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/
+          git diff --cached --quiet || git commit -m "sync: copy www/ to docs/ for GitHub Pages"
+          git push

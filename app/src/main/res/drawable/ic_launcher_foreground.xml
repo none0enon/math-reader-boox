@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <!-- 无穷符号，同 math-reader PWA 图标 -->
+    <path
+        android:pathData="M160,256 C160,200 200,160 256,200 C312,240 352,200 352,256 C352,312 312,352 256,312 C200,272 160,312 160,256"
+        android:strokeColor="#000000"
+        android:strokeWidth="32"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

@@ -1,0 +1,234 @@
+name: Sign APK
+
+on:
+  workflow_run:
+    workflows: [Build APK]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sign:
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        (
+          (
+            github.event.workflow_run.event == 'push' &&
+            github.event.workflow_run.head_branch == 'main'
+          ) ||
+          (
+            github.event.workflow_run.event == 'workflow_dispatch' &&
+            github.event.workflow_run.head_branch == 'main'
+          ) ||
+          (
+            github.event.workflow_run.event == 'pull_request' &&
+            github.event.workflow_run.head_repository.full_name == github.repository &&
+            github.event.workflow_run.actor.login != 'dependabot[bot]'
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    environment: apk-signing
+    steps:
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Calculate source APK version
+        id: version
+        shell: bash
+        env:
+          VERSION_CODE_BASE: ${{ vars.APK_VERSION_CODE_BASE }}
+          BUILD_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          BUILD_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION_CODE_BASE" =~ ^[0-9]+$ ]]
+          [[ "$BUILD_RUN_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$BUILD_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          if (( BUILD_RUN_ATTEMPT < 1 || BUILD_RUN_ATTEMPT > 99 )); then
+            echo "::error::Build run attempt must be between 1 and 99"
+            exit 1
+          fi
+          version_code=$((VERSION_CODE_BASE + BUILD_RUN_NUMBER * 100 + BUILD_RUN_ATTEMPT))
+          if (( version_code > 2100000000 )); then
+            echo "::error::Calculated Android versionCode exceeds 2100000000"
+            exit 1
+          fi
+          version_name="1.0.2-ci.${BUILD_RUN_NUMBER}.${BUILD_RUN_ATTEMPT}"
+          {
+            echo "code=$version_code"
+            echo "name=$version_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download source run unsigned APK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: _internal-unsigned-apk-${{ github.event.workflow_run.id }}
+          path: unsigned
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Locate Android signing tools
+        id: android_tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_tools_dir="$(
+            find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print |
+              sort -V |
+              tail -n 1
+          )"
+          test -x "$build_tools_dir/aapt2"
+          test -x "$build_tools_dir/apksigner"
+          test -x "$build_tools_dir/zipalign"
+          echo "aapt2=$build_tools_dir/aapt2" >> "$GITHUB_OUTPUT"
+          echo "apksigner=$build_tools_dir/apksigner" >> "$GITHUB_OUTPUT"
+          echo "zipalign=$build_tools_dir/zipalign" >> "$GITHUB_OUTPUT"
+
+      - name: Validate, sign, and verify release APK
+        shell: bash
+        env:
+          APK_SIGNING_KEYSTORE_BASE64: ${{ secrets.APK_SIGNING_KEYSTORE_BASE64 }}
+          APK_SIGNING_PASSWORD: ${{ secrets.APK_SIGNING_PASSWORD }}
+          EXPECTED_CERT_SHA256: ${{ vars.APK_SIGNING_CERT_SHA256 }}
+          EXPECTED_VERSION_CODE: ${{ steps.version.outputs.code }}
+          EXPECTED_VERSION_NAME: ${{ steps.version.outputs.name }}
+          AAPT2: ${{ steps.android_tools.outputs.aapt2 }}
+          APKSIGNER: ${{ steps.android_tools.outputs.apksigner }}
+          ZIPALIGN: ${{ steps.android_tools.outputs.zipalign }}
+        run: |
+          set -euo pipefail
+          test -n "$APK_SIGNING_KEYSTORE_BASE64"
+          test -n "$APK_SIGNING_PASSWORD"
+          test -n "$EXPECTED_CERT_SHA256"
+
+          extract_cert_sha256() {
+            awk '
+              match($0, /certificate SHA-256 digest:[[:space:]]*/) {
+                digest = substr($0, RSTART + RLENGTH)
+                gsub(/[[:space:]:]/, "", digest)
+                print toupper(digest)
+                exit
+              }
+            '
+          }
+
+          # Build Tools 36 and 37 use different prefixes for this certificate line.
+          parser_fixture_sha256="0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+          parser_fixture_sha256_lower="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          if [[ "$(
+            printf '%s\n' \
+              "Signer #1 certificate SHA-256 digest: $parser_fixture_sha256" |
+              extract_cert_sha256
+          )" != "$parser_fixture_sha256" ]] || [[ "$(
+            printf '%s\n' \
+              "V3.0 Signer: certificate SHA-256 digest: $parser_fixture_sha256_lower" |
+              extract_cert_sha256
+          )" != "$parser_fixture_sha256" ]]; then
+            echo "::error::APK certificate parser regression check failed"
+            exit 1
+          fi
+
+          unsigned_apk="unsigned/app-release-unsigned.apk"
+          keystore="$RUNNER_TEMP/math-reader-boox-ci-signing.p12"
+          aligned_apk="$RUNNER_TEMP/app-release-aligned.apk"
+          signed_apk="signed/math-reader-boox-${EXPECTED_VERSION_NAME}.apk"
+          trap 'rm -f "$keystore"' EXIT
+
+          test -f "$unsigned_apk"
+          file_count="$(find unsigned -type f | wc -l | tr -d '[:space:]')"
+          if [[ "$file_count" != "1" ]]; then
+            echo "::error::Expected exactly one file in the unsigned APK artifact"
+            exit 1
+          fi
+          if "$APKSIGNER" verify "$unsigned_apk" >/dev/null 2>&1; then
+            echo "::error::Source APK must be unsigned"
+            exit 1
+          fi
+
+          badging="$("$AAPT2" dump badging "$unsigned_apk")"
+          package_line="$(printf '%s\n' "$badging" | sed -n '/^package: /{p;q;}')"
+          actual_application_id="$(
+            printf '%s\n' "$package_line" |
+              sed -n "s/^package: name='\\([^']*\\)'.*/\\1/p"
+          )"
+          actual_version_code="$(
+            printf '%s\n' "$package_line" |
+              sed -n "s/.*versionCode='\\([^']*\\)'.*/\\1/p"
+          )"
+          actual_version_name="$(
+            printf '%s\n' "$package_line" |
+              sed -n "s/.*versionName='\\([^']*\\)'.*/\\1/p"
+          )"
+          if [[ "$actual_application_id" != "com.mathreader.boox" ]]; then
+            echo "::error::Unexpected applicationId: $actual_application_id"
+            exit 1
+          fi
+          if [[ "$actual_version_code" != "$EXPECTED_VERSION_CODE" ]]; then
+            echo "::error::Unexpected versionCode: $actual_version_code"
+            exit 1
+          fi
+          if [[ "$actual_version_name" != "$EXPECTED_VERSION_NAME" ]]; then
+            echo "::error::Unexpected versionName: $actual_version_name"
+            exit 1
+          fi
+
+          printf '%s' "$APK_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          mkdir -p signed
+
+          "$ZIPALIGN" -P 16 -f -v 4 "$unsigned_apk" "$aligned_apk"
+
+          "$APKSIGNER" sign \
+            --ks "$keystore" \
+            --ks-type PKCS12 \
+            --ks-key-alias math-reader-boox-ci \
+            --ks-pass env:APK_SIGNING_PASSWORD \
+            --key-pass env:APK_SIGNING_PASSWORD \
+            --out "$signed_apk" \
+            "$aligned_apk"
+
+          verify_output="$("$APKSIGNER" verify --verbose --print-certs "$signed_apk")"
+          printf '%s\n' "$verify_output"
+          actual_cert_sha256="$(
+            printf '%s\n' "$verify_output" | extract_cert_sha256
+          )"
+          expected_cert_sha256="$(
+            printf '%s' "$EXPECTED_CERT_SHA256" |
+              tr -d '[:space:]:' |
+              tr '[:lower:]' '[:upper:]'
+          )"
+          if [[ -z "$actual_cert_sha256" || "$actual_cert_sha256" != "$expected_cert_sha256" ]]; then
+            echo "::error::Unexpected APK signing certificate: $actual_cert_sha256"
+            exit 1
+          fi
+          "$ZIPALIGN" -c -P 16 -v 4 "$signed_apk"
+
+      - name: Upload updateable signed APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: math-reader-boox-${{ steps.version.outputs.name }}-${{ github.event.workflow_run.head_sha }}
+          path: signed/*.apk
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Write signing summary
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          CERT_SHA256: ${{ vars.APK_SIGNING_CERT_SHA256 }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          {
+            echo "### Updateable signed APK"
+            echo
+            echo "- Version: $VERSION_NAME ($VERSION_CODE)"
+            echo "- Signing certificate SHA-256: $CERT_SHA256"
+            echo "- Source build: https://github.com/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"

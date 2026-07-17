@@ -86,9 +86,25 @@ test('lasso mode enables the existing transparent interaction layer on every rea
     assert.match(inputMode, /if\s*\(lassoMode\s*&&\s*pd\.rendered\)\s*buildReaderTextLayer\(i\)/);
     assert.match(textLayer, /className\s*=\s*['"]reader-text-layer['"]/);
     assert.doesNotMatch(textLayer, /getTextContent|createElement\(['"]span['"]\)/);
-    assert.match(interactions, /if\s*\(!einkMode\s*\|\|\s*booxReaderIsPen\(e\)\)/);
+    assert.match(interactions, /const isPen\s*=\s*booxReaderIsPen\(e\)/);
+    assert.match(interactions, /if\s*\(!einkMode\s*\|\|\s*isPen\s*\)/);
     assert.match(interactions, /einkSelectStart\(layer,\s*pageNum,\s*e\)/);
     assert.doesNotMatch(interactions, /caretRangeFromPoint|setBaseAndExtent|finalizeNativeReaderSelection/);
+});
+
+test('reader pen mode blocks every browser-native selection path', () => {
+    const inputMode = functionSource('applyReaderInputMode');
+    const blocker = functionSource('blockReaderNativeSelectionInPenMode');
+    const selectionGuard = functionSource('clearNativeReaderSelectionInPenMode');
+
+    assert.match(readerHtml, /body\.reader-pen-mode #readerContainer[\s\S]*?-webkit-user-select:\s*none\s*!important/);
+    assert.match(readerHtml, /\['selectstart',\s*'dragstart',\s*'contextmenu'\][\s\S]*blockReaderNativeSelectionInPenMode/);
+    assert.match(readerHtml, /addEventListener\('selectionchange',\s*clearNativeReaderSelectionInPenMode,\s*true\)/);
+    assert.match(blocker, /readerPenModeOwnsEventTarget\(e\.target\)/);
+    assert.match(blocker, /e\.preventDefault\(\)/);
+    assert.match(selectionGuard, /selection\.removeAllRanges\(\)/);
+    assert.match(inputMode, /classList\.toggle\('reader-pen-mode',\s*penMode\)/);
+    assert.match(inputMode, /webkitUserSelect\s*=\s*penMode\s*\?\s*'none'\s*:\s*'text'/);
 });
 
 test('e-ink lasso mode stays separate from pen mode and finger paging', () => {

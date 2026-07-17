@@ -1021,6 +1021,14 @@
         }
         .reader-text-layer ::selection { background: rgba(0, 122, 255, 0.35); }
         .reader-text-layer ::-moz-selection { background: rgba(0, 122, 255, 0.35); }
+        /* 手写模式必须压过透明套索层的 user-select:text，避免 iPad
+           长按或 Pencil 抖动唤起浏览器原生选区/放大镜。 */
+        body.reader-pen-mode #readerContainer,
+        body.reader-pen-mode #readerContainer * {
+            -webkit-user-select: none !important;
+            user-select: none !important;
+            -webkit-touch-callout: none !important;
+        }
         /* AI 评论的计数圆点：沿用笔记 marker，换蓝色以区分手写笔记 */
         .annotation-marker.ai-marker {
             background: rgba(59, 130, 246, 0.7);
@@ -7112,6 +7120,8 @@
         let currentUploadType = 'book';
         let currentDoc = null;
         let pdfDoc = null;
+        let readerPdfLoadingTask = null;
+        let readerPdfCleanupPromise = Promise.resolve();
         let currentPage = 1;
         let totalPages = 0;
         let penMode = false;
@@ -7128,6 +7138,11 @@
             // 请求持久化存储，防止浏览器自动清理 IndexedDB
             await requestStoragePersist();
             await loadData();
+            // Annotation hydration must finish before any other migration can
+            // call saveData(), otherwise legacy inline PNGs could be stripped
+            // from metadata before their first durable IDB write.
+            await restoreBlobsFromIDB();
+            await migrateAnnotationsToIDB();
             // 照片/文件和 AI 讲义都有独立恢复清单；先恢复索引，再让任何云同步运行。
             await recoverDurableClassroomEntries();
             // 旧版本已有 IndexedDB 正文但没有恢复清单/提交标记；云合并前补齐并重传。
@@ -7142,10 +7157,6 @@
             await migrateLectureContentToIDB();
             // 将 localStorage 中残留的论文摘要迁移到 IndexedDB
             await migrateAbstractsToIDB();
-            // 将 localStorage 中残留的标注大数据、草稿画布、截图迁移到 IndexedDB
-            await migrateAnnotationsToIDB();
-            // 从 IndexedDB 恢复标注大数据、草稿画布、截图到内存
-            await restoreBlobsFromIDB();
             // 如果localStorage被iOS清理导致API设置丢失，从IndexedDB恢复
             if (!appData.settings.aiApiKey && !appData.settings.aiApiUrl) {
                 const backup = await restoreApiSettingsFromIDB();
@@ -7183,6 +7194,7 @@
             // 防止用户快速翻到新页后立刻退出 app 导致进度丢失。
             const flushOnHide = () => {
                 try { flushCurrentPageNow(); } catch (e) {}
+                try { flushPendingDraftSave(); } catch (e) {}
                 try { saveCurrentExTimer(); } catch (e) {}
                 try { saveCurrentDrawingToCache(); } catch (e) {}
                 try { nbFlushPositionSync(); } catch (e) {}
@@ -7234,7 +7246,7 @@
                 currentDoc.currentPage = page;
                 currentDoc.progress = Math.round((page / totalPages) * 100);
                 currentDoc.progressUpdatedAt = Date.now();
-                saveData();
+                saveData(false);
             }
         }
 
@@ -7413,8 +7425,11 @@
             });
         }
         
-        async function getFileData(id) {
-            if (!await ensureFileDB()) return null;
+        async function getFileData(id, requireAvailable = false) {
+            if (!await ensureFileDB()) {
+                if (requireAvailable) throw new Error(i18n('indexeddb_unavailable'));
+                return null;
+            }
             return new Promise((resolve, reject) => {
                 try {
                     const tx = fileDB.transaction('files', 'readonly');
@@ -7429,8 +7444,11 @@
             });
         }
         
-        async function deleteFileData(id) {
-            if (!await ensureFileDB()) return;
+        async function deleteFileData(id, requireAvailable = false) {
+            if (!await ensureFileDB()) {
+                if (requireAvailable) throw new Error(i18n('indexeddb_unavailable'));
+                return;
+            }
             return new Promise((resolve, reject) => {
                 try {
                     const tx = fileDB.transaction('files', 'readwrite');
@@ -7922,44 +7940,178 @@
 
         // ==================== 标注大数据存储 (IndexedDB) ====================
         // annotations 中的 drawing data 和 note canvasData 是 base64 大数据，
-        // 迁移到 IndexedDB，localStorage 中仅保留元数据（page, type, x, y, text, createdAt）
+        // 迁移到 IndexedDB，localStorage 中仅保留元数据与稳定 blob id。
 
         function annoKey(docId) { return 'annotations_' + docId; }
         function draftCanvasKey(docId) { return 'draft_canvas_' + docId; }
         function screenshotKey(docId) { return 'screenshot_' + docId; }
 
+        let _annotationBlobIdSequence = 0;
+        let _annotationBlobRestoreFinished = false;
+        let _annotationBlobBlockedDocIds = new Set();
+        let _draftBlobBlockedDocIds = new Set();
+        let _annotationBlobDeletedDocIds = new Set();
+        let _blobDeletionCleanupReadyDocIds = new Set();
+        let _orphanBlobMetadataRecovered = false;
+
+        function hydrateBlobDeletionTombstones() {
+            const tombstones = Array.isArray(appData && appData._blobDeletionTombstones)
+                ? appData._blobDeletionTombstones : [];
+            tombstones.forEach(docId => {
+                if (!docId) return;
+                _annotationBlobDeletedDocIds.add(docId);
+                // Presence in the same localStorage snapshot that omitted the
+                // document proves metadata committed before this cleanup.
+                _blobDeletionCleanupReadyDocIds.add(docId);
+            });
+        }
+        function ensureAnnotationBlobId(annotation) {
+            if (!annotation) return null;
+            if (!annotation._blobId) {
+                _annotationBlobIdSequence = (_annotationBlobIdSequence + 1) % 1679616;
+                annotation._blobId = 'ann_' + Date.now().toString(36) + '_'
+                    + _annotationBlobIdSequence.toString(36) + '_'
+                    + Math.random().toString(36).slice(2, 8);
+            }
+            return annotation._blobId;
+        }
+
+        function ensureDocumentAnnotationBlobIds(doc) {
+            (doc && doc.annotations || []).forEach(ensureAnnotationBlobId);
+        }
+
+        function canEditDocumentAnnotations(docId, notify = true) {
+            if (docId && _annotationBlobRestoreFinished
+                    && !_annotationBlobBlockedDocIds.has(docId)
+                    && !_annotationBlobDeletedDocIds.has(docId)) return true;
+            if (notify) showToast(i18n('toast_storage_full'));
+            return false;
+        }
+
+        function discardMissingAnnotationBlobMetadata(annotations) {
+            let changed = false;
+            for (let i = (annotations || []).length - 1; i >= 0; i--) {
+                const annotation = annotations[i];
+                if (!annotation) continue;
+                if (annotation.type === 'drawing' && !annotation.data) {
+                    // The metadata was published by an older client before its
+                    // first PNG transaction committed. The pixels no longer
+                    // exist, so remove only that orphan instead of permanently
+                    // locking every annotation in the document.
+                    annotations.splice(i, 1);
+                    changed = true;
+                } else if (annotation.type === 'note' && annotation._hasCanvasData
+                        && !annotation.canvasData) {
+                    // Preserve the text/marker; only the optional handwritten
+                    // canvas payload is irrecoverable.
+                    delete annotation._hasCanvasData;
+                    changed = true;
+                }
+            }
+            if (changed) {
+                _orphanBlobMetadataRecovered = true;
+                // During startup this is deferred by the hydration gate; during
+                // a retry it is deferred by the in-flight queue. Either way the
+                // cleanup is published once the safe boundary is reached.
+                if (typeof saveData === 'function') saveData(false);
+            }
+            return changed;
+        }
+
+        async function retryBlockedDocumentAnnotationHydration(doc) {
+            if (!doc || !doc.id || !_annotationBlobRestoreFinished
+                    || _annotationBlobDeletedDocIds.has(doc.id)) return false;
+            if (!_annotationBlobBlockedDocIds.has(doc.id)) return true;
+            const restored = await restoreAnnotationBlobsFromIDB(doc.id, doc.annotations || []);
+            if (!restored) return false;
+            try {
+                // Complete the v1 -> stable-id v2 transition before editing is
+                // enabled. This preserves both old and newly restored blobs.
+                await saveAnnotationBlobsToIDB(doc.id, doc.annotations || []);
+                _annotationBlobBlockedDocIds.delete(doc.id);
+                if (!saveData()) {
+                    _annotationBlobBlockedDocIds.add(doc.id);
+                    return false;
+                }
+                return true;
+            } catch (e) {
+                _annotationBlobBlockedDocIds.add(doc.id);
+                console.warn('[reader] annotation hydration retry failed:', doc.id, e);
+                return false;
+            }
+        }
+
         // 保存单个文档的标注大数据到 IDB
         async function saveAnnotationBlobsToIDB(docId, annotations) {
-            if (!annotations || annotations.length === 0) return;
-            // 提取大数据：{ index -> { data?, canvasData? } }
-            const blobs = {};
-            annotations.forEach((a, i) => {
-                if (a.data || a.canvasData) {
-                    blobs[i] = {};
-                    if (a.data) blobs[i].data = a.data;
-                    if (a.canvasData) blobs[i].canvasData = a.canvasData;
-                }
+            // Version 2 binds blobs to a stable annotation id instead of an
+            // array index. The entries array keeps a positional fallback so an
+            // interrupted migration from the old index format remains readable.
+            const entries = (annotations || []).map(a => {
+                const entry = {
+                    id: ensureAnnotationBlobId(a),
+                    page: a.page,
+                    type: a.type
+                };
+                if (a.type === 'drawing' && a.data) entry.data = a.data;
+                if (a.type === 'note' && a.canvasData) entry.canvasData = a.canvasData;
+                return entry;
             });
-            if (Object.keys(blobs).length > 0) {
-                await saveFileData(annoKey(docId), JSON.stringify(blobs));
-            }
+            // Always overwrite the record, including an empty set, so deleted
+            // annotation blobs cannot later be restored onto new metadata.
+            // IndexedDB can structured-clone this object directly. Avoiding a
+            // giant JSON string removes another full-document copy from the hot
+            // Pencil pointerup path while remaining able to read legacy strings.
+            await saveFileData(annoKey(docId), { version: 2, entries });
         }
 
         // 从 IDB 恢复标注大数据到内存中的 doc.annotations
         async function restoreAnnotationBlobsFromIDB(docId, annotations) {
-            if (!annotations || annotations.length === 0) return;
+            if (!annotations || annotations.length === 0) return true;
             try {
-                const raw = await getFileData(annoKey(docId));
-                if (!raw) return;
-                const blobs = JSON.parse(raw);
-                annotations.forEach((a, i) => {
-                    if (blobs[i]) {
-                        if (blobs[i].data && !a.data) a.data = blobs[i].data;
-                        if (blobs[i].canvasData && !a.canvasData) a.canvasData = blobs[i].canvasData;
+                const hasMissingRequiredBlob = () => annotations.some(a =>
+                    (a.type === 'drawing' && !a.data) ||
+                    (a.type === 'note' && a._hasCanvasData && !a.canvasData)
+                );
+                // Unlike ordinary optional file reads, annotation hydration must
+                // distinguish an unavailable database from a genuinely absent
+                // legacy record. Missing required blobs keep the document locked.
+                const raw = await getFileData(annoKey(docId), true);
+                if (!raw) {
+                    if (hasMissingRequiredBlob()) {
+                        discardMissingAnnotationBlobMetadata(annotations);
+                        console.warn('[restoreAnnotationBlobs] 已清理缺失 payload 的孤儿元数据:', docId);
                     }
+                    return true;
+                }
+                const blobs = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                const v2Entries = blobs && blobs.version === 2 && Array.isArray(blobs.entries)
+                    ? blobs.entries : null;
+                const blobsById = v2Entries
+                    ? new Map(v2Entries.filter(Boolean).map(entry => [entry.id, entry]))
+                    : null;
+                annotations.forEach((a, i) => {
+                    const blob = v2Entries
+                        ? (a._blobId ? blobsById.get(a._blobId) : v2Entries[i])
+                        : blobs[i];
+                    if (!blob) return;
+                    // Stable ids are authoritative. Page/type validation also
+                    // prevents legacy index data from being attached to a new,
+                    // unrelated annotation after a deletion or reorder.
+                    if (blob.id && a._blobId && blob.id !== a._blobId) return;
+                    if (blob.page !== undefined && blob.page !== a.page) return;
+                    if (blob.type && blob.type !== a.type) return;
+                    if (a.type === 'drawing' && blob.data && !a.data) a.data = blob.data;
+                    if (a.type === 'note' && a._hasCanvasData
+                            && blob.canvasData && !a.canvasData) a.canvasData = blob.canvasData;
                 });
+                if (hasMissingRequiredBlob()) {
+                    discardMissingAnnotationBlobMetadata(annotations);
+                    console.warn('[restoreAnnotationBlobs] 已降级清理未提交的孤儿标注:', docId);
+                }
+                return true;
             } catch(e) {
                 console.warn('[restoreAnnotationBlobs] 失败:', docId, e);
+                return false;
             }
         }
 
@@ -7970,8 +8122,8 @@
         }
 
         // 从 IDB 加载草稿画布
-        async function getDraftCanvasFromIDB(docId) {
-            return await getFileData(draftCanvasKey(docId));
+        async function getDraftCanvasFromIDB(docId, requireAvailable = false) {
+            return await getFileData(draftCanvasKey(docId), requireAvailable);
         }
 
         // 保存截图到 IDB
@@ -7991,13 +8143,15 @@
             const allDocs = [...(appData.books || []), ...(appData.papers || []), ...(appData.archived || [])];
             for (const doc of allDocs) {
                 // 迁移标注大数据
-                if (doc.annotations && doc.annotations.length > 0 && doc.id) {
+                if (doc.annotations && doc.annotations.length > 0 && doc.id
+                        && !_annotationBlobBlockedDocIds.has(doc.id)) {
                     const hasBlobs = doc.annotations.some(a => a.data || a.canvasData);
                     if (hasBlobs) {
                         try {
                             await saveAnnotationBlobsToIDB(doc.id, doc.annotations);
                             migrated = true;
                         } catch(e) {
+                            _annotationBlobBlockedDocIds.add(doc.id);
                             console.warn('[migrate] 标注迁移失败:', doc.id, e);
                         }
                     }
@@ -8019,8 +8173,10 @@
                     if (draft && draft.canvas) {
                         try {
                             await saveDraftCanvasToIDB(docId, draft.canvas);
+                            _draftBlobBlockedDocIds.delete(docId);
                             migrated = true;
                         } catch(e) {
+                            _draftBlobBlockedDocIds.add(docId);
                             console.warn('[migrate] 草稿画布迁移失败:', docId, e);
                         }
                     }
@@ -8031,10 +8187,22 @@
                 saveData();
                 console.log('[migrate] 标注/草稿画布/截图已从 localStorage 迁移到 IndexedDB');
             }
+            if (_annotationBlobBlockedDocIds.size > 0 && _annotationBlobRestoreFinished) {
+                // Retry only the documents whose legacy inline annotations did
+                // not become durable. Successful documents are never reencoded
+                // merely because a different migration hit quota/transient IDB.
+                _annotationBlobBlockedDocIds.forEach(docId => queueBlobsSaveToIDB(docId));
+            }
+            _draftBlobBlockedDocIds.forEach(docId => queueBlobsSaveToIDB(docId));
         }
 
         // 启动时从 IDB 恢复标注大数据、草稿画布、截图到内存
         async function restoreBlobsFromIDB() {
+            hydrateBlobDeletionTombstones();
+            _annotationBlobRestoreFinished = false;
+            _annotationBlobBlockedDocIds.clear();
+            _draftBlobBlockedDocIds.clear();
+            _orphanBlobMetadataRecovered = false;
             const allDocs = [...(appData.books || []), ...(appData.papers || []), ...(appData.archived || [])];
             for (const doc of allDocs) {
                 if (doc.annotations && doc.annotations.length > 0 && doc.id) {
@@ -8044,7 +8212,8 @@
                         (a.type === 'note' && !a.canvasData && a._hasCanvasData)
                     );
                     if (needRestore || !doc.annotations.some(a => a.data || a.canvasData)) {
-                        await restoreAnnotationBlobsFromIDB(doc.id, doc.annotations);
+                        const restored = await restoreAnnotationBlobsFromIDB(doc.id, doc.annotations);
+                        if (!restored) _annotationBlobBlockedDocIds.add(doc.id);
                     }
                 }
                 // 恢复截图
@@ -8061,19 +8230,46 @@
                     const draft = appData.drafts[docId];
                     if (draft && !draft.canvas) {
                         try {
-                            const cv = await getDraftCanvasFromIDB(docId);
+                            const cv = await getDraftCanvasFromIDB(docId, true);
                             if (cv) draft.canvas = cv;
-                        } catch(e) {}
+                            else if (draft._hasCanvasData) {
+                                // IndexedDB was available and definitively had no
+                                // record. This is an orphan left by the old
+                                // metadata-first save path, not a transient DB
+                                // outage. Unlock a blank canvas rather than
+                                // retrying forever.
+                                delete draft._hasCanvasData;
+                                _orphanBlobMetadataRecovered = true;
+                                console.warn('[restoreDraftCanvas] 已清理缺失 payload 的孤儿元数据:', docId);
+                            }
+                        } catch(e) {
+                            // Do not let a temporarily unavailable IDB turn a
+                            // metadata-only draft into an authoritative blank.
+                            _draftBlobBlockedDocIds.add(docId);
+                        }
                     }
                 }
+            }
+            // From this point onward an empty annotation set is authoritative.
+            // Before this gate, early startup saveData() calls must not overwrite
+            // IDB records whose blobs have not been restored into appData yet.
+            _annotationBlobRestoreFinished = true;
+            if (_orphanBlobMetadataRecovered) saveData(false);
+            flushDeferredBlobMetadataSave();
+            if (_blobDeletionCleanupReadyDocIds.size > 0) {
+                queueBlobsSaveToIDB(_blobDeletionCleanupReadyDocIds.values().next().value);
             }
         }
 
         // 从 toSave 对象中剔除标注大数据、草稿画布、截图（saveData 时调用）
-        function stripBlobsFromSaveData(toSave) {
+        function stripBlobsFromSaveData(toSave, stripAnnotationBlobs = true) {
             // 剔除标注中的 drawing data 和 note canvasData
             const stripDocAnnotations = (doc) => {
-                if (doc.annotations) {
+                const preservePendingPayload = _annotationBlobBlockedDocIds.has(doc.id)
+                    || _blobMetadataPendingVersions.has(doc.id);
+                const canStripAnnotations = stripAnnotationBlobs
+                    && !preservePendingPayload;
+                if (canStripAnnotations && doc.annotations) {
                     doc.annotations = doc.annotations.map(a => {
                         const stripped = { ...a };
                         if (stripped.data) {
@@ -8086,8 +8282,9 @@
                         return stripped;
                     });
                 }
-                // 截图
-                delete doc.screenshot;
+                // A failed/pending screenshot transaction uses the same
+                // best-effort inline fallback as annotation PNGs.
+                if (!preservePendingPayload) delete doc.screenshot;
             };
             (toSave.books || []).forEach(stripDocAnnotations);
             (toSave.papers || []).forEach(stripDocAnnotations);
@@ -8095,40 +8292,266 @@
             // 剔除草稿画布
             if (toSave.drafts) {
                 for (const docId of Object.keys(toSave.drafts)) {
-                    if (toSave.drafts[docId]) {
-                        delete toSave.drafts[docId].canvas;
+                    const draft = toSave.drafts[docId];
+                    if (draft && stripAnnotationBlobs && !_draftBlobBlockedDocIds.has(docId)
+                            && !_blobMetadataPendingVersions.has(docId)) {
+                        if (draft.canvas) draft._hasCanvasData = true;
+                        delete draft.canvas;
                     }
                 }
             }
         }
 
         // saveData 时异步保存标注大数据到 IDB
-        async function saveBlobsToIDB() {
-            const allDocs = [...(appData.books || []), ...(appData.papers || []), ...(appData.archived || [])];
+        async function saveBlobsToIDB(targetDocIds = null) {
+            let firstSaveError = null;
+            const allDocs = [...(appData.books || []), ...(appData.papers || []), ...(appData.archived || [])]
+                .filter(doc => !targetDocIds || targetDocIds.has(doc.id));
             for (const doc of allDocs) {
-                if (doc.annotations && doc.annotations.length > 0 && doc.id) {
+                const docStillExists = [...(appData.books || []), ...(appData.papers || []), ...(appData.archived || [])]
+                    .some(current => current && current.id === doc.id);
+                if (!docStillExists || _annotationBlobDeletedDocIds.has(doc.id)) continue;
+                if (doc.id && _annotationBlobRestoreFinished) {
                     try {
-                        await saveAnnotationBlobsToIDB(doc.id, doc.annotations);
-                    } catch(e) {
-                        console.warn('[saveBlobsToIDB] 标注保存失败:', doc.id, e);
+                        if (_annotationBlobBlockedDocIds.has(doc.id)) {
+                            const restored = await restoreAnnotationBlobsFromIDB(doc.id, doc.annotations || []);
+                            if (!restored) throw new Error('annotation blob restore is still pending for ' + doc.id);
+                            await saveAnnotationBlobsToIDB(doc.id, doc.annotations || []);
+                            _annotationBlobBlockedDocIds.delete(doc.id);
+                        } else {
+                            await saveAnnotationBlobsToIDB(doc.id, doc.annotations || []);
+                        }
+                    } catch (e) {
+                        _annotationBlobBlockedDocIds.add(doc.id);
+                        // Keep the last coherent metadata snapshot published.
+                        // saveData is globally gated while this generation is
+                        // pending, so it cannot expose a missing payload.
+                        saveBlobFailureFallbackMetadata();
+                        if (!firstSaveError) firstSaveError = e;
                     }
                 }
                 if (doc.screenshot && doc.id) {
                     try {
                         await saveScreenshotToIDB(doc.id, doc.screenshot);
-                    } catch(e) {}
+                    } catch (e) {
+                        if (!firstSaveError) firstSaveError = e;
+                    }
                 }
             }
             if (appData.drafts) {
                 for (const docId of Object.keys(appData.drafts)) {
-                    const draft = appData.drafts[docId];
-                    if (draft && draft.canvas) {
-                        try {
+                    if (targetDocIds && !targetDocIds.has(docId)) continue;
+                    let draft = appData.drafts[docId];
+                    if (!draft) continue;
+                    const wasBlocked = _draftBlobBlockedDocIds.has(docId);
+                    try {
+                        if (wasBlocked && !draft.canvas) {
+                            const restoredCanvas = await getDraftCanvasFromIDB(docId, true);
+                            // Text input can replace appData.drafts[docId] while
+                            // the IDB read is pending. Rebind to the live object
+                            // before merging so hydration never lands on a
+                            // detached draft and leaves the visible canvas locked.
+                            draft = appData.drafts && appData.drafts[docId];
+                            if (!draft) continue;
+                            if (restoredCanvas && !draft.canvas) draft.canvas = restoredCanvas;
+                            else if (!draft.canvas && draft._hasCanvasData) {
+                                // The strict read succeeded but the record is
+                                // genuinely absent. Degrade to a blank editable
+                                // canvas; only an unavailable/failed read should
+                                // keep the document blocked for retry.
+                                delete draft._hasCanvasData;
+                                _orphanBlobMetadataRecovered = true;
+                                console.warn('[restoreDraftCanvas] 已降级清理未提交的孤儿草稿:', docId);
+                                saveData(false);
+                            }
+                        }
+                        if (draft.canvas) {
                             await saveDraftCanvasToIDB(docId, draft.canvas);
-                        } catch(e) {}
+                            _draftBlobBlockedDocIds.delete(docId);
+                        } else {
+                            _draftBlobBlockedDocIds.delete(docId);
+                        }
+                        if (wasBlocked && currentDoc && currentDoc.id === docId && draftCanvas
+                                && !draftDrawing && !draftCanvasDirty) {
+                            loadDraftCanvasData();
+                        }
+                    } catch (e) {
+                        _draftBlobBlockedDocIds.add(docId);
+                        // Preserve the latest canvas in memory; metadata remains
+                        // on its last durable generation until the retry commits.
+                        saveBlobFailureFallbackMetadata();
+                        if (!firstSaveError) firstSaveError = e;
                     }
                 }
             }
+            // Delete payloads only after localStorage has durably stopped
+            // referencing the document. Pending tombstones are promoted to the
+            // cleanup-ready set by a successful metadata commit.
+            const appliedTombstones = [..._blobDeletionCleanupReadyDocIds];
+            for (const docId of appliedTombstones) {
+                await deleteFileData(docId, true);
+                await deleteFileData(annoKey(docId), true);
+                await deleteFileData(draftCanvasKey(docId), true);
+                await deleteFileData(screenshotKey(docId), true);
+            }
+            // Tombstones added during the awaited deletes were not part of this
+            // pass and remain queued for the next one.
+            appliedTombstones.forEach(docId => {
+                _blobDeletionCleanupReadyDocIds.delete(docId);
+                _annotationBlobDeletedDocIds.delete(docId);
+            });
+            if (appliedTombstones.length && Array.isArray(appData._blobDeletionTombstones)) {
+                const appliedSet = new Set(appliedTombstones);
+                appData._blobDeletionTombstones = appData._blobDeletionTombstones
+                    .filter(docId => !appliedSet.has(docId));
+                if (appData._blobDeletionTombstones.length === 0) {
+                    delete appData._blobDeletionTombstones;
+                }
+                _blobMetadataSaveDeferred = true;
+            }
+            if (firstSaveError) throw firstSaveError;
+        }
+
+        // Large annotation saves are latest-wins and single-flight. Rapid Pencil
+        // strokes used to start one full JSON serialization/IDB transaction per
+        // pointerup, retaining several multi-megabyte strings at the same time.
+        let _blobSaveInFlight = false;
+        let _blobSaveQueued = false;
+        let _blobSaveAllQueued = false;
+        let _blobSaveQueuedDocIds = new Set();
+        let _blobSaveRetryTimer = null;
+        let _blobSaveRetryDelay = 3000;
+        let _blobSaveFailureNotified = false;
+        let _blobMetadataGenerationSequence = 0;
+        let _blobMetadataPendingVersions = new Map();
+        let _blobMetadataSaveDeferred = false;
+        let _blobFailureFallbackActive = false;
+        let _forceInlineBlobMetadataSave = false;
+
+        function markBlobMetadataPending(docIds) {
+            let marked = false;
+            for (const docId of docIds || []) {
+                if (!docId) continue;
+                _blobMetadataGenerationSequence++;
+                _blobMetadataPendingVersions.set(docId, _blobMetadataGenerationSequence);
+                marked = true;
+            }
+            if (marked) _blobMetadataSaveDeferred = true;
+            return marked;
+        }
+
+        function blobMetadataCommitIsPending() {
+            return !_annotationBlobRestoreFinished
+                || _annotationBlobBlockedDocIds.size > 0
+                || _draftBlobBlockedDocIds.size > 0
+                || _blobMetadataPendingVersions.size > 0
+                || _blobSaveInFlight
+                || _blobSaveQueued
+                || !!_blobSaveRetryTimer;
+        }
+
+        function flushDeferredBlobMetadataSave() {
+            if (!_blobMetadataSaveDeferred || blobMetadataCommitIsPending()) return;
+            // saveData(false) is the only path that publishes metadata. At this
+            // point every captured blob generation has committed and the queue
+            // is fully drained, so stripping PNGs cannot create an orphan.
+            saveData(false);
+        }
+
+        function saveBlobFailureFallbackMetadata() {
+            _forceInlineBlobMetadataSave = true;
+            try {
+                const saved = saveData(false);
+                if (saved) _blobFailureFallbackActive = true;
+                return saved;
+            } finally {
+                _forceInlineBlobMetadataSave = false;
+            }
+        }
+
+        function queueBlobsSaveToIDB(docId = null) {
+            if (docId) {
+                if (!_blobSaveAllQueued) _blobSaveQueuedDocIds.add(docId);
+            } else {
+                _blobSaveAllQueued = true;
+                _blobSaveQueuedDocIds.clear();
+            }
+            _blobSaveQueued = true;
+            if (_blobSaveInFlight) return;
+            // A persistent quota/IDB failure must not trigger a full annotation
+            // serialization on every new stroke. The retry timer owns the next
+            // attempt while new calls only mark the latest state dirty.
+            if (_blobSaveRetryTimer) return;
+            _blobSaveInFlight = true;
+            (async () => {
+                let failed = false;
+                let activeSaveAll = false;
+                let activeDocIds = new Set();
+                try {
+                    do {
+                        _blobSaveQueued = false;
+                        activeSaveAll = _blobSaveAllQueued;
+                        activeDocIds = new Set(_blobSaveQueuedDocIds);
+                        _blobSaveAllQueued = false;
+                        _blobSaveQueuedDocIds.clear();
+                        const activeBlobVersions = new Map();
+                        _blobMetadataPendingVersions.forEach((version, docId) => {
+                            if (activeSaveAll || activeDocIds.has(docId)) {
+                                activeBlobVersions.set(docId, version);
+                            }
+                        });
+                        await saveBlobsToIDB(activeSaveAll ? null : activeDocIds);
+                        // A newer Pencil stroke may have arrived while the IDB
+                        // transaction was pending. Only acknowledge the exact
+                        // generation captured by this pass; the latest one stays
+                        // dirty and is handled by the queued follow-up pass.
+                        activeBlobVersions.forEach((version, docId) => {
+                            if (_blobMetadataPendingVersions.get(docId) === version) {
+                                _blobMetadataPendingVersions.delete(docId);
+                            }
+                        });
+                    } while (_blobSaveQueued);
+                    _blobSaveRetryDelay = 3000;
+                    _blobSaveFailureNotified = false;
+                } catch (e) {
+                    failed = true;
+                    // Keep the latest in-memory state dirty. A later save or the
+                    // delayed retry will attempt the write again instead of
+                    // silently treating the failed IDB transaction as durable.
+                    if (activeSaveAll) {
+                        _blobSaveAllQueued = true;
+                        _blobSaveQueuedDocIds.clear();
+                    } else if (!_blobSaveAllQueued) {
+                        activeDocIds.forEach(id => _blobSaveQueuedDocIds.add(id));
+                    }
+                    _blobSaveQueued = true;
+                    console.warn('[saveData] blobs 写入 IndexedDB 失败:', e);
+                    if (!_blobSaveFailureNotified) {
+                        _blobSaveFailureNotified = true;
+                        showToast(i18n('toast_storage_full'));
+                    }
+                } finally {
+                    _blobSaveInFlight = false;
+                    if (_blobSaveQueued) {
+                        if (failed) {
+                            const retryDelay = _blobSaveRetryDelay;
+                            _blobSaveRetryDelay = Math.min(_blobSaveRetryDelay * 2, 60000);
+                            _blobSaveRetryTimer = setTimeout(() => {
+                                _blobSaveRetryTimer = null;
+                                if (_blobSaveAllQueued) {
+                                    queueBlobsSaveToIDB();
+                                } else {
+                                    const firstQueuedDocId = _blobSaveQueuedDocIds.values().next().value;
+                                    if (firstQueuedDocId) queueBlobsSaveToIDB(firstQueuedDocId);
+                                }
+                            }, retryDelay);
+                        } else {
+                            queueBlobsSaveToIDB();
+                        }
+                    }
+                    flushDeferredBlobMetadataSave();
+                }
+            })();
         }
 
         // 数据是否已成功加载（localStorage 正常读取 / 备份恢复成功 / 全新安装）。
@@ -8265,12 +8688,14 @@
         // 节流备份到 IndexedDB（每 30 秒最多一次）
         let _lastBackupTime = 0;
         let _localBackupCounts = null; // 主备份的核心数据量缓存（null = 尚未读取）
-        function backupAppDataToIDB() {
+        function backupAppDataToIDB(toBackup) {
             const now = Date.now();
             if (now - _lastBackupTime < 30000) return;
+            // saveData supplies its already-sanitized metadata snapshot. Reusing
+            // it avoids cloning every in-memory annotation PNG a second time at
+            // the 30-second backup boundary on memory-constrained iPad PWAs.
+            if (!toBackup) return;
             _lastBackupTime = now;
-            // 在 stringify 阶段直接排除大文件字段，避免先复制再删除造成峰值内存翻倍。
-            const toBackup = JSON.parse(JSON.stringify(appData, (key, value) => key === 'data' ? undefined : value));
             toBackup.books.forEach(b => delete b.data);
             toBackup.papers.forEach(p => delete p.data);
             toBackup.archived.forEach(a => delete a.data);
@@ -8299,7 +8724,7 @@
             toBackup.papers.forEach(p => { delete p.aiAbstract; delete p._abstractCache; });
             toBackup.archived.forEach(a => { delete a.aiAbstract; delete a._abstractCache; });
             // 剔除标注大数据、草稿画布、截图（已在 IndexedDB）
-            stripBlobsFromSaveData(toBackup);
+            stripBlobsFromSaveData(toBackup, _annotationBlobRestoreFinished);
             // 习题数据已单独存 IndexedDB，备份中不再包含
             delete toBackup.exercises;
             const backupJson = JSON.stringify(toBackup);
@@ -8339,17 +8764,91 @@
             }
         }
 
-        function saveData() {
+        function saveData(blobDocId = false) {
+            if (blobDocId !== false) {
+                const targetDocIds = new Set();
+                if (typeof blobDocId === 'string' && blobDocId) {
+                    targetDocIds.add(blobDocId);
+                } else {
+                    [...(appData.books || []), ...(appData.papers || []), ...(appData.archived || [])]
+                        .forEach(doc => { if (doc && doc.id) targetDocIds.add(doc.id); });
+                    Object.keys(appData.drafts || {}).forEach(docId => targetDocIds.add(docId));
+                }
+                if (markBlobMetadataPending(targetDocIds)) {
+                    if (typeof blobDocId === 'string' && blobDocId) queueBlobsSaveToIDB(blobDocId);
+                    else queueBlobsSaveToIDB();
+                    // Blob-changing callers publish no metadata here. The
+                    // single-flight queue commits the captured generation first
+                    // and flushes one coalesced metadata snapshot when drained.
+                    return true;
+                }
+            }
+            if (!_forceInlineBlobMetadataSave && !_blobFailureFallbackActive
+                    && blobMetadataCommitIsPending()) {
+                // Scroll position, settings, or draft text may change while a
+                // Pencil PNG is still committing. Publishing any live appData
+                // projection in that window would expose the new _blobId/
+                // _hasCanvasData before its payload exists.
+                _blobMetadataSaveDeferred = true;
+                return true;
+            }
+            // The corresponding payload generation is already durable here;
+            // now publish its stable ids in the compact metadata snapshot.
+            (appData.books || []).forEach(ensureDocumentAnnotationBlobIds);
+            (appData.papers || []).forEach(ensureDocumentAnnotationBlobIds);
+            (appData.archived || []).forEach(ensureDocumentAnnotationBlobIds);
             // 保存时不包含data字段（大文件数据在IndexedDB）
             // Strip large in-memory data BEFORE JSON.stringify to prevent OOM
             // on devices with limited WebView heap (e.g. Boox e-readers).
             const _stashed = [];
             function _stash(obj, key) {
-                if (obj && obj[key]) { _stashed.push({ o: obj, k: key, v: obj[key] }); obj[key] = undefined; }
+                if (obj && obj[key]) {
+                    _stashed.push({
+                        o: obj,
+                        k: key,
+                        v: obj[key],
+                        had: Object.prototype.hasOwnProperty.call(obj, key)
+                    });
+                    obj[key] = undefined;
+                }
             }
-            (appData.books || []).forEach(b => _stash(b, 'data'));
-            (appData.papers || []).forEach(p => _stash(p, 'data'));
-            (appData.archived || []).forEach(a => _stash(a, 'data'));
+            function _temporarilySet(obj, key, value) {
+                _stashed.push({
+                    o: obj,
+                    k: key,
+                    v: obj[key],
+                    had: Object.prototype.hasOwnProperty.call(obj, key)
+                });
+                obj[key] = value;
+            }
+            function _stashDocBlobs(doc) {
+                if (!doc) return;
+                _stash(doc, 'data');
+                const preservePendingPayload = _annotationBlobBlockedDocIds.has(doc.id)
+                    || _blobMetadataPendingVersions.has(doc.id);
+                if (!preservePendingPayload) _stash(doc, 'screenshot');
+                if (_annotationBlobRestoreFinished && !preservePendingPayload) {
+                    (doc.annotations || []).forEach(annotation => {
+                        _stash(annotation, 'data');
+                        if (annotation.canvasData) {
+                            // The metadata clone still needs to remember that note canvas data exists.
+                            _temporarilySet(annotation, '_hasCanvasData', true);
+                            _stash(annotation, 'canvasData');
+                        }
+                    });
+                }
+            }
+            (appData.books || []).forEach(_stashDocBlobs);
+            (appData.papers || []).forEach(_stashDocBlobs);
+            (appData.archived || []).forEach(_stashDocBlobs);
+            Object.entries(appData.drafts || {}).forEach(([docId, draft]) => {
+                if (!_annotationBlobRestoreFinished || _draftBlobBlockedDocIds.has(docId)
+                        || _blobMetadataPendingVersions.has(docId)) return;
+                if (draft && draft.canvas) {
+                    _temporarilySet(draft, '_hasCanvasData', true);
+                    _stash(draft, 'canvas');
+                }
+            });
             ['courses', 'seminars'].forEach(listKey => {
                 (appData.classroom?.[listKey] || []).forEach(folder => {
                     (folder.sessions || []).forEach(session => {
@@ -8368,7 +8867,11 @@
                 toSave = JSON.parse(JSON.stringify(appData));
             } finally {
                 // 即使 stringify/parse 抛错，也必须恢复内存中的引用。
-                for (const s of _stashed) s.o[s.k] = s.v;
+                for (let i = _stashed.length - 1; i >= 0; i--) {
+                    const s = _stashed[i];
+                    if (s.had) s.o[s.k] = s.v;
+                    else delete s.o[s.k];
+                }
             }
             // 剔除讲义内容（大文本存在IndexedDB）
             if (toSave.lectures) {
@@ -8385,7 +8888,7 @@
             toSave.papers.forEach(p => { delete p.aiAbstract; delete p._abstractCache; });
             toSave.archived.forEach(a => { delete a.aiAbstract; delete a._abstractCache; });
             // 剔除标注大数据、草稿画布、截图（已迁移到 IndexedDB）
-            stripBlobsFromSaveData(toSave);
+            stripBlobsFromSaveData(toSave, _annotationBlobRestoreFinished);
             // 习题数据完全存入 IndexedDB，不放 localStorage
             const exercisesToIDB = toSave.exercises ? JSON.parse(JSON.stringify(toSave.exercises)) : null;
             delete toSave.exercises;
@@ -8423,12 +8926,28 @@
                 console.error('[saveData] localStorage 写入失败:', e);
                 showToast(i18n('toast_storage_full'));
             }
-            // 异步保存标注大数据、草稿画布、截图到 IndexedDB
-            saveBlobsToIDB().catch(e => {
-                console.warn('[saveData] blobs 写入 IndexedDB 失败:', e);
-            });
             // 异步备份到 IndexedDB（双保险）
-            backupAppDataToIDB();
+            if (!_forceInlineBlobMetadataSave && !_blobFailureFallbackActive) {
+                backupAppDataToIDB(toSave);
+            }
+            if (metadataSaved) {
+                const stillPending = blobMetadataCommitIsPending();
+                _blobMetadataSaveDeferred = stillPending;
+                if (!stillPending) _blobFailureFallbackActive = false;
+                // A document deletion becomes cleanup-eligible only after this
+                // metadata commit no longer references it. IDB deletion before
+                // this point could resurrect an unusable card after a crash.
+                _annotationBlobDeletedDocIds.forEach(docId => {
+                    _blobDeletionCleanupReadyDocIds.add(docId);
+                });
+                if (_blobDeletionCleanupReadyDocIds.size > 0) {
+                    // A targeted no-op upsert pass can apply every ready
+                    // tombstone without serializing the rest of the library.
+                    queueBlobsSaveToIDB(_blobDeletionCleanupReadyDocIds.values().next().value);
+                }
+            } else {
+                _blobMetadataSaveDeferred = true;
+            }
             return metadataSaved;
         }
 
@@ -8633,6 +9152,53 @@
         let draftLastY = 0;
         let draftHistory = [];
         let draftHistoryIndex = -1;
+        let draftHistoryLoadGeneration = 0;
+        let draftCanvasDocId = null;
+        let draftCanvasReady = false;
+        let draftCanvasImageLoader = null;
+        let _draftSaveTimer = null;
+        let draftCanvasDirty = false;
+        const DRAFT_HISTORY_MAX = 10;
+
+        function cancelDraftCanvasImageLoader() {
+            const loader = draftCanvasImageLoader;
+            if (!loader) return;
+            draftCanvasImageLoader = null;
+            loader.onload = null;
+            loader.onerror = null;
+            try { loader.src = ''; } catch (e) {}
+        }
+
+        function resetDraftCanvasForDocument(docId) {
+            cancelDraftCanvasImageLoader();
+            draftHistoryLoadGeneration++;
+            draftCanvasDocId = docId || null;
+            draftCanvasReady = false;
+            draftCanvasDirty = false;
+            draftDrawing = false;
+            draftPanActive = false;
+            draftHistory = [];
+            draftHistoryIndex = -1;
+            if (draftCanvas && draftCtx) {
+                draftCtx.setTransform(1, 0, 0, 1, 0, 0);
+                draftCtx.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
+            }
+        }
+
+        function captureDraftHistoryBaseline() {
+            if (!draftCanvas || !draftCtx || !draftCanvasReady) return false;
+            try {
+                draftHistory = [draftCanvas.toDataURL('image/png')];
+                draftHistoryIndex = 0;
+                return true;
+            } catch (e) {
+                draftHistory = [];
+                draftHistoryIndex = -1;
+                draftCanvasReady = false;
+                showToast(i18n('toast_storage_full'));
+                return false;
+            }
+        }
 
         function toggleDraftPanel() {
             const panel = document.getElementById('draftPanel');
@@ -8650,18 +9216,14 @@
             }
             document.getElementById('draftPanel').classList.add('show');
             document.getElementById('draftMiniBar').style.display = 'none';
-            loadDraft();
             initDraftCanvas();
+            loadDraft();
             restoreDraftPenSettings();
         }
 
         function collapseDraftPanel() {
             // 立即刷新待保存的草稿
-            if (_draftSaveTimer) {
-                clearTimeout(_draftSaveTimer);
-                _draftSaveTimer = null;
-                saveDraft();
-            }
+            flushPendingDraftSave();
             document.getElementById('draftPanel').classList.remove('show');
             if (document.body.classList.contains('page2-active')) {
                 document.getElementById('draftMiniBar').style.display = 'block';
@@ -8685,16 +9247,40 @@
             wireDraftEditor(editor, saveDraft);
             document.getElementById('draftPanelTitle').textContent = currentDoc.title + i18n('draft_suffix');
             updateDraftInfo();
-            // 重置历史
-            draftHistory = [];
-            draftHistoryIndex = -1;
+            resetDraftCanvasForDocument(currentDoc.id);
         }
 
-        let _draftSaveTimer = null;
-        let draftCanvasDirty = false;
+        function canEditDraftCanvas(docId, notify = true) {
+            if (docId && _annotationBlobRestoreFinished && !_draftBlobBlockedDocIds.has(docId)
+                    && draftCanvasDocId === docId && draftCanvasReady) {
+                return true;
+            }
+            const storageBlocked = !!(docId && _draftBlobBlockedDocIds.has(docId));
+            if (storageBlocked && _annotationBlobRestoreFinished) queueBlobsSaveToIDB(docId);
+            if (notify && storageBlocked) showToast(i18n('toast_storage_full'));
+            return false;
+        }
+
+        function flushPendingDraftSave() {
+            const hadPendingTimer = !!_draftSaveTimer;
+            if (_draftSaveTimer) {
+                clearTimeout(_draftSaveTimer);
+                _draftSaveTimer = null;
+            }
+            if (draftDrawing) {
+                draftDrawing = false;
+                if (draftCtx) draftCtx.globalCompositeOperation = 'source-over';
+            }
+            draftPanActive = false;
+            if (hadPendingTimer || draftCanvasDirty) saveDraft();
+        }
+
         function debouncedSaveDraft() {
             if (_draftSaveTimer) clearTimeout(_draftSaveTimer);
-            _draftSaveTimer = setTimeout(() => { saveDraft(); }, 1000);
+            _draftSaveTimer = setTimeout(() => {
+                _draftSaveTimer = null;
+                saveDraft();
+            }, 1000);
         }
 
         function saveDraft() {
@@ -8703,47 +9289,73 @@
             
             const editor = document.getElementById('draftTextarea');
             const html = editor ? editor.innerHTML : '';
+            const existingDraft = appData.drafts[currentDoc.id];
             let canvasData = null;
+            let canvasChanged = false;
             if (draftCanvas && draftCanvasDirty) {
-                canvasData = draftCanvas.toDataURL();
-                draftCanvasDirty = false;
-            } else if (appData.drafts[currentDoc.id] && appData.drafts[currentDoc.id].canvas) {
-                canvasData = appData.drafts[currentDoc.id].canvas;
+                try {
+                    canvasData = draftCanvas.toDataURL();
+                    canvasChanged = true;
+                    draftCanvasDirty = false;
+                } catch (e) {
+                    showToast(i18n('toast_storage_full'));
+                    return false;
+                }
+            } else if (existingDraft && existingDraft.canvas) {
+                canvasData = existingDraft.canvas;
             }
-            
-            appData.drafts[currentDoc.id] = { html: html, text: '', canvas: canvasData };
+
+            const nextDraft = { html: html, text: '', canvas: canvasData };
+            if (canvasData || (existingDraft && existingDraft._hasCanvasData)) {
+                nextDraft._hasCanvasData = true;
+            }
+            appData.drafts[currentDoc.id] = nextDraft;
             updateDraftInfo();
-            saveData();
+            // Text-only edits do not rewrite a 3000x3000 PNG. A changed canvas
+            // enters the blob-first generation queue instead.
+            saveData(canvasChanged ? currentDoc.id : false);
+            return true;
         }
 
         function saveDraftCanvasState() {
             if (!draftCanvas || !draftCtx) return;
+            if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) return;
             draftCanvasDirty = true;
-            var state = draftCtx.getImageData(0, 0, draftCanvas.width, draftCanvas.height);
+            let state;
+            try {
+                // A 3000x3000 ImageData is ~36 MiB. Keeping 30 raw snapshots was
+                // enough to terminate an iPad PWA after only a few strokes.
+                state = draftCanvas.toDataURL('image/png');
+            } catch (e) {
+                showToast(i18n('toast_storage_full'));
+                return;
+            }
+            draftHistoryLoadGeneration++;
             // 删除当前位置之后的历史
             draftHistory = draftHistory.slice(0, draftHistoryIndex + 1);
             draftHistory.push(state);
             draftHistoryIndex = draftHistory.length - 1;
             // 限制历史记录数量
-            if (draftHistory.length > 30) {
+            if (draftHistory.length > DRAFT_HISTORY_MAX) {
                 draftHistory.shift();
                 draftHistoryIndex--;
             }
         }
 
         function draftUndo() {
+            if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) return;
+            if ((typeof draftDrawing !== 'undefined' && draftDrawing)
+                    || (typeof draftPanActive !== 'undefined' && draftPanActive)) return;
             if (draftHistoryIndex > 0) {
                 draftHistoryIndex--;
                 loadDraftHistoryState(draftHistory[draftHistoryIndex]);
-            } else if (draftHistoryIndex === 0) {
-                draftHistoryIndex = -1;
-                draftCtx.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
-                draftCanvasDirty = true;
-                debouncedSaveDraft();
             }
         }
 
         function draftRedo() {
+            if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) return;
+            if ((typeof draftDrawing !== 'undefined' && draftDrawing)
+                    || (typeof draftPanActive !== 'undefined' && draftPanActive)) return;
             if (draftHistoryIndex < draftHistory.length - 1) {
                 draftHistoryIndex++;
                 loadDraftHistoryState(draftHistory[draftHistoryIndex]);
@@ -8752,7 +9364,75 @@
 
         function loadDraftHistoryState(state) {
             if (!draftCtx || !state) return;
-            draftCtx.putImageData(state, 0, 0);
+            if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) return;
+            const generation = ++draftHistoryLoadGeneration;
+            const targetCanvas = draftCanvas;
+            const targetCtx = draftCtx;
+            const docId = currentDoc.id;
+            if (typeof state === 'string') {
+                // The PNG is already the complete undo/redo target. Make it the
+                // authoritative draft before starting its asynchronous decode,
+                // otherwise an immediate document switch/close would invalidate
+                // the callback and silently discard the user's history action.
+                if (!appData.drafts) appData.drafts = {};
+                const existingDraft = appData.drafts[docId];
+                const editor = typeof document !== 'undefined'
+                    ? document.getElementById('draftTextarea') : null;
+                const html = editor
+                    ? editor.innerHTML
+                    : (existingDraft && typeof existingDraft.html === 'string' ? existingDraft.html : '');
+                appData.drafts[docId] = {
+                    html,
+                    text: '',
+                    canvas: state,
+                    _hasCanvasData: true
+                };
+                if (_draftSaveTimer) {
+                    clearTimeout(_draftSaveTimer);
+                    _draftSaveTimer = null;
+                }
+                draftCanvasDirty = false;
+                if (typeof saveData === 'function') saveData(docId);
+                draftCanvasReady = false;
+                cancelDraftCanvasImageLoader();
+                const img = new Image();
+                draftCanvasImageLoader = img;
+                const releaseImage = () => {
+                    if (draftCanvasImageLoader === img) draftCanvasImageLoader = null;
+                    img.onload = null;
+                    img.onerror = null;
+                    try { img.src = ''; } catch (e) {}
+                };
+                img.onload = () => {
+                    const isCurrent = generation === draftHistoryLoadGeneration && !!currentDoc
+                            && currentDoc.id === docId && draftCanvas === targetCanvas
+                            && draftCtx === targetCtx;
+                    if (isCurrent) {
+                        targetCtx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+                        targetCtx.drawImage(img, 0, 0);
+                        draftCanvasDirty = false;
+                        draftCanvasReady = true;
+                    }
+                    releaseImage();
+                };
+                img.onerror = () => {
+                    if (generation === draftHistoryLoadGeneration && currentDoc
+                            && currentDoc.id === docId && draftCanvas === targetCanvas
+                            && draftCtx === targetCtx) {
+                        // The target PNG is durable, but the visible canvas is
+                        // still the previous state. Keep editing disabled until
+                        // the panel is reloaded instead of drawing on the wrong base.
+                        draftCanvasReady = false;
+                        showToast(i18n('toast_image_load_failed'));
+                    }
+                    releaseImage();
+                };
+                img.src = state;
+                return;
+            }
+            // Defensive compatibility for any in-memory state created by an
+            // older script before a hot reload.
+            targetCtx.putImageData(state, 0, 0);
             draftCanvasDirty = true;
             debouncedSaveDraft();
         }
@@ -8767,7 +9447,7 @@
             document.getElementById('draftPenTools').classList.toggle('show', draftPenEnabled);
             
             appData.settings.draftPenEnabled = draftPenEnabled;
-            saveData();
+            saveData(false);
             
             if (draftPenEnabled) {
                 // 先刷新未保存的画布数据，防止下面 loadDraftCanvasData 用旧数据覆盖
@@ -8778,9 +9458,8 @@
                 }
                 setTimeout(() => {
                     resizeDraftCanvas();
-                    loadDraftCanvasData();
-                    if (draftHistory.length === 0 && draftCanvas) {
-                        saveDraftCanvasState();
+                    if (!currentDoc || draftCanvasDocId !== currentDoc.id || !draftCanvasReady) {
+                        loadDraftCanvasData();
                     }
                 }, 50);
             }
@@ -8797,7 +9476,7 @@
             
             appData.settings.draftPenEnabled = draftPenEnabled;
             appData.settings.draftEraserEnabled = draftEraserEnabled;
-            saveData();
+            saveData(false);
             
             if (draftEraserEnabled) {
                 // 先刷新未保存的画布数据，防止下面 loadDraftCanvasData 用旧数据覆盖
@@ -8808,9 +9487,8 @@
                 }
                 setTimeout(() => {
                     resizeDraftCanvas();
-                    loadDraftCanvasData();
-                    if (draftHistory.length === 0 && draftCanvas) {
-                        saveDraftCanvasState();
+                    if (!currentDoc || draftCanvasDocId !== currentDoc.id || !draftCanvasReady) {
+                        loadDraftCanvasData();
                     }
                 }, 50);
             }
@@ -8869,6 +9547,10 @@
         function initDraftCanvas() {
             draftCanvas = document.getElementById('draftCanvas');
             draftCtx = draftCanvas.getContext('2d');
+            if (!draftCtx) {
+                showToast(i18n('toast_storage_full'));
+                return;
+            }
             
             // 绑定事件（只绑定一次）
             if (!draftCanvas.bindedEvents) {
@@ -8918,14 +9600,56 @@
         
         function loadDraftCanvasData() {
             if (!draftCanvas || !draftCtx || !currentDoc) return;
-            const draftData = appData.drafts?.[currentDoc.id];
+            cancelDraftCanvasImageLoader();
+            resizeDraftCanvas();
+            const docId = currentDoc.id;
+            if (draftCanvasDocId !== docId) resetDraftCanvasForDocument(docId);
+            const targetCanvas = draftCanvas;
+            const targetCtx = draftCtx;
+            const draftData = appData.drafts?.[docId];
+            const generation = ++draftHistoryLoadGeneration;
+            draftCanvasReady = false;
+            draftCanvasDirty = false;
+            targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+            targetCtx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
             if (draftData && draftData.canvas) {
                 const img = new Image();
+                draftCanvasImageLoader = img;
+                const releaseImage = () => {
+                    if (draftCanvasImageLoader === img) draftCanvasImageLoader = null;
+                    img.onload = null;
+                    img.onerror = null;
+                    try { img.src = ''; } catch (e) {}
+                };
                 img.onload = () => {
-                    draftCtx.drawImage(img, 0, 0);
+                    const isCurrent = generation === draftHistoryLoadGeneration && currentDoc
+                            && currentDoc.id === docId && draftCanvasDocId === docId
+                            && draftCanvas === targetCanvas && draftCtx === targetCtx
+                            && !draftCanvasDirty;
+                    if (isCurrent) {
+                        targetCtx.drawImage(img, 0, 0);
+                        draftCanvasReady = true;
+                        captureDraftHistoryBaseline();
+                    }
+                    releaseImage();
+                };
+                img.onerror = () => {
+                    if (generation === draftHistoryLoadGeneration && currentDoc
+                            && currentDoc.id === docId && draftCanvasDocId === docId) {
+                        draftCanvasReady = false;
+                        showToast(i18n('toast_image_load_failed'));
+                    }
+                    releaseImage();
                 };
                 img.src = draftData.canvas;
+                return;
             }
+            if (_draftBlobBlockedDocIds.has(docId) || (draftData && draftData._hasCanvasData)) {
+                queueBlobsSaveToIDB(docId);
+                return;
+            }
+            draftCanvasReady = true;
+            captureDraftHistoryBaseline();
         }
         
         let draftPanActive = false;
@@ -8934,11 +9658,17 @@
 
         function handleDraftTouchStart(e) {
             if (!draftPenEnabled && !draftEraserEnabled) return;
+            if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) return;
             if (e.touches.length === 2) {
                 // Two-finger pan
                 e.preventDefault();
                 e.stopPropagation();
-                draftDrawing = false;
+                if (draftDrawing) {
+                    draftDrawing = false;
+                    draftCtx.globalCompositeOperation = 'source-over';
+                    saveDraftCanvasState();
+                    debouncedSaveDraft();
+                }
                 draftPanActive = true;
                 const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -8948,6 +9678,7 @@
             }
             if (e.touches.length !== 1) return;
             e.preventDefault();
+            draftHistoryLoadGeneration++;
             const touch = e.touches[0];
             const rect = draftCanvas.getBoundingClientRect();
             draftDrawing = true;
@@ -8996,6 +9727,9 @@
             draftCtx.lineCap = 'round';
             draftCtx.lineJoin = 'round';
             draftCtx.stroke();
+            // Make pagehide/document switches see an in-progress stroke even
+            // before touchend has had a chance to create its history snapshot.
+            draftCanvasDirty = true;
             
             draftLastX = x;
             draftLastY = y;
@@ -9008,6 +9742,14 @@
             if (draftDrawing) {
                 draftDrawing = false;
                 draftCtx.globalCompositeOperation = 'source-over';
+                if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) {
+                    // A storage failure can arrive while the pointer is already
+                    // down. Preserve that final in-flight stroke inline even
+                    // though no undo snapshot can safely be added.
+                    draftCanvasDirty = true;
+                    debouncedSaveDraft();
+                    return;
+                }
                 saveDraftCanvasState();
                 debouncedSaveDraft();
             }
@@ -9015,7 +9757,9 @@
 
         function startDraftDraw(e) {
             if (!draftPenEnabled && !draftEraserEnabled) return;
+            if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) return;
             e.preventDefault();
+            draftHistoryLoadGeneration++;
             draftDrawing = true;
             const rect = draftCanvas.getBoundingClientRect();
             draftLastX = e.clientX - rect.left;
@@ -9045,6 +9789,7 @@
             draftCtx.lineCap = 'round';
             draftCtx.lineJoin = 'round';
             draftCtx.stroke();
+            draftCanvasDirty = true;
             
             draftLastX = x;
             draftLastY = y;
@@ -9054,6 +9799,11 @@
             if (draftDrawing) {
                 draftDrawing = false;
                 draftCtx.globalCompositeOperation = 'source-over';
+                if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) {
+                    draftCanvasDirty = true;
+                    debouncedSaveDraft();
+                    return;
+                }
                 saveDraftCanvasState();
                 debouncedSaveDraft();
             }
@@ -9061,6 +9811,7 @@
 
         function clearDraftCanvas() {
             if (!draftCanvas || !draftCtx) return;
+            if (!currentDoc || !canEditDraftCanvas(currentDoc.id)) return;
             if (!confirm(i18n('confirm_delete'))) return;
             draftCtx.clearRect(0, 0, draftCanvas.width, draftCanvas.height);
             saveDraftCanvasState();
@@ -9331,7 +10082,7 @@
                         appData.papers.push(doc);
                     }
 
-                    saveData();
+                    saveData(false);
                     renderLibrary();
                     hideModal('uploadModal');
                     showToast(i18n('toast_added') + doc.title);
@@ -9556,6 +10307,17 @@
             if (idx === -1) return;
             
             list.splice(idx, 1);
+            _annotationBlobDeletedDocIds.add(id);
+            if (!Array.isArray(appData._blobDeletionTombstones)) {
+                appData._blobDeletionTombstones = [];
+            }
+            if (!appData._blobDeletionTombstones.includes(id)) {
+                appData._blobDeletionTombstones.push(id);
+            }
+            _blobMetadataPendingVersions.delete(id);
+            _annotationBlobBlockedDocIds.delete(id);
+            _draftBlobBlockedDocIds.delete(id);
+            if (appData.drafts) delete appData.drafts[id];
             
             // 同时删除相关的讲义数据
             if (appData.lectures && appData.lectures[id]) {
@@ -9568,14 +10330,9 @@
                 deleteAbstractContent(id);
             }
             
-            // 删除IndexedDB中的文件数据
-            deleteFileData(id);
-            // 删除标注大数据、草稿画布、截图（IndexedDB）
-            deleteFileData(annoKey(id)).catch(() => {});
-            deleteFileData(draftCanvasKey(id)).catch(() => {});
-            deleteFileData(screenshotKey(id)).catch(() => {});
-            
-            saveData();
+            // Commit the metadata deletion first. saveData promotes the
+            // tombstone to IDB cleanup only after localStorage succeeds.
+            saveData(false);
             renderLibrary();
             showToast(i18n('toast_deleted'));
             
@@ -9584,11 +10341,65 @@
         }
 
         // ==================== PDF Reader ====================
+        function destroyReaderPdfResources() {
+            const loadingTask = readerPdfLoadingTask;
+            readerPdfLoadingTask = null;
+            const loadedDocument = pdfDoc;
+            pdfDoc = null;
+            const destroyJobs = [];
+
+            if (loadingTask && typeof loadingTask.destroy === 'function') {
+                try {
+                    destroyJobs.push(Promise.resolve(loadingTask.destroy()).catch(() => {}));
+                } catch (e) {}
+            }
+            if (loadedDocument && typeof loadedDocument.destroy === 'function') {
+                try {
+                    destroyJobs.push(Promise.resolve(loadedDocument.destroy()).catch(() => {}));
+                } catch (e) {}
+            }
+
+            // A subsequent open waits for every earlier destroy to settle, so a
+            // large PDF worker cannot overlap its retained buffers with the next.
+            readerPdfCleanupPromise = Promise.all([
+                Promise.resolve(readerPdfCleanupPromise).catch(() => {}),
+                ...destroyJobs
+            ]).then(() => {});
+            return readerPdfCleanupPromise;
+        }
+
+        function disposeReaderDocumentResources() {
+            readerRenderGeneration++;
+            isRenderingAllPages = false;
+            readerVisibleRenderQueued = false;
+            isPinching = false;
+            if (scrollUpdateTimer) {
+                clearTimeout(scrollUpdateTimer);
+                scrollUpdateTimer = null;
+            }
+            releaseAllReaderCanvases();
+            resetReaderInkHistory();
+            const wrapper = document.getElementById('pdfCanvasWrapper');
+            if (wrapper) wrapper.replaceChildren();
+            const overlay = document.getElementById('readerRestoreOverlay');
+            if (overlay) overlay.style.display = 'none';
+            renderedPages.clear();
+            pageElements = {};
+            totalPages = 0;
+            return destroyReaderPdfResources();
+        }
+
         function openDoc(id, fromSwitchPage = false) {
             let doc = appData.books.find(b => b.id === id) || appData.papers.find(p => p.id === id);
             if (!doc) return;
 
+            if (currentDoc && currentDoc.id !== id) {
+                const draftPanel = document.getElementById('draftPanel');
+                if (draftPanel && draftPanel.classList.contains('show')) collapseDraftPanel();
+                else flushPendingDraftSave();
+            }
             currentDoc = doc;
+            if (draftCanvasDocId !== id) resetDraftCanvasForDocument(id);
             document.getElementById('readerTitle').textContent = doc.title;
             document.getElementById('welcomeReader').style.display = 'none';
             
@@ -9608,6 +10419,9 @@
             if (doc.type === 'pdf') {
                 loadPDF(doc);
             } else {
+                readerDocumentLoadGeneration++;
+                suppressScrollWriteback = false;
+                disposeReaderDocumentResources();
                 document.getElementById('pdfCanvasWrapper').innerHTML = `
                     <div style="padding:40px;text-align:center;color:var(--text-secondary);">
                         <p style="font-size:16px;font-weight:600;">${escapeHtml(doc.title)}</p>
@@ -9619,7 +10433,18 @@
         }
 
         async function loadPDF(doc) {
+            const documentLoadGeneration = ++readerDocumentLoadGeneration;
+            let scrollReleaseScheduled = false;
             try {
+                // Invalidate any render still finishing for the previous document,
+                // then release its GPU/heap resources before allocating the next.
+                suppressScrollWriteback = true;
+                await disposeReaderDocumentResources();
+                if (documentLoadGeneration !== readerDocumentLoadGeneration
+                        || !currentDoc || currentDoc.id !== doc.id) return;
+                await retryBlockedDocumentAnnotationHydration(doc);
+                if (documentLoadGeneration !== readerDocumentLoadGeneration
+                        || !currentDoc || currentDoc.id !== doc.id) return;
                 // 重置缩放倍率
                 userZoom = 1;
 
@@ -9652,13 +10477,40 @@
                     showToast(i18n('toast_file_data_lost'));
                     return;
                 }
+                if (documentLoadGeneration !== readerDocumentLoadGeneration
+                        || !currentDoc || currentDoc.id !== doc.id) return;
                 
-                const data = fileData.split(',')[1];
-                const raw = atob(data);
-                const uint8 = new Uint8Array(raw.length);
+                let data = fileData.split(',')[1];
+                let raw = atob(data);
+                let uint8 = new Uint8Array(raw.length);
                 for (let i = 0; i < raw.length; i++) uint8[i] = raw.charCodeAt(i);
 
-                pdfDoc = await pdfjsLib.getDocument({ data: uint8 }).promise;
+                const loadingTask = pdfjsLib.getDocument({ data: uint8 });
+                // PDF.js owns/transfers the byte buffer from here. Drop the
+                // temporary data-URL/base64/binary copies before parsing pages.
+                fileData = null;
+                data = null;
+                raw = null;
+                uint8 = null;
+                readerPdfLoadingTask = loadingTask;
+                let loadedPdfDoc;
+                try {
+                    loadedPdfDoc = await loadingTask.promise;
+                } catch (loadError) {
+                    if (readerPdfLoadingTask === loadingTask && typeof loadingTask.destroy === 'function') {
+                        readerPdfLoadingTask = null;
+                        try { await loadingTask.destroy(); } catch (e) {}
+                    }
+                    throw loadError;
+                } finally {
+                    if (readerPdfLoadingTask === loadingTask) readerPdfLoadingTask = null;
+                }
+                if (documentLoadGeneration !== readerDocumentLoadGeneration
+                        || !currentDoc || currentDoc.id !== doc.id) {
+                    try { await loadedPdfDoc.destroy(); } catch (e) {}
+                    return;
+                }
+                pdfDoc = loadedPdfDoc;
                 totalPages = pdfDoc.numPages;
                 doc.totalPages = totalPages;
                 currentPage = doc.currentPage || 1;
@@ -9678,6 +10530,7 @@
                 }
                 // 所有模式都使用连续滚动渲染
                 await renderAllPDFPages();
+                if (documentLoadGeneration !== readerDocumentLoadGeneration) return;
 
                 // iOS Safari 的 layout 是懒的，第一次设置 scrollTop 可能因容器未完成布局而无效。
                 // 用 rAF + 短延迟重试几次，确保滚动位置真的落在目标页上。
@@ -9685,6 +10538,7 @@
                     const container = document.getElementById('readerContainer');
                     for (let attempt = 0; attempt < 5; attempt++) {
                         await new Promise(r => requestAnimationFrame(() => r()));
+                        if (documentLoadGeneration !== readerDocumentLoadGeneration) return;
                         const pageData = pageElements[savedPage];
                         if (pageData && pageData.placeholder) {
                             const target = pageData.placeholder.offsetTop - 12;
@@ -9696,6 +10550,11 @@
                         }
                         await new Promise(r => setTimeout(r, 50));
                     }
+                    if (documentLoadGeneration !== readerDocumentLoadGeneration) return;
+                    // If the first pre-render scroll was ignored by Safari's lazy
+                    // layout, render the now-positioned target window explicitly.
+                    await renderVisiblePages();
+                    if (documentLoadGeneration !== readerDocumentLoadGeneration) return;
                     currentPage = savedPage;
                     document.getElementById('pageInfo').textContent = `${currentPage} / ${totalPages}`;
                     // 再等一帧让 iOS 真正把目标页绘制到屏幕，再淡出遮罩
@@ -9707,8 +10566,16 @@
                     }
                 }
                 // 放开 scroll 回写（延迟一点点避免最后一次 scroll 事件抢先写回）
-                setTimeout(() => { suppressScrollWriteback = false; }, 400);
+                scrollReleaseScheduled = true;
+                setTimeout(() => {
+                    if (documentLoadGeneration === readerDocumentLoadGeneration) {
+                        suppressScrollWriteback = false;
+                    }
+                }, 400);
             } catch(err) {
+                if (documentLoadGeneration !== readerDocumentLoadGeneration) return;
+                await disposeReaderDocumentResources();
+                if (documentLoadGeneration !== readerDocumentLoadGeneration) return;
                 // 出错时一定要把遮罩收掉，不然用户看不到错误提示
                 const overlay = document.getElementById('readerRestoreOverlay');
                 if (overlay) overlay.style.display = 'none';
@@ -9719,72 +10586,136 @@
                         <p>${i18n('pdf_load_failed')}</p>
                         <p style="font-size:13px;margin-top:8px;">${err.message}</p>
                     </div>`;
+            } finally {
+                if (!scrollReleaseScheduled && documentLoadGeneration === readerDocumentLoadGeneration) {
+                    suppressScrollWriteback = false;
+                }
             }
         }
 
         // ==================== Continuous Scroll Mode (Note Mode) ====================
+        // A PDF page has both a PDF canvas and a same-sized annotation canvas. Keep
+        // each backing store modest on memory-constrained iPad PWAs and allow a
+        // scale below 1 at high zoom so the cap remains real.
+        const READER_MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
         let renderedPages = new Set();
         let pageElements = {};
         let isRenderingAllPages = false;
+        let readerRenderGeneration = 0;
+        let readerDocumentLoadGeneration = 0;
+        let readerVisibleRenderPromise = null;
+        let readerVisibleRenderQueued = false;
 
         let suppressScrollWriteback = false;
 
         async function renderAllPDFPages() {
             if (!pdfDoc || isRenderingAllPages) return;
             isRenderingAllPages = true;
+            const renderGeneration = ++readerRenderGeneration;
+            const sourcePdfDoc = pdfDoc;
 
             const wrapper = document.getElementById('pdfCanvasWrapper');
+            releaseAllReaderCanvases();
+            resetReaderInkHistory();
             wrapper.innerHTML = '';
             renderedPages.clear();
             pageElements = {};
 
-            // 创建所有页面的占位符
-            for (let i = 1; i <= totalPages; i++) {
-                const page = await pdfDoc.getPage(i);
-                const scale = getReaderRenderScale(page);
-                const viewport = page.getViewport({ scale });
+            try {
+                // 创建所有页面的占位符
+                for (let i = 1; i <= totalPages; i++) {
+                    const page = await sourcePdfDoc.getPage(i);
+                    if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc) return;
+                    const scale = getReaderRenderScale(page);
+                    const viewport = page.getViewport({ scale });
 
-                const placeholder = document.createElement('div');
-                placeholder.className = 'pdf-page-placeholder';
-                placeholder.dataset.page = i;
-                placeholder.style.width = viewport.width + 'px';
-                placeholder.style.height = viewport.height + 'px';
-                placeholder.style.background = '#fff';
-                placeholder.style.boxShadow = 'var(--shadow)';
-                placeholder.style.position = 'relative';
-                
-                pageElements[i] = { placeholder, viewport, rendered: false };
-                wrapper.appendChild(placeholder);
-            }
+                    const placeholder = document.createElement('div');
+                    placeholder.className = 'pdf-page-placeholder';
+                    placeholder.dataset.page = i;
+                    placeholder.style.width = viewport.width + 'px';
+                    placeholder.style.height = viewport.height + 'px';
+                    placeholder.style.background = '#fff';
+                    placeholder.style.boxShadow = 'var(--shadow)';
+                    placeholder.style.position = 'relative';
 
-            if (einkMode) {
-                isRenderingAllPages = false;
-                setupEinkReaderTapZones();
-                einkShowPage(currentPage || 1);
-            } else {
-                // 渲染可见页面和附近页面
-                await renderVisiblePages();
-
-                // 滚动到当前页
-                if (currentPage > 1 && pageElements[currentPage]) {
-                    const targetEl = pageElements[currentPage].placeholder;
-                    const container = document.getElementById('readerContainer');
-                    container.scrollTop = targetEl.offsetTop - 12;
+                    pageElements[i] = { placeholder, viewport, rendered: false };
+                    wrapper.appendChild(placeholder);
                 }
 
-                isRenderingAllPages = false;
-            }
+                if (einkMode) {
+                    isRenderingAllPages = false;
+                    setupEinkReaderTapZones();
+                    einkShowPage(currentPage || 1);
+                } else {
+                    // Position the placeholder list before allocating canvases.
+                    // Deep-page restore must not first render the page-one window
+                    // and then allocate a second 3-screen window at the target.
+                    if (currentPage > 1 && pageElements[currentPage]) {
+                        const targetEl = pageElements[currentPage].placeholder;
+                        const container = document.getElementById('readerContainer');
+                        container.scrollTop = targetEl.offsetTop - 12;
+                    }
+                    // 渲染可见页面和附近页面
+                    await renderVisiblePages();
+                    if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc) return;
 
-            // 设置滚动监听
-            setupScrollListener();
+                    // 滚动到当前页
+                    if (currentPage > 1 && pageElements[currentPage]) {
+                        const targetEl = pageElements[currentPage].placeholder;
+                        const container = document.getElementById('readerContainer');
+                        container.scrollTop = targetEl.offsetTop - 12;
+                    }
+
+                    isRenderingAllPages = false;
+                }
+
+                // 设置滚动监听
+                setupScrollListener();
+            } finally {
+                if (renderGeneration === readerRenderGeneration) isRenderingAllPages = false;
+            }
         }
 
         async function renderVisiblePages() {
+            readerVisibleRenderQueued = true;
+            if (readerVisibleRenderPromise) return readerVisibleRenderPromise;
+
+            const run = (async () => {
+                while (readerVisibleRenderQueued) {
+                    readerVisibleRenderQueued = false;
+                    await renderVisiblePagesPass();
+                }
+            })();
+            readerVisibleRenderPromise = run;
+            try {
+                await run;
+            } finally {
+                if (readerVisibleRenderPromise === run) readerVisibleRenderPromise = null;
+            }
+        }
+
+        async function renderVisiblePagesPass() {
             const container = document.getElementById('readerContainer');
             const containerRect = container.getBoundingClientRect();
             const scrollTop = container.scrollTop;
             const viewportTop = scrollTop - containerRect.height;
             const viewportBottom = scrollTop + containerRect.height * 2;
+
+            const releaseOutsideKeepWindow = candidateScrollTop => {
+                const keepTop = candidateScrollTop - containerRect.height * 2;
+                const keepBottom = candidateScrollTop + containerRect.height * 3;
+                for (let i = 1; i <= totalPages; i++) {
+                    const pageData = pageElements[i];
+                    if (!pageData || !pageData.rendered || pageData.renderingPromise) continue;
+                    const pageTop = pageData.placeholder.offsetTop;
+                    const pageBottom = pageTop + pageData.placeholder.offsetHeight;
+                    if (pageBottom < keepTop || pageTop > keepBottom) releaseReaderPage(i);
+                }
+            };
+
+            // On a large scroll jump, release the old window before creating the
+            // new one so two full sets of PDF+annotation canvases never overlap.
+            releaseOutsideKeepWindow(scrollTop);
 
             for (let i = 1; i <= totalPages; i++) {
                 const pageData = pageElements[i];
@@ -9799,39 +10730,85 @@
                     await renderSinglePage(i);
                 }
             }
+
+            // Keep a wider hysteresis window than the render window so normal
+            // scrolling does not repeatedly create and destroy the same page.
+            // Releasing the backing stores is essential on iPad Safari: removing
+            // a canvas from the DOM alone does not promptly return its memory.
+            releaseOutsideKeepWindow(container.scrollTop);
         }
 
         async function renderSinglePage(pageNum) {
             const pageData = pageElements[pageNum];
             if (!pageData || pageData.rendered) return;
+            if (pageData.renderingPromise) return pageData.renderingPromise;
+            const renderGeneration = readerRenderGeneration;
+            const sourcePdfDoc = pdfDoc;
 
-            const page = await pdfDoc.getPage(pageNum);
+            pageData.renderingPromise = (async () => {
+
+            const page = await sourcePdfDoc.getPage(pageNum);
+            if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc
+                    || pageElements[pageNum] !== pageData) {
+                try { page.cleanup(); } catch (e) {}
+                return;
+            }
             const viewport = pageData.viewport;
             const placeholder = pageData.placeholder;
 
             // 限制canvas实际像素，zoom大时降低DPR避免内存爆炸
-            const maxCanvasPixels = 4096 * 4096; // ~16M pixels
             let dpr = window.devicePixelRatio || 1;
             const rawPixels = viewport.width * dpr * viewport.height * dpr;
-            if (rawPixels > maxCanvasPixels) {
-                dpr = Math.sqrt(maxCanvasPixels / (viewport.width * viewport.height));
+            if (rawPixels > READER_MAX_CANVAS_PIXELS) {
+                dpr = Math.sqrt(READER_MAX_CANVAS_PIXELS / (viewport.width * viewport.height));
             }
-            dpr = Math.max(1, dpr);
+            let backingWidth = Math.max(1, Math.floor(viewport.width * dpr));
+            let backingHeight = Math.max(1, Math.floor(viewport.height * dpr));
+            if (backingWidth * backingHeight > READER_MAX_CANVAS_PIXELS) {
+                if (backingWidth >= backingHeight) {
+                    backingWidth = Math.max(1, Math.floor(READER_MAX_CANVAS_PIXELS / backingHeight));
+                } else {
+                    backingHeight = Math.max(1, Math.floor(READER_MAX_CANVAS_PIXELS / backingWidth));
+                }
+            }
+            const outputScaleX = backingWidth / Math.max(1, viewport.width);
+            const outputScaleY = backingHeight / Math.max(1, viewport.height);
 
             const canvas = document.createElement('canvas');
-            canvas.width = Math.round(viewport.width * dpr);
-            canvas.height = Math.round(viewport.height * dpr);
+            // Track the backing store before it enters the DOM. Closing or
+            // switching documents while PDF.js is rendering can then release it
+            // immediately instead of waiting for Safari's garbage collector.
+            pageData.renderCanvas = canvas;
+            canvas.width = backingWidth;
+            canvas.height = backingHeight;
             canvas.style.width = viewport.width + 'px';
             canvas.style.height = viewport.height + 'px';
             canvas.style.display = 'block';
 
             const ctx = canvas.getContext('2d');
-            ctx.scale(dpr, dpr);
+            if (!ctx) {
+                canvas.width = 0;
+                canvas.height = 0;
+                throw new Error('Unable to allocate PDF canvas context');
+            }
+            ctx.scale(outputScaleX, outputScaleY);
 
-            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+            try {
+                await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+            } finally {
+                try { page.cleanup(); } catch (e) {}
+            }
+            if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc
+                    || pageElements[pageNum] !== pageData) {
+                canvas.width = 0;
+                canvas.height = 0;
+                if (pageData.renderCanvas === canvas) pageData.renderCanvas = null;
+                return;
+            }
 
             placeholder.innerHTML = '';
             placeholder.appendChild(canvas);
+            if (pageData.renderCanvas === canvas) pageData.renderCanvas = null;
             placeholder.classList.add('pdf-page-wrapper');
             placeholder.classList.remove('pdf-page-placeholder');
 
@@ -9839,31 +10816,70 @@
             const annoCanvas = document.createElement('canvas');
             annoCanvas.className = 'annotation-canvas';
             annoCanvas.dataset.pageNum = pageNum;
-            annoCanvas.width = Math.round(viewport.width * dpr);
-            annoCanvas.height = Math.round(viewport.height * dpr);
+            annoCanvas.width = backingWidth;
+            annoCanvas.height = backingHeight;
             annoCanvas.style.width = viewport.width + 'px';
             annoCanvas.style.height = viewport.height + 'px';
             annoCanvas.style.pointerEvents = penMode ? 'auto' : 'none';
 
             const annoCtx = annoCanvas.getContext('2d');
-            annoCtx.scale(dpr, dpr);
+            if (!annoCtx) {
+                annoCanvas.width = 0;
+                annoCanvas.height = 0;
+                canvas.width = 0;
+                canvas.height = 0;
+                throw new Error('Unable to allocate annotation canvas context');
+            }
+            annoCtx.scale(outputScaleX, outputScaleY);
 
             // 保存引用到 pageData 供其他模块使用
             pageData.annoCanvas = annoCanvas;
             pageData.annoCtx = annoCtx;
 
+            const drawingState = createReaderDrawingState(pageNum, annoCanvas, annoCtx, viewport);
+
             // 恢复该页的绘图数据
             const pageDrawing = getDocAnnotation(currentDoc.id, pageNum, 'drawing');
             if (pageDrawing) {
+                drawingState.baseReady = false;
                 const img = new Image();
+                drawingState.baseLoader = img;
                 img.onload = () => {
-                    annoCtx.drawImage(img, 0, 0, viewport.width, viewport.height);
+                    drawingState.baseLoader = null;
+                    if (readerDrawingStates.get(pageNum) !== drawingState || !annoCanvas.isConnected) return;
+                    // The input guard waits for this decode. Replay defensively
+                    // in case an operation was queued by another command path.
+                    drawingState.baseImage = img;
+                    drawingState.baseReady = true;
+                    redrawReaderDrawingState(drawingState, true);
+                    if (drawingState.pendingSave) {
+                        drawingState.pendingSave = false;
+                        saveDrawingForPage(pageNum, annoCanvas);
+                    }
+                };
+                img.onerror = () => {
+                    drawingState.baseLoader = null;
+                    if (readerDrawingStates.get(pageNum) !== drawingState || !annoCanvas.isConnected) return;
+                    drawingState.baseReady = true;
+                    drawingState.baseLoadFailed = true;
+                    drawingState.pendingSave = false;
+                    // Input is blocked until the base is ready, so there should
+                    // be no fresh ink to merge here. Clear defensive residue,
+                    // preserve the durable PNG, and allow a later render to retry.
+                    if (activePenStroke && activePenStroke.pageNum === pageNum) rollbackActivePenStroke();
+                    drawingState.operations = [];
+                    strokeHistory = strokeHistory.filter(entry => entry.pageNum !== pageNum);
+                    redoHistory = redoHistory.filter(entry => entry.pageNum !== pageNum);
+                    redrawReaderDrawingState(drawingState, false);
+                    updateUndoRedoButtons();
+                    console.warn('[reader] annotation base image decode failed; preserving stored drawing');
+                    showToast(i18n('toast_image_load_failed'));
                 };
                 img.src = pageDrawing;
             }
 
             // 画笔交互逻辑 —— 每页自带
-            attachPenInteraction(annoCanvas, annoCtx, pageNum, viewport);
+            attachPenInteraction(annoCanvas, annoCtx, pageNum, viewport, drawingState);
 
             placeholder.appendChild(annoCanvas);
 
@@ -9877,10 +10893,223 @@
             if (!penMode) {
                 buildReaderTextLayer(pageNum);
             }
+
+            })();
+
+            try {
+                await pageData.renderingPromise;
+            } catch (err) {
+                if (pageData.renderCanvas) {
+                    pageData.renderCanvas.width = 0;
+                    pageData.renderCanvas.height = 0;
+                    pageData.renderCanvas = null;
+                }
+                pageData.rendered = false;
+                if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc
+                        || pageElements[pageNum] !== pageData) return;
+                throw err;
+            } finally {
+                pageData.renderingPromise = null;
+            }
         }
 
-        // 把画笔交互绑定到单个页面的批注 canvas 上
-        // 每页独立拥有 pointer 交互，但全局共享 strokeHistory / redoHistory（E: 全局 undo stack）
+        function releaseReaderPage(pageNum) {
+            const pageData = pageElements[pageNum];
+            if (!pageData || !pageData.rendered || pageData.renderingPromise) return;
+            if (pageNum === currentPage || (activePenStroke && activePenStroke.pageNum === pageNum)) return;
+            const drawingState = readerDrawingStates.get(pageNum);
+            if (drawingState && drawingState.pendingSave) return;
+
+            const placeholder = pageData.placeholder;
+            placeholder.querySelectorAll('canvas').forEach(canvas => {
+                canvas.width = 0;
+                canvas.height = 0;
+            });
+            placeholder.replaceChildren();
+            placeholder.classList.remove('pdf-page-wrapper');
+            placeholder.classList.add('pdf-page-placeholder');
+            pageData.annoCanvas = null;
+            pageData.annoCtx = null;
+            pageData.textLayer = null;
+            pageData.rendered = false;
+            renderedPages.delete(pageNum);
+            releaseReaderDrawingStateResources(drawingState);
+            readerDrawingStates.delete(pageNum);
+            strokeHistory = strokeHistory.filter(entry => entry.pageNum !== pageNum);
+            redoHistory = redoHistory.filter(entry => entry.pageNum !== pageNum);
+            if (currentAnnoCanvas && parseInt(currentAnnoCanvas.dataset.pageNum) === pageNum) {
+                currentAnnoCanvas = null;
+                currentAnnoCtx = null;
+            }
+            updateUndoRedoButtons();
+        }
+
+        function releaseAllReaderCanvases() {
+            Object.values(pageElements || {}).forEach(pageData => {
+                if (!pageData || !pageData.placeholder) return;
+                if (pageData.renderCanvas) {
+                    pageData.renderCanvas.width = 0;
+                    pageData.renderCanvas.height = 0;
+                    pageData.renderCanvas = null;
+                }
+                pageData.placeholder.querySelectorAll('canvas').forEach(canvas => {
+                    canvas.width = 0;
+                    canvas.height = 0;
+                });
+            });
+        }
+
+        // Reader undo/redo stores vector operations rather than full-page
+        // ImageData snapshots. A Retina iPad page can exceed 20 MiB per snapshot;
+        // the old 30-step stack alone could terminate the PWA.
+        function createReaderDrawingState(pageNum, canvas, ctx, viewport) {
+            const state = {
+                pageNum,
+                canvas,
+                ctx,
+                viewport,
+                baseImage: null,
+                baseLoader: null,
+                baseReady: true,
+                baseLoadFailed: false,
+                pendingSave: false,
+                operations: [],
+                activeOperation: null
+            };
+            readerDrawingStates.set(pageNum, state);
+            return state;
+        }
+
+        function drawReaderOperation(state, operation) {
+            if (!state || !operation) return;
+            const ctx = state.ctx;
+            if (operation.type === 'image') {
+                if (operation.image) {
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'source-over';
+                    ctx.drawImage(operation.image, operation.x, operation.y, operation.width, operation.height);
+                    ctx.restore();
+                }
+                return;
+            }
+            const points = operation.points || [];
+            if (points.length < 2) return;
+            ctx.save();
+            ctx.globalCompositeOperation = operation.composite || 'source-over';
+            ctx.strokeStyle = operation.color || '#000000';
+            ctx.lineWidth = operation.width || 1;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function redrawReaderDrawingState(state, includeActive) {
+            if (!state || !state.canvas || !state.ctx) return;
+            const ctx = state.ctx;
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+            ctx.restore();
+            if (state.baseImage) {
+                ctx.drawImage(state.baseImage, 0, 0, state.viewport.width, state.viewport.height);
+            }
+            state.operations.forEach(operation => drawReaderOperation(state, operation));
+            if (includeActive && state.activeOperation) drawReaderOperation(state, state.activeOperation);
+        }
+
+        function releaseReaderDrawingStateResources(state) {
+            if (!state) return;
+            if (state.baseLoader) {
+                const loader = state.baseLoader;
+                state.baseLoader = null;
+                loader.onload = null;
+                loader.onerror = null;
+                try { loader.src = ''; } catch (e) {}
+            }
+            if (state.baseImage && state.baseImage.tagName === 'CANVAS') {
+                state.baseImage.width = 0;
+                state.baseImage.height = 0;
+            } else if (state.baseImage && state.baseImage.tagName === 'IMG') {
+                state.baseImage.onload = null;
+                state.baseImage.onerror = null;
+                try { state.baseImage.src = ''; } catch (e) {}
+            }
+            (state.operations || []).forEach(operation => {
+                if (operation.type === 'image') operation.image = null;
+            });
+            state.baseImage = null;
+            state.operations = [];
+            state.activeOperation = null;
+        }
+
+        function compactReaderDrawingState(state) {
+            if (!state || !state.canvas || !state.baseReady || state.baseLoadFailed
+                    || state.activeOperation
+                    || state.operations.length < READER_INK_HISTORY_MAX * 2) return;
+            const compactCount = state.operations.length - READER_INK_HISTORY_MAX;
+            if (compactCount <= 0) return;
+
+            // Bake only operations that have already fallen out of the undo
+            // window. The retained tail remains vector-based and undoable.
+            const checkpoint = document.createElement('canvas');
+            checkpoint.width = state.canvas.width;
+            checkpoint.height = state.canvas.height;
+            const checkpointCtx = checkpoint.getContext('2d');
+            if (!checkpointCtx) {
+                checkpoint.width = 0;
+                checkpoint.height = 0;
+                return;
+            }
+            const scaleX = checkpoint.width / Math.max(1, state.viewport.width);
+            const scaleY = checkpoint.height / Math.max(1, state.viewport.height);
+            checkpointCtx.scale(scaleX, scaleY);
+            if (state.baseImage) {
+                checkpointCtx.drawImage(state.baseImage, 0, 0, state.viewport.width, state.viewport.height);
+            }
+            const compacted = state.operations.slice(0, compactCount);
+            const checkpointState = { ...state, canvas: checkpoint, ctx: checkpointCtx };
+            compacted.forEach(operation => drawReaderOperation(checkpointState, operation));
+
+            const oldBase = state.baseImage;
+            state.baseImage = checkpoint;
+            state.operations.splice(0, compactCount);
+            const compactedSet = new Set(compacted);
+            strokeHistory = strokeHistory.filter(entry => !compactedSet.has(entry.operation));
+            redoHistory = redoHistory.filter(entry => !compactedSet.has(entry.operation));
+            compacted.forEach(operation => {
+                if (operation.type === 'image') operation.image = null;
+            });
+            if (oldBase && oldBase.tagName === 'CANVAS') {
+                oldBase.width = 0;
+                oldBase.height = 0;
+            } else if (oldBase && oldBase.tagName === 'IMG') {
+                oldBase.onload = null;
+                oldBase.onerror = null;
+                try { oldBase.src = ''; } catch (e) {}
+            }
+            redrawReaderDrawingState(state, false);
+            updateUndoRedoButtons();
+        }
+
+        function drawReaderOperationSegment(state, operation, from, to) {
+            const ctx = state.ctx;
+            ctx.save();
+            ctx.globalCompositeOperation = operation.composite;
+            ctx.strokeStyle = operation.color;
+            ctx.lineWidth = operation.width;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(from.x, from.y);
+            ctx.lineTo(to.x, to.y);
+            ctx.stroke();
+            ctx.restore();
+        }
+
         // 模块级：当前正在进行的画笔绘制（若有），用于被多指手势抢占时回滚已画内容
         let activePenStroke = null; // { pageNum, annoCanvas, annoCtx, cancel: () => void }
 
@@ -9892,9 +11121,9 @@
             }
         }
 
-        function attachPenInteraction(annoCanvas, annoCtx, pageNum, viewport) {
+        function attachPenInteraction(annoCanvas, annoCtx, pageNum, viewport, drawingState) {
             let drawing = false;
-            let lastX, lastY;
+            let activePointerId = -1;
 
             function pointerToCanvasXY(e) {
                 const rect = annoCanvas.getBoundingClientRect();
@@ -9905,139 +11134,148 @@
                 return { x: (e.clientX - rect.left) * rx, y: (e.clientY - rect.top) * ry };
             }
 
-            // 结束当前笔画（不 commit），把 canvas 恢复到本次 pointerdown 之前的状态
             function cancelCurrentStroke() {
                 if (!drawing) return;
                 drawing = false;
                 activePointerId = -1;
-                annoCtx.globalCompositeOperation = 'source-over';
-                // strokeHistory 栈顶就是 pointerdown 时入栈的 pre-stroke 快照
-                const top = strokeHistory[strokeHistory.length - 1];
-                if (top && top.annoCanvas === annoCanvas) {
-                    strokeHistory.pop();
-                    annoCtx.putImageData(top.imageData, 0, 0);
-                    updateUndoRedoButtons();
+                drawingState.activeOperation = null;
+                redrawReaderDrawingState(drawingState, false);
+                if (activePenStroke && activePenStroke.pageNum === pageNum) activePenStroke = null;
+            }
+
+            function commitCurrentStroke() {
+                if (!drawing) return;
+                drawing = false;
+                activePointerId = -1;
+                const operation = drawingState.activeOperation;
+                drawingState.activeOperation = null;
+                if (activePenStroke && activePenStroke.pageNum === pageNum) activePenStroke = null;
+                if (!operation || !operation.points || operation.points.length < 2) {
+                    redrawReaderDrawingState(drawingState, false);
+                    return;
+                }
+                drawingState.operations.push(operation);
+                strokeHistory.push({ pageNum, operation });
+                if (strokeHistory.length > READER_INK_HISTORY_MAX) strokeHistory.shift();
+                redoHistory = [];
+                updateUndoRedoButtons();
+                saveDrawingForPage(pageNum, annoCanvas);
+                if (drawingState.operations.length >= READER_INK_HISTORY_MAX * 2) {
+                    compactReaderDrawingState(drawingState);
                 }
             }
 
-            // 跟踪当前活动笔画的 pointerId，防止中途丢失
-            let activePointerId = -1;
-
             annoCanvas.addEventListener('pointerdown', (e) => {
-                if (isPinching) return;
-                if (!penMode) return;
-                // Apple Pencil 模式：仅 Pencil 书写，忽略手指
-                if (applePencilMode && e.pointerType === 'touch') return;
+                if (isPinching || !penMode || drawing) return;
+                // Apple Pencil mode means exactly that: mouse/touch/unknown
+                // pointers scroll or navigate, and only a pen may create ink.
+                if (applePencilMode && !booxReaderIsPen(e)) return;
+                // Decode the durable page image before accepting new ink. This
+                // closes the window where switch/close/zoom could discard vector
+                // operations that had not yet been merged into the PNG.
+                if (!drawingState.baseReady) {
+                    e.preventDefault();
+                    return;
+                }
+                if (drawingState.baseLoadFailed) {
+                    e.preventDefault();
+                    showToast(i18n('toast_image_load_failed'));
+                    return;
+                }
+                if (currentDoc && !canEditDocumentAnnotations(currentDoc.id)) {
+                    e.preventDefault();
+                    return;
+                }
                 e.preventDefault();
-                // 锁定 pointer，防止 pointerleave / pointercancel
                 try { annoCanvas.setPointerCapture(e.pointerId); } catch(err) {}
                 activePointerId = e.pointerId;
-                // 入栈当前页快照，供撤销回滚（全局 stack 里带 pageNum）
-                saveStrokeState(pageNum, annoCanvas);
                 drawing = true;
                 currentAnnoCanvas = annoCanvas;
                 currentAnnoCtx = annoCtx;
-                // 把"当前活动画笔"暴露出去，让多指手势能抢占
-                activePenStroke = { pageNum, annoCanvas, annoCtx, cancel: cancelCurrentStroke };
                 const p = pointerToCanvasXY(e);
-                lastX = p.x; lastY = p.y;
-                if (readerEraserMode) {
-                    annoCtx.globalCompositeOperation = 'destination-out';
-                    annoCtx.strokeStyle = 'rgba(0,0,0,1)';
-                    annoCtx.lineWidth = Math.max(penSize * 6, 16);
-                } else {
-                    annoCtx.globalCompositeOperation = 'source-over';
-                    annoCtx.strokeStyle = penColor;
-                    annoCtx.lineWidth = penSize;
-                }
-                annoCtx.lineCap = 'round';
-                annoCtx.lineJoin = 'round';
+                drawingState.activeOperation = {
+                    type: 'stroke',
+                    composite: readerEraserMode ? 'destination-out' : 'source-over',
+                    color: readerEraserMode ? 'rgba(0,0,0,1)' : penColor,
+                    width: readerEraserMode ? Math.max(penSize * 6, 16) : penSize,
+                    points: [p]
+                };
+                activePenStroke = { pageNum, annoCanvas, annoCtx, cancel: cancelCurrentStroke };
             });
 
             annoCanvas.addEventListener('pointermove', (e) => {
-                if (isPinching) { 
-                    // 多指手势已抢占，若还在 drawing，回滚并退出
+                if (isPinching) {
                     if (drawing) cancelCurrentStroke();
-                    return; 
+                    return;
                 }
-                if (!penMode || !drawing) return;
-                // 只跟踪同一个 pointer
-                if (e.pointerId !== activePointerId) return;
-                // Apple Pencil 模式：忽略手指
-                if (applePencilMode && e.pointerType === 'touch') return;
-                const p = pointerToCanvasXY(e);
-                annoCtx.beginPath();
-                annoCtx.moveTo(lastX, lastY);
-                annoCtx.lineTo(p.x, p.y);
-                annoCtx.stroke();
-                lastX = p.x; lastY = p.y;
+                if (!penMode || !drawing || e.pointerId !== activePointerId) return;
+                const operation = drawingState.activeOperation;
+                if (!operation) return;
+                let events = null;
+                try { events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null; } catch (err) {}
+                if (!events || !events.length) events = [e];
+                for (const eventPoint of events) {
+                    const point = pointerToCanvasXY(eventPoint);
+                    const previous = operation.points[operation.points.length - 1];
+                    if (point.x === previous.x && point.y === previous.y) continue;
+                    operation.points.push(point);
+                    drawReaderOperationSegment(drawingState, operation, previous, point);
+                }
                 e.preventDefault();
             });
 
             annoCanvas.addEventListener('pointerup', (e) => {
-                if (e.pointerId !== activePointerId && activePointerId !== -1) return;
-                if (!penMode || !drawing) { drawing = false; activePenStroke = null; activePointerId = -1; return; }
-                drawing = false;
-                activePenStroke = null;
-                activePointerId = -1;
-                redoHistory = [];
-                updateUndoRedoButtons();
-                annoCtx.globalCompositeOperation = 'source-over';
-                saveDrawingForPage(pageNum, annoCanvas);
+                if (e.pointerId !== activePointerId) return;
+                commitCurrentStroke();
+                e.preventDefault();
             });
 
             annoCanvas.addEventListener('pointerleave', (e) => {
-                // setPointerCapture 后 pointerleave 不再意外触发，此处仅作保底
-                if (e.pointerId !== activePointerId && activePointerId !== -1) return;
-                if (!penMode || !drawing) { drawing = false; activePenStroke = null; activePointerId = -1; return; }
-                drawing = false;
-                activePenStroke = null;
-                activePointerId = -1;
-                annoCtx.globalCompositeOperation = 'source-over';
-                saveDrawingForPage(pageNum, annoCanvas);
+                if (e.pointerId === activePointerId) commitCurrentStroke();
             });
 
             annoCanvas.addEventListener('pointercancel', (e) => {
-                if (penMode && drawing) {
-                    cancelCurrentStroke();
-                    activePenStroke = null;
-                    activePointerId = -1;
-                }
+                if (e.pointerId === activePointerId) cancelCurrentStroke();
             });
 
-            // Apple Pencil 模式：手指单指触摸时手动滚动阅读器容器
-            // 使用 touchType 区分手指和 Pencil（iOS 13+: 'direct' = 手指, 'stylus' = Pencil）
+            // Apple Pencil 模式：手指单指触摸时手动滚动阅读器容器。
+            // touch-action:none is retained so Safari cannot steal Pencil strokes.
+            let _apScrollLastX = 0;
             let _apScrollLastY = 0;
             let _apScrollActive = false;
 
             annoCanvas.addEventListener('touchstart', (e) => {
-                if (!penMode || !applePencilMode) return;
-                if (e.touches.length === 1) {
-                    const t = e.touches[0];
-                    // touchType: 'direct' = 手指, 'stylus' = Apple Pencil
-                    if (t.touchType === 'stylus') return; // Pencil 由 pointer 事件处理
-                    _apScrollActive = true;
-                    _apScrollLastY = t.clientY;
-                    // 不 preventDefault，让 pointer 事件正常分发（但 touch-action:none 阻止了浏览器默认滚动）
-                }
+                _apScrollActive = false;
+                if (!penMode || !applePencilMode || isPinching || e.touches.length !== 1) return;
+                const touch = e.touches[0];
+                if (touch.touchType === 'stylus') return;
+                _apScrollActive = true;
+                _apScrollLastX = touch.clientX;
+                _apScrollLastY = touch.clientY;
             }, { passive: true });
 
             annoCanvas.addEventListener('touchmove', (e) => {
-                if (!_apScrollActive || !applePencilMode) return;
-                if (e.touches.length === 1) {
-                    const t = e.touches[0];
-                    if (t.touchType === 'stylus') return;
-                    const deltaY = t.clientY - _apScrollLastY;
-                    _apScrollLastY = t.clientY;
-                    const container = document.getElementById('readerContainer');
-                    if (container) container.scrollTop -= deltaY;
-                    e.preventDefault();
+                if (!_apScrollActive || !applePencilMode || isPinching || e.touches.length !== 1) {
+                    _apScrollActive = false;
+                    return;
                 }
+                const touch = e.touches[0];
+                if (touch.touchType === 'stylus') { _apScrollActive = false; return; }
+                const deltaX = touch.clientX - _apScrollLastX;
+                const deltaY = touch.clientY - _apScrollLastY;
+                _apScrollLastX = touch.clientX;
+                _apScrollLastY = touch.clientY;
+                const container = document.getElementById('readerContainer');
+                if (container) {
+                    if (typeof container.scrollLeft === 'number') container.scrollLeft -= deltaX;
+                    container.scrollTop -= deltaY;
+                }
+                e.preventDefault();
             }, { passive: false });
 
-            annoCanvas.addEventListener('touchend', () => {
-                _apScrollActive = false;
-            }, { passive: true });
+            const stopFingerScroll = () => { _apScrollActive = false; };
+            annoCanvas.addEventListener('touchend', stopFingerScroll, { passive: true });
+            annoCanvas.addEventListener('touchcancel', stopFingerScroll, { passive: true });
         }
 
         function renderPageNoteMarkers(pageWrapper, pageNum) {
@@ -10164,13 +11402,14 @@
 
         // 删除一条标注（按对象引用），并刷新当前页圆点
         function deleteDocAnnotation(docId, annotation) {
+            if (!canEditDocumentAnnotations(docId)) return;
             const doc = ensureDocAnnotations(docId);
             if (!doc || !doc.annotations) return;
             const idx = doc.annotations.indexOf(annotation);
             if (idx > -1) {
                 doc.annotations.splice(idx, 1);
                 doc.annotationsUpdatedAt = Date.now();
-                saveData();
+                saveData(docId);
                 if (pdfDoc && currentPage === annotation.page) refreshPageMarkers(annotation.page);
             }
         }
@@ -10239,7 +11478,7 @@
                     currentDoc.currentPage = currentPage;
                     currentDoc.progress = Math.round((currentPage / totalPages) * 100);
                     currentDoc.progressUpdatedAt = Date.now();
-                    saveData();
+                    saveData(false);
                 }
             }
         }
@@ -10271,7 +11510,7 @@
                     currentDoc.currentPage = pageNum;
                     currentDoc.progress = Math.round((pageNum / totalPages) * 100);
                     currentDoc.progressUpdatedAt = Date.now();
-                    saveData();
+                    saveData(false);
                 }
             }
         }
@@ -10297,7 +11536,7 @@
                 currentDoc.currentPage = pageNum;
                 currentDoc.progress = Math.round((pageNum / totalPages) * 100);
                 currentDoc.progressUpdatedAt = Date.now();
-                saveData();
+                saveData(false);
             }
             applyReaderInputMode();
         }
@@ -10358,12 +11597,25 @@
         }
 
         // Drawing state
+        const READER_INK_HISTORY_MAX = 200;
         let penColor = '#000000';
         let penSize = 1;
-        let strokeHistory = [];  // undo stack
+        let readerDrawingStates = new Map();
+        let strokeHistory = [];  // [{ pageNum, operation }]
         let redoHistory = [];
         let currentAnnoCanvas = null;
         let currentAnnoCtx = null;
+
+        function resetReaderInkHistory() {
+            rollbackActivePenStroke();
+            strokeHistory = [];
+            redoHistory = [];
+            readerDrawingStates.forEach(releaseReaderDrawingStateResources);
+            readerDrawingStates.clear();
+            currentAnnoCanvas = null;
+            currentAnnoCtx = null;
+            updateUndoRedoButtons();
+        }
 
         // renderPDFPage 原本是画笔模式的单页渲染。
         // 现在所有模式都使用连续滚动，此函数变成"跳转到目标页"的转发器，
@@ -10400,14 +11652,30 @@
         }
 
         function setDocAnnotation(docId, page, type, data) {
+            if (!canEditDocumentAnnotations(docId)) return false;
             const doc = ensureDocAnnotations(docId);
-            if (!doc) return;
-            // Remove old drawing for this page (only keep latest)
+            if (!doc) return false;
+            const now = new Date().toISOString();
+            const next = { page, type, data, createdAt: now };
+            // Keep the stable blob id when replacing a page drawing so an older
+            // in-flight write can never be restored onto unrelated metadata.
             if (type === 'drawing') {
-                doc.annotations = doc.annotations.filter(a => !(a.page === page && a.type === 'drawing'));
+                const existingIndex = doc.annotations.findIndex(a => a.page === page && a.type === 'drawing');
+                if (existingIndex >= 0) {
+                    const existing = doc.annotations[existingIndex];
+                    next.createdAt = existing.createdAt || now;
+                    next._blobId = ensureAnnotationBlobId(existing);
+                    doc.annotations[existingIndex] = next;
+                } else {
+                    ensureAnnotationBlobId(next);
+                    doc.annotations.push(next);
+                }
+            } else {
+                ensureAnnotationBlobId(next);
+                doc.annotations.push(next);
             }
-            doc.annotations.push({ page, type, data, createdAt: new Date().toISOString() });
             doc.annotationsUpdatedAt = Date.now();
+            return true;
         }
 
         // 只刷新指定页的笔记标记，不重建整个 PDF 渲染，避免破坏正在画的标注
@@ -10443,9 +11711,20 @@
         // 把某页当前 canvas 的内容保存到文档（持久化）
         function saveDrawingForPage(pageNum, annoCanvas) {
             if (!currentDoc || !annoCanvas) return;
+            const drawingState = readerDrawingStates.get(pageNum);
+            if (drawingState && drawingState.canvas === annoCanvas && drawingState.baseLoadFailed) {
+                // Never overwrite the last durable PNG with a partial canvas.
+                return;
+            }
+            if (drawingState && drawingState.canvas === annoCanvas && !drawingState.baseReady) {
+                // Avoid replacing a persisted drawing with a partial canvas while
+                // its base PNG is still decoding. onload performs the merged save.
+                drawingState.pendingSave = true;
+                return;
+            }
             const dataUrl = annoCanvas.toDataURL('image/png');
-            setDocAnnotation(currentDoc.id, pageNum, 'drawing', dataUrl);
-            saveData();
+            if (!setDocAnnotation(currentDoc.id, pageNum, 'drawing', dataUrl)) return;
+            saveData(currentDoc.id);
         }
 
         // 旧接口，作用于 currentAnnoCanvas（保持兼容，用在导出等路径）
@@ -10456,70 +11735,43 @@
         }
 
         // ---- Undo / Redo ----
-        // strokeHistory / redoHistory 是全局栈，每个条目是 { pageNum, annoCanvas, imageData }
-        // 按操作发生的时间顺序撤销，跨页
-        function saveStrokeState(pageNum, annoCanvas) {
-            annoCanvas = annoCanvas || currentAnnoCanvas;
-            if (!annoCanvas) return;
-            const ctx = annoCanvas.getContext('2d');
-            const w = annoCanvas.width;
-            const h = annoCanvas.height;
-            strokeHistory.push({
-                pageNum: pageNum || parseInt(annoCanvas.dataset.pageNum) || currentPage,
-                annoCanvas: annoCanvas,
-                imageData: ctx.getImageData(0, 0, w, h)
-            });
-            // 限制历史步数 30
-            if (strokeHistory.length > 30) strokeHistory.shift();
-        }
-
+        // The global timeline contains only lightweight vector/image operations.
+        // Each page redraws its persisted base PNG plus the remaining operations.
         function undoStroke() {
             if (strokeHistory.length === 0) return;
             const entry = strokeHistory.pop();
-            const canvas = entry.annoCanvas;
-            // 如果该 canvas 已被回收（翻页太远被清）则跳过
-            if (!canvas || !canvas.isConnected) {
+            const state = readerDrawingStates.get(entry.pageNum);
+            if (!state || !state.canvas || !state.canvas.isConnected) {
                 updateUndoRedoButtons();
-                return undoStroke(); // 尝试下一个
+                return undoStroke();
             }
-            const ctx = canvas.getContext('2d');
-            const w = canvas.width, h = canvas.height;
-            // 当前状态入 redo
-            redoHistory.push({
-                pageNum: entry.pageNum,
-                annoCanvas: canvas,
-                imageData: ctx.getImageData(0, 0, w, h)
-            });
-            ctx.putImageData(entry.imageData, 0, 0);
-            // 如果这个页面不在当前视窗，滚动到那页以让用户看到效果
-            if (entry.pageNum !== currentPage) {
-                scrollToPage(entry.pageNum);
+            const operationIndex = state.operations.lastIndexOf(entry.operation);
+            if (operationIndex < 0) {
+                updateUndoRedoButtons();
+                return undoStroke();
             }
+            state.operations.splice(operationIndex, 1);
+            redoHistory.push(entry);
+            redrawReaderDrawingState(state, false);
+            if (entry.pageNum !== currentPage) scrollToPage(entry.pageNum);
             updateUndoRedoButtons();
-            saveDrawingForPage(entry.pageNum, canvas);
+            saveDrawingForPage(entry.pageNum, state.canvas);
         }
 
         function redoStroke() {
             if (redoHistory.length === 0) return;
             const entry = redoHistory.pop();
-            const canvas = entry.annoCanvas;
-            if (!canvas || !canvas.isConnected) {
+            const state = readerDrawingStates.get(entry.pageNum);
+            if (!state || !state.canvas || !state.canvas.isConnected) {
                 updateUndoRedoButtons();
                 return redoStroke();
             }
-            const ctx = canvas.getContext('2d');
-            const w = canvas.width, h = canvas.height;
-            strokeHistory.push({
-                pageNum: entry.pageNum,
-                annoCanvas: canvas,
-                imageData: ctx.getImageData(0, 0, w, h)
-            });
-            ctx.putImageData(entry.imageData, 0, 0);
-            if (entry.pageNum !== currentPage) {
-                scrollToPage(entry.pageNum);
-            }
+            state.operations.push(entry.operation);
+            strokeHistory.push(entry);
+            redrawReaderDrawingState(state, false);
+            if (entry.pageNum !== currentPage) scrollToPage(entry.pageNum);
             updateUndoRedoButtons();
-            saveDrawingForPage(entry.pageNum, canvas);
+            saveDrawingForPage(entry.pageNum, state.canvas);
         }
 
         function updateUndoRedoButtons() {
@@ -10559,6 +11811,7 @@
                 showToast(i18n('toast_enable_pen_first'));
                 return;
             }
+            if (currentDoc && !canEditDocumentAnnotations(currentDoc.id)) return;
             // 使用当前页的 annoCanvas
             const pageData = pageElements[currentPage];
             if (!pageData || !pageData.annoCanvas) {
@@ -10582,14 +11835,19 @@
                 return;
             }
             const annoCanvas = pageData.annoCanvas;
-            const annoCtx = pageData.annoCtx;
             const reader = new FileReader();
             reader.onload = function(ev) {
                 const img = new Image();
                 img.onload = function() {
-                    const dpr = window.devicePixelRatio || 1;
-                    const canvasCssWidth = annoCanvas.width / dpr;
-                    const canvasCssHeight = annoCanvas.height / dpr;
+                    const state = readerDrawingStates.get(pageNum);
+                    if (!state || state.canvas !== annoCanvas || !annoCanvas.isConnected) return;
+                    if (!currentDoc || !canEditDocumentAnnotations(currentDoc.id)) return;
+                    if (!state.baseReady || state.baseLoadFailed) {
+                        showToast(i18n('toast_image_load_failed'));
+                        return;
+                    }
+                    const canvasCssWidth = parseFloat(annoCanvas.style.width) || state.viewport.width;
+                    const canvasCssHeight = parseFloat(annoCanvas.style.height) || state.viewport.height;
                     let targetW = canvasCssWidth * 0.4;
                     let targetH = targetW * (img.height / img.width);
                     const maxH = canvasCssHeight * 0.4;
@@ -10599,14 +11857,17 @@
                     }
                     const x = (canvasCssWidth - targetW) / 2;
                     const y = (canvasCssHeight - targetH) / 2;
-                    saveStrokeState(pageNum, annoCanvas);
-                    const prevComposite = annoCtx.globalCompositeOperation;
-                    annoCtx.globalCompositeOperation = 'source-over';
-                    annoCtx.drawImage(img, x, y, targetW, targetH);
-                    annoCtx.globalCompositeOperation = prevComposite || 'source-over';
+                    const operation = { type: 'image', image: img, x, y, width: targetW, height: targetH };
+                    state.operations.push(operation);
+                    drawReaderOperation(state, operation);
+                    strokeHistory.push({ pageNum, operation });
+                    if (strokeHistory.length > READER_INK_HISTORY_MAX) strokeHistory.shift();
                     redoHistory = [];
                     updateUndoRedoButtons();
                     saveDrawingForPage(pageNum, annoCanvas);
+                    if (state.operations.length >= READER_INK_HISTORY_MAX * 2) {
+                        compactReaderDrawingState(state);
+                    }
                 };
                 img.onerror = function() {
                     showToast(i18n('toast_image_load_failed'));
@@ -11133,10 +12394,20 @@
         }
 
         function closeReader() {
+            // Flush while currentDoc still identifies the draft owner. Clearing
+            // it first would either drop the debounced stroke or write it into
+            // whichever document opens next.
+            flushPendingDraftSave();
+            resetDraftCanvasForDocument(null);
             closeAllNoteBubbles();
             hideReaderSelectionMenu();
             clearReaderTextSelection();
             einkPendingSelection = null;
+            readerDocumentLoadGeneration++;
+            disposeReaderDocumentResources();
+            currentPage = 1;
+            currentDoc = null;
+            suppressScrollWriteback = false;
             switchPage(1);
             renderLibrary();
         }
@@ -12177,7 +13448,13 @@
             }
             if (ov.parentElement !== host) host.appendChild(ov);
             const w = host.clientWidth, h = host.clientHeight;
-            if (ov.width !== w || ov.height !== h) { ov.width = w; ov.height = h; }
+            const outputScale = Math.min(1, Math.sqrt(READER_MAX_CANVAS_PIXELS / Math.max(1, w * h)));
+            const backingWidth = Math.max(1, Math.round(w * outputScale));
+            const backingHeight = Math.max(1, Math.round(h * outputScale));
+            if (ov.width !== backingWidth || ov.height !== backingHeight) {
+                ov.width = backingWidth;
+                ov.height = backingHeight;
+            }
             ov.style.width = w + 'px';
             ov.style.height = h + 'px';
             return ov;
@@ -12188,7 +13465,10 @@
             const ov = einkEnsureSelectOverlay(zone);
             try { zone.setPointerCapture(e.pointerId); } catch (err) {}
             einkSel = { zone: zone, page: pageNum, pointerId: e.pointerId, pts: [{ x: e.clientX, y: e.clientY }], moved: false };
-            if (ov) ov.getContext('2d').clearRect(0, 0, ov.width, ov.height);
+            if (ov) {
+                const ctx = ov.getContext('2d');
+                if (ctx) ctx.clearRect(0, 0, ov.width, ov.height);
+            }
         }
 
         function einkSelectMove(e) {
@@ -12202,6 +13482,7 @@
             if (cr.width <= 0 || cr.height <= 0) return;
             const rx = ov.width / cr.width, ry = ov.height / cr.height;
             const ctx = ov.getContext('2d');
+            if (!ctx) return;
             ctx.clearRect(0, 0, ov.width, ov.height);
             ctx.save();
             // 与笔记页面 nbDrawOverlay 的套索完全相同：蓝色、1.5px、[6,5] 虚线。
@@ -12220,7 +13501,10 @@
 
         function einkSelectClearOverlay() {
             const ov = document.getElementById('einkSelectOverlay');
-            if (ov) ov.getContext('2d').clearRect(0, 0, ov.width, ov.height);
+            if (ov) {
+                const ctx = ov.getContext('2d');
+                if (ctx) ctx.clearRect(0, 0, ov.width, ov.height);
+            }
         }
 
         function einkSelectCancel() {
@@ -12300,6 +13584,11 @@
             crop.width = Math.max(1, Math.round(sw * outputScale));
             crop.height = Math.max(1, Math.round(sh * outputScale));
             const ctx = crop.getContext('2d');
+            if (!ctx) {
+                crop.width = 0;
+                crop.height = 0;
+                return null;
+            }
             ctx.setTransform(outputScale, 0, 0, outputScale, 0, 0);
             ctx.fillStyle = '#fff';
             ctx.fillRect(0, 0, sw, sh);
@@ -12317,7 +13606,11 @@
                 try { ctx.drawImage(c, sx, sy, sw, sh, 0, 0, sw, sh); } catch (err) {}
             });
             if (lasso && lasso.length > 2) ctx.restore();
-            try { return crop.toDataURL('image/jpeg', 0.7); } catch (err) { return null; }
+            let dataUrl = null;
+            try { dataUrl = crop.toDataURL('image/jpeg', 0.7); } catch (err) {}
+            crop.width = 0;
+            crop.height = 0;
+            return dataUrl;
         }
 
         let einkPendingSelection = null;
@@ -12398,8 +13691,9 @@
                 ] }];
                 const aiResponse = await callAI(i18n('prompt_math_explain'), messages)
                     || i18n('chat_no_ai_answer');
-                addDocAiComment(docId, sel.page, sel.cx, sel.cy, aiResponse, userDesc);
-                showToast(i18n('toast_note_added'));
+                if (addDocAiComment(docId, sel.page, sel.cx, sel.cy, aiResponse, userDesc)) {
+                    showToast(i18n('toast_note_added'));
+                }
             } catch (err) {
                 console.error(err);
                 showToast(i18n('toast_ai_request_failed') + (err && err.message ? err.message : ''));
@@ -12408,15 +13702,18 @@
 
         // 以 note 标注形式保存 AI 评论（ai:true），复用计数圆点 marker + 悬浮框渲染
         function addDocAiComment(docId, page, x, y, text, question) {
+            if (!canEditDocumentAnnotations(docId)) return false;
             const doc = ensureDocAnnotations(docId);
-            if (!doc) return;
+            if (!doc) return false;
             doc.annotations.push({
                 page, type: 'note', ai: true, x, y, text,
                 question: question || '',
                 createdAt: new Date().toISOString()
             });
             doc.annotationsUpdatedAt = Date.now();
-            saveData();
+            // AI comments contain text metadata only; no canvas transaction is
+            // needed unless a later edit adds handwritten note data.
+            saveData(false);
             const pageData = pageElements[page];
             if (pdfDoc && currentDoc && currentDoc.id === docId && pageData && pageData.rendered) {
                 refreshPageMarkers(page);
@@ -12431,6 +13728,7 @@
                     }, 60);
                 }
             }
+            return true;
         }
 
         // 翻页/切模式/关阅读器时取消套索，并兼容清理历史原生选区。
@@ -12470,6 +13768,9 @@
             let lassoPointerId = null;
             let finger = null;  // { x, y, t, moved }
             let suppressNextLassoClick = false;
+            let pencilModeFingerScrollActive = false;
+            let pencilModeFingerScrollLastX = 0;
+            let pencilModeFingerScrollLastY = 0;
 
             // pointerup 后浏览器可能补发 click；阻止它冒泡后立即关闭刚弹出的问 AI 菜单。
             layer.addEventListener('click', e => {
@@ -12480,18 +13781,22 @@
 
             layer.addEventListener('pointerdown', function (e) {
                 if (penMode || isPinching || e.button === 2) return;
+                const isPen = booxReaderIsPen(e);
+                // In an iPad PWA, Apple Pencil mode reserves the lasso for the
+                // Pencil. A finger is handled by the touch scroll path below.
+                if (applePencilMode && !einkMode && !isPen) return;
                 suppressNextLassoClick = false;
                 hideReaderSelectionMenu();
                 einkPendingSelection = null;
 
-                if (!einkMode || booxReaderIsPen(e)) {
+                if (!einkMode || isPen) {
                     lassoPointerId = e.pointerId;
                     einkSelectStart(layer, pageNum, e);
                     e.preventDefault();
                     return;
                 }
                 // 墨水屏手指：按点触处理（翻页/看评论）。
-                finger = { x: e.clientX, y: e.clientY, t: Date.now(), moved: false };
+                finger = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now(), moved: false };
                 e.preventDefault();
             });
 
@@ -12502,7 +13807,8 @@
                     e.preventDefault();
                     return;
                 }
-                if (finger && (Math.abs(e.clientX - finger.x) > 10 || Math.abs(e.clientY - finger.y) > 10)) {
+                if (finger && finger.pointerId === e.pointerId
+                        && (Math.abs(e.clientX - finger.x) > 10 || Math.abs(e.clientY - finger.y) > 10)) {
                     finger.moved = true;
                 }
             });
@@ -12514,7 +13820,7 @@
                     e.preventDefault();
                     return;
                 }
-                if (finger) {
+                if (finger && finger.pointerId === e.pointerId) {
                     const ft = finger; finger = null;
                     if (ft.moved || isPinching) return;
                     if (Date.now() - ft.t > 700) return;
@@ -12523,16 +13829,88 @@
                 }
             });
 
-            layer.addEventListener('pointercancel', function () {
-                if (lassoPointerId !== null) { einkSelectCancel(); lassoPointerId = null; }
-                finger = null;
+            layer.addEventListener('pointercancel', function (e) {
+                if (lassoPointerId === e.pointerId) { einkSelectCancel(); lassoPointerId = null; }
+                if (finger && finger.pointerId === e.pointerId) finger = null;
             });
+
+            // Keep touch-action:none so Safari cannot turn a vertical Pencil
+            // lasso into page panning and pointercancel. Direct finger touches
+            // scroll the reader manually while Apple Pencil mode is enabled.
+            layer.addEventListener('touchstart', function (e) {
+                pencilModeFingerScrollActive = false;
+                if (penMode || !applePencilMode || einkMode || isPinching || e.touches.length !== 1) return;
+                const touch = e.touches[0];
+                if (touch.touchType === 'stylus') return;
+                pencilModeFingerScrollActive = true;
+                pencilModeFingerScrollLastX = touch.clientX;
+                pencilModeFingerScrollLastY = touch.clientY;
+            }, { passive: true });
+
+            layer.addEventListener('touchmove', function (e) {
+                if (!pencilModeFingerScrollActive || !applePencilMode || einkMode
+                        || isPinching || e.touches.length !== 1) {
+                    pencilModeFingerScrollActive = false;
+                    return;
+                }
+                const touch = e.touches[0];
+                if (touch.touchType === 'stylus') {
+                    pencilModeFingerScrollActive = false;
+                    return;
+                }
+                const deltaX = touch.clientX - pencilModeFingerScrollLastX;
+                const deltaY = touch.clientY - pencilModeFingerScrollLastY;
+                pencilModeFingerScrollLastX = touch.clientX;
+                pencilModeFingerScrollLastY = touch.clientY;
+                const container = document.getElementById('readerContainer');
+                if (container) {
+                    if (typeof container.scrollLeft === 'number') container.scrollLeft -= deltaX;
+                    container.scrollTop -= deltaY;
+                }
+                e.preventDefault();
+            }, { passive: false });
+
+            const stopPencilModeFingerScroll = () => { pencilModeFingerScrollActive = false; };
+            layer.addEventListener('touchend', stopPencilModeFingerScroll, { passive: true });
+            layer.addEventListener('touchcancel', stopPencilModeFingerScroll, { passive: true });
         }
+
+        function readerPenModeOwnsEventTarget(target) {
+            const container = document.getElementById('readerContainer');
+            return !!(penMode && container && target
+                && (target === container || container.contains(target)));
+        }
+
+        function blockReaderNativeSelectionInPenMode(e) {
+            if (!e || !readerPenModeOwnsEventTarget(e.target)) return;
+            e.preventDefault();
+            if (typeof e.stopPropagation === 'function') e.stopPropagation();
+        }
+
+        function clearNativeReaderSelectionInPenMode() {
+            if (!penMode) return;
+            const container = document.getElementById('readerContainer');
+            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+            if (!container || !selection || !selection.rangeCount) return;
+            const anchor = selection.anchorNode;
+            const focus = selection.focusNode;
+            if ((anchor && container.contains(anchor)) || (focus && container.contains(focus))) {
+                selection.removeAllRanges();
+            }
+        }
+
+        // Capture before Safari's default handlers. selectionchange is the
+        // final safety net for iOS versions that skip a cancelable selectstart.
+        ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
+            document.addEventListener(type, blockReaderNativeSelectionInPenMode, true);
+        });
+        document.addEventListener('selectionchange', clearNativeReaderSelectionInPenMode, true);
 
         // 按当前画笔/套索模式调整页面分层；只有墨水屏套索模式需要把当前页抬到翻页热区之上。
         function applyReaderInputMode() {
             const lassoMode = !penMode;
             const einkLassoMode = einkMode && lassoMode;
+            document.body.classList.toggle('reader-pen-mode', penMode);
             for (let i = 1; i <= totalPages; i++) {
                 const pd = pageElements[i];
                 if (!pd || !pd.placeholder) continue;
@@ -12541,6 +13919,8 @@
                 if (pd.textLayer) {
                     pd.textLayer.style.pointerEvents = lassoMode ? 'auto' : 'none';
                     pd.textLayer.style.touchAction = lassoMode ? 'none' : 'auto';
+                    pd.textLayer.style.webkitUserSelect = penMode ? 'none' : 'text';
+                    pd.textLayer.style.userSelect = penMode ? 'none' : 'text';
                 }
                 if (lassoMode && pd.rendered) buildReaderTextLayer(i);
             }
@@ -12709,7 +14089,7 @@
                     appData.notes = cloud.notes || {};
                     appData.archived = cloud.archived || [];
                     // Merge books/papers metadata (keep local file data)
-                    saveData();
+                    saveData(true);
                     renderLibrary();
                     showToast(i18n('toast_restore_success'));
                 } else {
@@ -13174,7 +14554,9 @@
                             }
                         }
 
-                        saveData();
+                        // Cloud metadata may contain inline annotation PNGs from
+                        // older clients; queue one explicit all-document import.
+                        saveData(true);
                         refreshAllUIFromAppData();
                     }
                 } catch (e) {
@@ -15530,7 +16912,9 @@
                 if (!appData.exercises) appData.exercises = { folders: [], wrongByFolder: {}, archivedWrong: {} };
                 appData.settings = { ...metadata.settings, ...localApiSettings, r2Config: localR2Config };
                 appDataLoaded = true;
-                saveData();
+                // A startup merge can introduce annotation blobs from another
+                // device, so this rare path intentionally persists every doc.
+                saveData(true);
                 refreshAllUIFromAppData();
                 if (config.lastSyncTime || metadata.syncedAt) {
                     r2LastSyncTime = metadata.syncedAt || config.lastSyncTime;
@@ -15809,7 +17193,7 @@
                 // 用户主动从云端完整恢复，数据可信，允许后续上传
                 appDataLoaded = true;
 
-                saveData();
+                saveData(true);
                 
                 // 2. 下载PDF文件
                 let downloadedFiles = 0;
@@ -16264,7 +17648,9 @@
                 }
                 showToast(i18n('packing_zip_backup'));
                 if (typeof saveExercisesToIDB === 'function') await saveExercisesToIDB();
-                backupAppDataToIDB();
+                // Also refresh the crash-recovery metadata before packaging.
+                // saveData passes a blob-free snapshot into the throttled backup.
+                saveData(false);
 
                 // Resolve and validate every recording before snapshotting IndexedDB.
                 // Metadata and recording bytes intentionally live in different stores,
@@ -16521,6 +17907,13 @@
                     console.warn('未知导出格式:', imported.exportFormat);
                 }
                 const oldSettings = appData.settings || {};
+                // Stop new annotation writes and let any old-generation IDB
+                // transaction settle before replacing metadata/imported blobs.
+                _annotationBlobRestoreFinished = false;
+                while (_blobSaveInFlight) {
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                }
+                _annotationBlobDeletedDocIds.clear();
                 appData = {
                     books: imported.books || [],
                     papers: imported.papers || [],
@@ -16658,8 +18051,9 @@
                     await deleteFileData('classroom_' + id).catch(() => {});
                 }
                 if (typeof saveExercisesToIDB === 'function') await saveExercisesToIDB();
-                saveData();
                 await restoreBlobsFromIDB();
+                await migrateAnnotationsToIDB();
+                saveData();
                 applySettings();
                 renderLibrary();
                 renderNotesPage();
@@ -20352,6 +21746,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         async function rebuildPagesForZoom(newZoom, focusPageNum) {
             if (_pinchRebuildScheduled) return;
             _pinchRebuildScheduled = true;
+            const rebuildDocumentGeneration = readerDocumentLoadGeneration;
+            const rebuildDocId = currentDoc && currentDoc.id;
             userZoom = newZoom;
 
             const container = document.getElementById('readerContainer');
@@ -20380,6 +21776,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 for (let k in pageElements) { if (pageElements[k]) pageElements[k].rendered = false; }
                 isRenderingAllPages = false;
                 await renderAllPDFPages();
+                if (rebuildDocumentGeneration !== readerDocumentLoadGeneration
+                        || !currentDoc || currentDoc.id !== rebuildDocId) return;
 
                 // 恢复滚动位置：把焦点页面放回视口中原来的相对位置
                 const newFocusData = pageElements[focusPageNum];
@@ -20390,7 +21788,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 currentPage = savedPage;
                 document.getElementById('pageInfo').textContent = `${currentPage} / ${totalPages}`;
             } finally {
-                suppressScrollWriteback = false;
+                if (rebuildDocumentGeneration === readerDocumentLoadGeneration) {
+                    suppressScrollWriteback = false;
+                }
                 _pinchRebuildScheduled = false;
             }
         }
@@ -20420,6 +21820,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
             function getCenterX(t1, t2) { return (t1.clientX + t2.clientX) / 2; }
             function getCenterY(t1, t2) { return (t1.clientY + t2.clientY) / 2; }
+            function hasTwoDirectFingerTouches(touches) {
+                return touches.length === 2
+                    && touches[0].touchType !== 'stylus'
+                    && touches[1].touchType !== 'stylus';
+            }
 
             // 根据屏幕坐标找到当前焦点所在的页码
             function getPageAtPoint(container, clientY) {
@@ -20442,7 +21847,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (!wrapper) return;
                 readerContainerEl = container;
 
-                if (e.touches.length === 2) {
+                if (hasTwoDirectFingerTouches(e.touches)) {
                     isPinching = true;
                     hideReaderSelectionMenu();
                     clearReaderTextSelection();
@@ -20466,7 +21871,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }, { passive: false });
 
             document.addEventListener('touchmove', (e) => {
-                if (e.touches.length !== 2 || !pinchCandidate || initialDistance <= 0 || !wrapper) return;
+                if (!hasTwoDirectFingerTouches(e.touches) || !pinchCandidate || initialDistance <= 0 || !wrapper) return;
 
                 const dist = getDistance(e.touches[0], e.touches[1]);
                 const cy = getCenterY(e.touches[0], e.touches[1]);
@@ -20573,13 +21978,19 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             document.addEventListener('gesturestart', (e) => {
                 const container = document.getElementById('readerContainer');
                 if (!container || !container.closest('.page.active')) return;
+                // A stylus plus one finger must not be promoted to a pinch and
+                // cancel the Pencil stroke/lasso already in progress.
+                if (activePenStroke || einkSel) {
+                    e.preventDefault();
+                    return;
+                }
                 e.preventDefault();
                 _gestureActive = true;
                 gestureBaseZoom = userZoom;
             });
             document.addEventListener('gesturechange', (e) => {
                 const container = document.getElementById('readerContainer');
-                if (!container || !container.closest('.page.active')) return;
+                if (!_gestureActive || !container || !container.closest('.page.active')) return;
                 e.preventDefault();
                 wrapper = document.getElementById('pdfCanvasWrapper');
                 if (!wrapper) return;
@@ -20594,7 +22005,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             });
             document.addEventListener('gestureend', (e) => {
                 const container = document.getElementById('readerContainer');
-                if (!container || !container.closest('.page.active')) return;
+                if (!_gestureActive || !container || !container.closest('.page.active')) return;
                 e.preventDefault();
                 _gestureActive = false;
                 wrapper = document.getElementById('pdfCanvasWrapper');

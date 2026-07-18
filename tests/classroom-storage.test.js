@@ -648,7 +648,6 @@ test('full backup drops an orphan body when its recording is deleted during pref
             exercises: { folders: [], wrongByFolder: {}, archivedWrong: {} }
         },
         saveExercisesToIDB: async () => {},
-        saveData: () => true,
         backupAppDataToIDB: () => {},
         cleanDocForSync: value => value,
         stripLectureContent: value => value,

@@ -13424,7 +13424,8 @@
         async function resumePendingClassroomSync() {
             await r2StartupMetadataReady.catch(() => {});
             const config = appData.settings?.r2Config;
-            if (!config?.accessKeyId || !config.autoSyncOnChange) return;
+            if (!config?.accessKeyId ||
+                (!config.autoSyncEnabled && !config.autoSyncOnChange)) return;
             const tasks = [];
             const seen = new Set();
             const add = (fileId, action) => {
@@ -14473,7 +14474,7 @@
             const next = previous.catch(() => {}).then(async () => {
                 const config = appData.settings && appData.settings.r2Config;
                 if (!appDataLoaded || !notebookId || !config || !config.accessKeyId ||
-                    !config.autoSyncOnChange) return;
+                    (!config.autoSyncEnabled && !config.autoSyncOnChange)) return;
                 let nb = (appData.notebooks?.items || []).find(item => item && item.id === notebookId);
                 if (!nb || !nb.lastOpenedPageId || !r2NotebookPositionTimestamp(nb)) return;
 
@@ -14516,10 +14517,11 @@
                 return;
             }
             const config = appData.settings.r2Config;
-            if (!config || !config.accessKeyId || !config.autoSyncOnChange) {
+            if (!config || !config.accessKeyId ||
+                (!config.autoSyncEnabled && !config.autoSyncOnChange)) {
                 return;
             }
-            
+
             if (r2SyncInProgress) {
                 // 有同步正在进行，排队等待，完成后自动执行（去重）
                 if (!r2PendingSyncQueue.some(t => t.fileId === fileId && t.action === action)) {
@@ -14703,7 +14705,7 @@
                 const retryableClassroomAction = ['recording_upload', 'classroom_upload',
                     'classroom_note_upload', 'classroom_delete', 'classroom_note_delete',
                     'recording_delete', 'classroom_folder_delete'].includes(action);
-                if (retryableClassroomAction && config.autoSyncOnChange && Number(attempt || 0) < 8) {
+                if (retryableClassroomAction && (config.autoSyncEnabled || config.autoSyncOnChange) && Number(attempt || 0) < 8) {
                     const key = action + ':' + fileId;
                     if (!r2ClassroomRetryTimers.has(key)) {
                         const nextAttempt = Number(attempt || 0) + 1;
@@ -27352,11 +27354,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const cfg = appData.settings && appData.settings.r2Config;
                 for (const pg of (nb.pages || [])) {
                     try { await deleteFileData('nbpage_' + pg.id); } catch (e) {}
-                    if (cfg && cfg.accessKeyId && cfg.autoSyncOnChange) {
+                    if (cfg && cfg.accessKeyId && (cfg.autoSyncEnabled || cfg.autoSyncOnChange)) {
                         try { await r2DeleteObject('notebooks/pages/nbpage_' + pg.id); } catch (e) {}
                     }
                 }
-                if (cfg && cfg.accessKeyId && cfg.autoSyncOnChange) {
+                if (cfg && cfg.accessKeyId && (cfg.autoSyncEnabled || cfg.autoSyncOnChange)) {
                     try { await r2DeleteObject(r2NotebookPositionKey(nbId)); } catch (e) {}
                 }
             })();

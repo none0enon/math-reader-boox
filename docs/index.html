@@ -13319,6 +13319,14 @@
         const r2ClassroomRetryTimers = new Map();
         let r2StartupMetadataReady = Promise.resolve();
         let _resolveR2StartupMetadataReady = null;
+        const R2_STARTUP_PULL_TIMEOUT_MS = 5000;
+
+        async function r2GetObjectForStartup(key, options = {}) {
+            if (r2PendingSyncQueue.length) return null;
+            const result = await r2GetObjectWithTimeout(
+                key, R2_STARTUP_PULL_TIMEOUT_MS, options);
+            return r2PendingSyncQueue.length ? null : result;
+        }
 
         // 笔记本打开只需等待启动同步的 metadata 合并，不等待随后可能较慢的文件下载。
         function beginR2StartupMetadataSync() {
@@ -13424,8 +13432,7 @@
         async function resumePendingClassroomSync() {
             await r2StartupMetadataReady.catch(() => {});
             const config = appData.settings?.r2Config;
-            if (!config?.accessKeyId ||
-                (!config.autoSyncEnabled && !config.autoSyncOnChange)) return;
+            if (!config?.accessKeyId || !config.autoSyncOnChange) return;
             const tasks = [];
             const seen = new Set();
             const add = (fileId, action) => {
@@ -14402,15 +14409,19 @@
 
         async function r2PullNotebookAssetsFromCloud(options = {}) {
             const missingOnly = options.missingOnly !== false;
+            const getCloudObject = options.startupPull
+                ? r2GetObjectForStartup
+                : r2GetObject;
             let pages = 0, media = 0;
             for (const nb of (appData.notebooks?.items || [])) {
                 for (const page of (nb.pages || [])) {
+                    if (options.startupPull && r2PendingSyncQueue.length) return { pages, media };
                     if (!page || !page.id) continue;
                     let pageJson = await getFileData('nbpage_' + page.id).catch(() => null);
                     const shouldPullPage = !missingOnly || !pageJson;
                     if (shouldPullPage) {
                         try {
-                            const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + page.id);
+                            const cloudPage = await getCloudObject('notebooks/pages/nbpage_' + page.id);
                             if (cloudPage) {
                                 pageJson = cloudPage;
                                 await saveFileData('nbpage_' + page.id, cloudPage);
@@ -14420,10 +14431,11 @@
                     }
                     const mediaIds = r2NotebookMediaIdsFromPage(page, pageJson);
                     for (const mediaId of mediaIds) {
+                        if (options.startupPull && r2PendingSyncQueue.length) return { pages, media };
                         const localMedia = await getFileData('nbmedia_' + mediaId).catch(() => null);
                         if (missingOnly && localMedia) continue;
                         try {
-                            const cloudMedia = await r2GetObject('notebooks/media/nbmedia_' + mediaId);
+                            const cloudMedia = await getCloudObject('notebooks/media/nbmedia_' + mediaId);
                             if (cloudMedia) {
                                 await saveFileData('nbmedia_' + mediaId, cloudMedia);
                                 media++;
@@ -14517,8 +14529,7 @@
                 return;
             }
             const config = appData.settings.r2Config;
-            if (!config || !config.accessKeyId ||
-                (!config.autoSyncEnabled && !config.autoSyncOnChange)) {
+            if (!config || !config.accessKeyId || !config.autoSyncOnChange) {
                 return;
             }
             
@@ -15216,10 +15227,12 @@
             return false;
         }
 
-        async function r2GetRecordingManifest(material) {
+        async function r2GetRecordingManifest(material, startupPull = false) {
             if (!material?.id) return null;
             const prefix = 'classroom/recordings/' + material.id;
-            const raw = await r2GetObject(prefix + '/manifest.json');
+            const raw = startupPull
+                ? await r2GetObjectForStartup(prefix + '/manifest.json')
+                : await r2GetObject(prefix + '/manifest.json');
             if (!raw) return null;
             const remote = JSON.parse(raw);
             const validGroups = Array.isArray(remote.groups) && remote.groups.length > 0 &&
@@ -15236,9 +15249,9 @@
             return remote;
         }
 
-        async function r2RestoreRecording(material, knownRemote) {
+        async function r2RestoreRecording(material, knownRemote, startupPull = false) {
             if (!material?.id) return null;
-            const remote = knownRemote || await r2GetRecordingManifest(material);
+            const remote = knownRemote || await r2GetRecordingManifest(material, startupPull);
             if (!remote) return null;
             initRecordingStore();
             const localManifest = {
@@ -15255,7 +15268,9 @@
             };
             const restored = await recordingStore.restore(localManifest, async index => {
                 const group = remote.groups[index];
-                const blob = await r2GetObject(group.key, { as: 'blob' });
+                const blob = startupPull
+                    ? await r2GetObjectForStartup(group.key, { as: 'blob' })
+                    : await r2GetObject(group.key, { as: 'blob' });
                 if (!blob || blob.size !== group.size) throw new Error(i18n('cloud_recording_chunk_invalid', index));
                 if (group.sha256 && await sha256Hex(blob) !== group.sha256) {
                     throw new Error(i18n('cloud_recording_chunk_hash_failed', index));
@@ -16129,6 +16144,7 @@
                     r2LastSyncTime = metadata.syncedAt || config.lastSyncTime;
                 }
                 finishR2StartupMetadataSync();
+                if (r2PendingSyncQueue.length) return;
 
                 // 后台拉取本地缺失的资源文件（只拉本地没有的）
                 let pulledMaterials = 0;
@@ -16136,10 +16152,11 @@
                     for (const folder of (appData.classroom?.[listKey] || [])) {
                         for (const session of (folder.sessions || [])) {
                             for (const mat of (session.sourceFolder || [])) {
+                                if (r2PendingSyncQueue.length) return;
                                 if (mat.type === 'recording') {
                                     const localManifest = await recordingStore.getManifest(mat.id).catch(() => null);
                                     if (!localManifest) {
-                                        try { if (await r2RestoreRecording(mat)) pulledMaterials++; }
+                                        try { if (await r2RestoreRecording(mat, null, true)) pulledMaterials++; }
                                         catch (e) { console.warn('启动拉取录音失败:', mat.id, e); }
                                     }
                                     continue;
@@ -16147,7 +16164,7 @@
                                 const localMat = await getFileData('classroom_' + mat.id).catch(() => null);
                                 if (!localMat) {
                                     try {
-                                        const cloudMat = await r2GetObject('classroom/' + mat.id);
+                                        const cloudMat = await r2GetObjectForStartup('classroom/' + mat.id);
                                         if (cloudMat) {
                                             mat.assetCloudCommitted = true;
                                             mat.assetMetadataCloudCommitted = true;
@@ -16165,11 +16182,12 @@
                                 }
                             }
                             for (const note of (session.notes || [])) {
+                                if (r2PendingSyncQueue.length) return;
                                 if (!note.contentKey) continue;
                                 const localContent = await getFileData(note.contentKey).catch(() => null);
                                 if (!localContent) {
                                     try {
-                                        const cloudContent = await r2GetObject('classroom/notes/' + note.id + '.md');
+                                        const cloudContent = await r2GetObjectForStartup('classroom/notes/' + note.id + '.md');
                                         if (cloudContent) {
                                             note.contentCloudCommitted = true;
                                             note.contentMetadataCloudCommitted = true;
@@ -16195,12 +16213,13 @@
                         const ld = appData.lectures[bookId];
                         if (!ld.chapters) continue;
                         for (const ch of ld.chapters) {
+                            if (r2PendingSyncQueue.length) return;
                             if (ch.status === 'ready' && ch.id) {
                                 const lecKey = lecContentKey(bookId, ch.id);
                                 const local = await getFileData(lecKey).catch(() => null);
                                 if (!local) {
                                     try {
-                                        const cloudData = await r2GetObject('lectures/' + lecKey);
+                                        const cloudData = await r2GetObjectForStartup('lectures/' + lecKey);
                                         if (cloudData) { await saveFileData(lecKey, cloudData); pulledLectures++; }
                                     } catch(e) { console.warn('启动拉取讲义失败:', lecKey, e); }
                                 }
@@ -16211,12 +16230,13 @@
 
                 let pulledAbstracts = 0;
                 for (const paper of (appData.papers || [])) {
+                    if (r2PendingSyncQueue.length) return;
                     if (paper.hasAiAbstract && paper.id) {
                         const aKey = abstractKey(paper.id);
                         const local = await getFileData(aKey).catch(() => null);
                         if (!local) {
                             try {
-                                const cloudData = await r2GetObject('abstracts/' + aKey);
+                                const cloudData = await r2GetObjectForStartup('abstracts/' + aKey);
                                 if (cloudData) { await saveFileData(aKey, cloudData); pulledAbstracts++; }
                             } catch(e) { console.warn('启动拉取摘要失败:', paper.id, e); }
                         }
@@ -16227,21 +16247,23 @@
                 for (const folder of (appData.exercises?.folders || [])) {
                     for (const task of (folder.tasks || [])) {
                         for (const sf of (task.sourceFiles || [])) {
+                            if (r2PendingSyncQueue.length) return;
                             const localSf = await getFileData('exercise_' + sf.id).catch(() => null);
                             if (!localSf) {
                                 try {
-                                    const cloudSf = await r2GetObject('exercises/' + sf.id);
+                                    const cloudSf = await r2GetObjectForStartup('exercises/' + sf.id);
                                     if (cloudSf) { await saveFileData('exercise_' + sf.id, cloudSf); pulledExFiles++; }
                                 } catch(e) { console.warn('启动拉取习题文件失败:', sf.id, e); }
                             }
                         }
                         for (const q of (task.questions || [])) {
+                            if (r2PendingSyncQueue.length) return;
                             if (q.status === 'done') {
                                 const drawKey = `exercise_drawing_${task.id}_${q.index}`;
                                 const localDraw = await getFileData(drawKey).catch(() => null);
                                 if (!localDraw) {
                                     try {
-                                        const cloudDraw = await r2GetObject('exercises/drawings/' + drawKey);
+                                        const cloudDraw = await r2GetObjectForStartup('exercises/drawings/' + drawKey);
                                         if (cloudDraw) await saveFileData(drawKey, cloudDraw);
                                     } catch(e) {}
                                 }
@@ -16250,42 +16272,50 @@
                     }
                 }
                 for (const fId of Object.keys(appData.exercises?.wrongByFolder || {})) {
+                    if (r2PendingSyncQueue.length) return;
                     for (const wt of (appData.exercises.wrongByFolder[fId] || [])) {
                         for (const q of (wt.questions || [])) {
+                            if (r2PendingSyncQueue.length) return;
                             const wrongDrawKey = `exercise_drawing_${wt.taskId}_${q.questionIndex}`;
                             const localWD = await getFileData(wrongDrawKey).catch(() => null);
                             if (!localWD) {
-                                try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
+                                try { const cd = await r2GetObjectForStartup('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
                             }
                             for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
                                 const redoKey = `exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`;
                                 const localRD = await getFileData(redoKey).catch(() => null);
                                 if (!localRD) {
-                                    try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                    try { const cd = await r2GetObjectForStartup('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
                                 }
                             }
                         }
                     }
                 }
                 for (const fId of Object.keys(appData.exercises?.archivedWrong || {})) {
+                    if (r2PendingSyncQueue.length) return;
                     for (const item of (appData.exercises.archivedWrong[fId] || [])) {
+                        if (r2PendingSyncQueue.length) return;
                         const archDrawKey = `exercise_drawing_${item.taskId}_${item.questionIndex}`;
                         const localAD = await getFileData(archDrawKey).catch(() => null);
                         if (!localAD) {
-                            try { const cd = await r2GetObject('exercises/drawings/' + archDrawKey); if (cd) await saveFileData(archDrawKey, cd); } catch(e) {}
+                            try { const cd = await r2GetObjectForStartup('exercises/drawings/' + archDrawKey); if (cd) await saveFileData(archDrawKey, cd); } catch(e) {}
                         }
                         for (let ri = 0; ri < (item.redoDrawings || []).length; ri++) {
                             const redoKey = `exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`;
                             const localRD = await getFileData(redoKey).catch(() => null);
                             if (!localRD) {
-                                try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                try { const cd = await r2GetObjectForStartup('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
                             }
                         }
                     }
                 }
 
                 // 拉取本地缺失的笔记本页面和媒体（与习题同样的模式）
-                const pulledNotebooks = await r2PullNotebookAssetsFromCloud({ missingOnly: true });
+                if (r2PendingSyncQueue.length) return;
+                const pulledNotebooks = await r2PullNotebookAssetsFromCloud({
+                    missingOnly: true,
+                    startupPull: true
+                });
 
                 if (pulledLectures > 0 || pulledAbstracts > 0 || pulledMaterials > 0 || pulledExFiles > 0 || pulledNotebooks.pages > 0 || pulledNotebooks.media > 0) {
                     const parts = [];

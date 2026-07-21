@@ -13424,7 +13424,8 @@
         async function resumePendingClassroomSync() {
             await r2StartupMetadataReady.catch(() => {});
             const config = appData.settings?.r2Config;
-            if (!config?.accessKeyId || !config.autoSyncOnChange) return;
+            if (!config?.accessKeyId ||
+                (!config.autoSyncEnabled && !config.autoSyncOnChange)) return;
             const tasks = [];
             const seen = new Set();
             const add = (fileId, action) => {
@@ -14516,7 +14517,8 @@
                 return;
             }
             const config = appData.settings.r2Config;
-            if (!config || !config.accessKeyId || !config.autoSyncOnChange) {
+            if (!config || !config.accessKeyId ||
+                (!config.autoSyncEnabled && !config.autoSyncOnChange)) {
                 return;
             }
             

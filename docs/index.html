@@ -13553,8 +13553,10 @@
             const intervalMinutes = parseInt(config.syncInterval) || 15;
             const intervalMs = intervalMinutes * 60 * 1000;
             
-            r2AutoSyncTimer = setInterval(async () => {
-                await performAutoSync();
+            r2AutoSyncTimer = setInterval(() => {
+                performAutoSync().catch(err => {
+                    console.warn('R2 定时同步失败:', err);
+                });
             }, intervalMs);
             
             console.log('R2 自动同步已启动，间隔: ' + intervalMinutes + ' 分钟');
@@ -13586,6 +13588,8 @@
                     const metadataStr = await r2GetObject('metadata.json');
                     if (metadataStr) {
                         const metadata = JSON.parse(metadataStr);
+                        const localR2Config = appData.settings.r2Config;
+                        const localApiSettings = pickApiSettingsFrom(appData.settings);
                         const localBooks = appData.books || [];
                         const localPapers = appData.papers || [];
                         const cloudBooks = metadata.books || [];
@@ -13613,6 +13617,14 @@
                             appData.books = mergeDocsPreferringLocalProgress(cloudBooks, localBooks, cloudSyncedAtMs);
                             appData.papers = mergeDocsPreferringLocalProgress(cloudPapers, localPapers, cloudSyncedAtMs);
                         }
+
+                        // 与启动同步保持一致：下拉刷新也要接收书架之外的云端元数据。
+                        // API 与 R2 凭据仍只保留本地值，绝不从 metadata 覆盖。
+                        appData.notes = mergePreferNonEmpty(metadata.notes, appData.notes);
+                        appData.archived = (metadata.archived && metadata.archived.length > 0)
+                            ? metadata.archived : (appData.archived || []);
+                        appData.lectures = mergePreferNonEmpty(metadata.lectures, appData.lectures);
+                        appData.drafts = mergePreferNonEmpty(metadata.drafts, appData.drafts);
 
                         // 合并 classroom 数据，避免覆盖另一设备新增的素材和笔记；
                         // 云端课堂索引为空而本地非空时保留本地（防止被清空的云端抹掉本地）
@@ -13765,12 +13777,17 @@
                             }
                         }
 
+                        appData.settings = {
+                            ...metadata.settings,
+                            ...localApiSettings,
+                            r2Config: localR2Config
+                        };
                         saveData();
                         refreshAllUIFromAppData();
                     }
                 } catch (e) {
                     console.warn('定时同步：拉取合并失败，跳过本次推送', e);
-                    return;
+                    throw e;
                 }
 
                 // 所有课堂正文先于 metadata 提交，避免其它设备看见悬空索引。
@@ -13942,6 +13959,7 @@
                 console.log('R2 自动同步完成: ' + config.lastSyncTime);
             } catch (err) {
                 console.error('R2 自动同步失败:', err);
+                throw err;
             } finally {
                 r2SyncInProgress = false;
                 // 检查是否有排队的文件变更同步任务
@@ -15971,8 +15989,7 @@
 
         async function autoSyncFromR2OnStartup() {
             const config = appData.settings && appData.settings.r2Config;
-            if (!config || !config.accessKeyId ||
-                (!config.autoSyncEnabled && !config.autoSyncOnChange)) {
+            if (!config || !config.accessKeyId) {
                 finishR2StartupMetadataSync();
                 return;
             }

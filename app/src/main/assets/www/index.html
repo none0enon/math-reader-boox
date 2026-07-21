@@ -15981,6 +15981,7 @@
                 return;
             }
             r2SyncInProgress = true;
+            let ownsR2SyncLock = true;
             try {
                 const metadataStr = await r2GetObjectWithTimeout('metadata.json', 5000);
                 if (!metadataStr) {
@@ -16127,6 +16128,15 @@
                     r2LastSyncTime = metadata.syncedAt || config.lastSyncTime;
                 }
                 finishR2StartupMetadataSync();
+
+                // 元数据合并完成后立即释放同步锁。后续资源恢复在后台继续，
+                // 不能阻塞上传书籍、生成讲义等变更同步及其成功提示。
+                r2SyncInProgress = false;
+                ownsR2SyncLock = false;
+                if (r2PendingSyncQueue.length > 0) {
+                    const pending = r2PendingSyncQueue.shift();
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                }
 
                 // 后台拉取本地缺失的资源文件（只拉本地没有的）
                 let pulledMaterials = 0;
@@ -16303,10 +16313,12 @@
                 console.warn('Startup auto-sync failed:', err);
             } finally {
                 finishR2StartupMetadataSync();
-                r2SyncInProgress = false;
-                if (r2PendingSyncQueue.length > 0) {
-                    const pending = r2PendingSyncQueue.shift();
-                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                if (ownsR2SyncLock) {
+                    r2SyncInProgress = false;
+                    if (r2PendingSyncQueue.length > 0) {
+                        const pending = r2PendingSyncQueue.shift();
+                        triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                    }
                 }
             }
         }

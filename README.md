@@ -1,8 +1,8 @@
 # Math Reader
 
-Math Reader 是一个面向数学学习的本地优先 PDF 阅读与手写学习工作台：把阅读批注、课堂录音、AI 讲义、手写笔记、间隔复习和习题训练放在同一个应用中。
+Math Reader 是一个面向数学学习的 PDF 阅读与手写学习工作台：把阅读批注、课堂录音、AI 讲义、手写笔记、间隔复习和习题训练放在同一个应用中。
 
-This repository contains the Math Reader PWA and Android app, including its WebView host, durable recording bridge, and BOOX/E Ink adaptation. Data is local-first; AI and R2 sync are optional BYOK features, and supported BOOX devices use the Onyx pen SDK for lower-latency handwriting.
+This repository contains the Math Reader PWA and Android app, including its WebView host, durable recording bridge, and BOOX/E Ink adaptation. AI and R2 sync are optional BYOK features, and supported BOOX devices use the Onyx pen SDK for lower-latency handwriting.
 
 [中文使用说明](#中文使用说明) · [English User Guide](#english-user-guide) · [Releases](https://github.com/none0enon/math-reader-boox/releases) · [Issues](https://github.com/none0enon/math-reader-boox/issues)
 

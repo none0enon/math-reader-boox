@@ -19038,16 +19038,24 @@ ${i18n('prompt_outline_gen')}`;
             }
         }
 
+        const activeChapterGenerations = new Set();
+
         async function generateChapterContent(bookId, chapterIndex) {
             const book = appData.books.find(b => b.id === bookId);
             const lectureData = appData.lectures?.[bookId];
             if (!book || !lectureData || !lectureData.chapters[chapterIndex]) return;
 
             const chapter = lectureData.chapters[chapterIndex];
+            const chapterId = chapter.id;
+            const generationKey = `${bookId}:${chapterId}`;
             if (chapter.status === 'ready') return; // 已生成
-            if (chapter.status === 'generating') return; // 正在生成中，防止重复调用
+            if (activeChapterGenerations.has(generationKey)) return; // 正在生成中，防止重复调用
 
+            activeChapterGenerations.add(generationKey);
+            const generationStartedAt = new Date().toISOString();
             chapter.status = 'generating';
+            chapter.updatedAt = generationStartedAt;
+            lectureData.updatedAt = generationStartedAt;
             saveData();
 
             // 如果用户正在查看，立刻刷新为"生成中"状态
@@ -19081,21 +19089,25 @@ ${i18n('prompt_lecture_gen')}`;
                 });
 
                 const contentText = result || i18n('toast_content_gen_failed');
-                chapter.status = 'ready';
-                chapter.generatedAt = new Date().toISOString();
-                chapter.updatedAt = chapter.generatedAt;
-                chapter.contentUpdatedAt = chapter.generatedAt;
-                lectureData.updatedAt = chapter.generatedAt;
+                const contentUpdatedAt = new Date().toISOString();
                 // 内容存入 IndexedDB，不放 localStorage
-                await saveLectureContent(bookId, chapter.id, contentText, chapter.contentUpdatedAt);
+                await saveLectureContent(bookId, chapterId, contentText, contentUpdatedAt);
+                const liveLectureData = appData.lectures?.[bookId];
+                const liveChapter = liveLectureData?.chapters?.find(c => c.id === chapterId);
+                if (!liveChapter) return;
+                liveChapter.status = 'ready';
+                liveChapter.generatedAt = contentUpdatedAt;
+                liveChapter.updatedAt = liveChapter.generatedAt;
+                liveChapter.contentUpdatedAt = liveChapter.generatedAt;
+                liveLectureData.updatedAt = liveChapter.generatedAt;
                 // 同时在内存中缓存，供当前会话直接使用
-                chapter._contentCache = contentText;
+                liveChapter._contentCache = contentText;
                 saveData();
                 showToast(i18n('toast_lecture_synced'));
                 debouncedChatSync();
                 // 讲义内容也单独同步到云端
-                triggerSyncOnFileChange(lecContentKey(bookId, chapter.id), 'lecture_upload');
-                sendNotification(i18n('toast_lecture_synced'), chapter.title);
+                triggerSyncOnFileChange(lecContentKey(bookId, chapterId), 'lecture_upload');
+                sendNotification(i18n('toast_lecture_synced'), liveChapter.title);
 
                 // 如果正在查看这个讲义，刷新显示
                 if (currentLecture && currentLecture.bookId === bookId && currentLecture.chapterIndex === chapterIndex) {
@@ -19106,9 +19118,12 @@ ${i18n('prompt_lecture_gen')}`;
 
             } catch (err) {
                 console.error('生成章节内容失败:', err);
-                chapter.status = 'error';
-                chapter.updatedAt = new Date().toISOString();
-                lectureData.updatedAt = chapter.updatedAt;
+                const liveLectureData = appData.lectures?.[bookId];
+                const liveChapter = liveLectureData?.chapters?.find(c => c.id === chapterId);
+                if (!liveChapter) return;
+                liveChapter.status = 'error';
+                liveChapter.updatedAt = new Date().toISOString();
+                liveLectureData.updatedAt = liveChapter.updatedAt;
                 saveData();
                 showToast(i18n('toast_gen_failed') + err.message);
                 // 刷新讲义界面，让用户看到错误状态而非一直转圈
@@ -19116,6 +19131,8 @@ ${i18n('prompt_lecture_gen')}`;
                     displayLectureContent();
                 }
                 renderNotesPage();
+            } finally {
+                activeChapterGenerations.delete(generationKey);
             }
         }
 
@@ -19154,7 +19171,7 @@ ${i18n('prompt_lecture_gen')}`;
             }
             
             // 如果内容未生成，先生成
-            if (chapter.status !== 'ready' && chapter.status !== 'generating') {
+            if (chapter.status !== 'ready') {
                 generateChapterContent(bookId, chapterIndex);
             }
             

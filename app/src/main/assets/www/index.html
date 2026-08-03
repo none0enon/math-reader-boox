@@ -18807,7 +18807,6 @@ ${i18n('prompt_outline_gen')}`;
             book.bookmarksUpdatedAt = Date.now();
             lectureData.status = 'ready';
             saveData();
-            debouncedChatSync();
             showToast(i18n('toast_outline_loaded', lectureData.chapters.length));
             renderNotesPage();
 

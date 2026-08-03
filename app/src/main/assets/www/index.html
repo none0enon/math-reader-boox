@@ -7494,9 +7494,11 @@
             return 'lecture_' + bookId + '_' + chapterId;
         }
 
-        async function saveLectureContent(bookId, chapterId, content) {
+        async function saveLectureContent(bookId, chapterId, content, updatedAt) {
             const key = lecContentKey(bookId, chapterId);
             await saveFileData(key, content);
+            const timestamp = syncTimestamp(updatedAt) || Date.now();
+            await saveFileData(key + '__updated_at__', String(timestamp));
         }
 
         async function getLectureContent(bookId, chapterId) {
@@ -7504,9 +7506,15 @@
             return await getFileData(key);
         }
 
+        async function getLectureContentUpdatedAt(bookId, chapterId) {
+            const key = lecContentKey(bookId, chapterId) + '__updated_at__';
+            return Number(await getFileData(key).catch(() => 0)) || 0;
+        }
+
         async function deleteLectureContent(bookId, chapterId) {
             const key = lecContentKey(bookId, chapterId);
             try { await deleteFileData(key); } catch(e) {}
+            try { await deleteFileData(key + '__updated_at__'); } catch(e) {}
         }
 
         // 删除某本书的所有讲义内容
@@ -7530,7 +7538,8 @@
                 for (const ch of ld.chapters) {
                     if (ch.content && ch.id) {
                         try {
-                            await saveLectureContent(bookId, ch.id, ch.content);
+                            await saveLectureContent(bookId, ch.id, ch.content,
+                                ch.contentUpdatedAt || ch.generatedAt || ch.createdAt || ch.updatedAt);
                             delete ch.content;
                             migrated = true;
                         } catch(e) {
@@ -13424,7 +13433,8 @@
         async function resumePendingClassroomSync() {
             await r2StartupMetadataReady.catch(() => {});
             const config = appData.settings?.r2Config;
-            if (!config?.accessKeyId || !config.autoSyncOnChange) return;
+            if (!config?.accessKeyId ||
+                (!config.autoSyncEnabled && !config.autoSyncOnChange)) return;
             const tasks = [];
             const seen = new Set();
             const add = (fileId, action) => {
@@ -13623,7 +13633,11 @@
                         appData.notes = mergePreferNonEmpty(metadata.notes, appData.notes);
                         appData.archived = (metadata.archived && metadata.archived.length > 0)
                             ? metadata.archived : (appData.archived || []);
-                        appData.lectures = mergePreferNonEmpty(metadata.lectures, appData.lectures);
+                        appData.lectures = mergeLecturesData(
+                            metadata.lectures,
+                            appData.lectures,
+                            cloudSyncedAtMs
+                        );
                         appData.drafts = mergePreferNonEmpty(metadata.drafts, appData.drafts);
 
                         // 合并 classroom 数据，避免覆盖另一设备新增的素材和笔记；
@@ -13831,6 +13845,19 @@
                 }
                 if (classroomPayloadSyncFailed) return;
 
+                for (const bookId of Object.keys(appData.lectures || {})) {
+                    for (const chapter of (appData.lectures[bookId]?.chapters || [])) {
+                        if (chapter.status !== 'ready' || !chapter.id) continue;
+                        const lectureData = await getFileData(
+                            lecContentKey(bookId, chapter.id)).catch(() => null);
+                        if (lectureData) {
+                            await r2PutObject('lectures/' + lecContentKey(bookId, chapter.id),
+                                lectureData, 'text/plain; charset=utf-8');
+                        }
+                    }
+                }
+                await r2SyncAllNotebookPages();
+
                 // 再把合并后的结果推回云端
                 const metadataPublishResult = await r2SyncMetadataOnly();
                 if (metadataPublishResult.casCommitted) {
@@ -13997,6 +14024,93 @@
             return localObj || {};
         }
 
+        function syncTimestamp(value) {
+            if (typeof value === 'number' && Number.isFinite(value)) return value;
+            const parsed = Date.parse(value || '');
+            return Number.isFinite(parsed) ? parsed : 0;
+        }
+
+        function lectureSyncTimestamp(item) {
+            let latest = Math.max(
+                syncTimestamp(item?.updatedAt),
+                syncTimestamp(item?.generatedAt),
+                syncTimestamp(item?.createdAt),
+                Number(item?.progressUpdatedAt) || 0
+            );
+            for (const chapter of (item?.chapters || [])) {
+                latest = Math.max(latest, lectureSyncTimestamp(chapter));
+            }
+            return latest;
+        }
+
+        function lectureContentTimestamp(chapter) {
+            return Math.max(
+                syncTimestamp(chapter?.contentUpdatedAt),
+                syncTimestamp(chapter?.generatedAt),
+                syncTimestamp(chapter?.createdAt)
+            );
+        }
+
+        function mergeLecturesData(cloudLectures, localLectures, cloudSyncedAtMs) {
+            const cloud = cloudLectures || {};
+            const local = localLectures || {};
+            const baseline = Number(cloudSyncedAtMs) || 0;
+            const mergeChapters = (cloudChapters, localChapters) => {
+                const localById = new Map((localChapters || [])
+                    .filter(chapter => chapter?.id)
+                    .map(chapter => [chapter.id, chapter]));
+                const cloudIds = new Set();
+                const merged = (cloudChapters || []).map(cloudChapter => {
+                    if (!cloudChapter?.id) return cloudChapter;
+                    cloudIds.add(cloudChapter.id);
+                    const localChapter = localById.get(cloudChapter.id);
+                    if (!localChapter) return cloudChapter;
+                    const result = {
+                        ...(lectureSyncTimestamp(localChapter) > lectureSyncTimestamp(cloudChapter)
+                            ? localChapter : cloudChapter)
+                    };
+                    const cloudProgressTs = Number(cloudChapter.progressUpdatedAt) || 0;
+                    const localProgressTs = Number(localChapter.progressUpdatedAt) || 0;
+                    if (localProgressTs > cloudProgressTs) {
+                        result.progress = localChapter.progress;
+                        result.maxProgress = localChapter.maxProgress;
+                        result.scrollPosition = localChapter.scrollPosition;
+                        result.progressUpdatedAt = localChapter.progressUpdatedAt;
+                    }
+                    return result;
+                });
+                for (const localChapter of (localChapters || [])) {
+                    if (!localChapter?.id || cloudIds.has(localChapter.id)) continue;
+                    if (!(cloudChapters || []).length || lectureSyncTimestamp(localChapter) > baseline) {
+                        merged.push(localChapter);
+                    }
+                }
+                return merged;
+            };
+            const merged = {};
+            for (const bookId of Object.keys(cloud)) {
+                const cloudLecture = cloud[bookId];
+                const localLecture = local[bookId];
+                if (!localLecture) {
+                    merged[bookId] = cloudLecture;
+                    continue;
+                }
+                const result = {
+                    ...(lectureSyncTimestamp(localLecture) > lectureSyncTimestamp(cloudLecture)
+                        ? localLecture : cloudLecture)
+                };
+                result.chapters = mergeChapters(cloudLecture?.chapters, localLecture?.chapters);
+                merged[bookId] = result;
+            }
+            for (const bookId of Object.keys(local)) {
+                if (Object.prototype.hasOwnProperty.call(cloud, bookId)) continue;
+                if (!Object.keys(cloud).length || lectureSyncTimestamp(local[bookId]) > baseline) {
+                    merged[bookId] = local[bookId];
+                }
+            }
+            return merged;
+        }
+
         let _cloudMetaBackupDay = null;
         // 覆盖云端 metadata.json 前的防护：
         // 1. 每天第一次上传前，把云端现有 metadata.json 备份到 metadata.backup.{周几}.json
@@ -14028,6 +14142,10 @@
             }
             if (localCounts.notebooks === 0 && cloudCounts.notebooks > 0) {
                 console.error('[sync] 本地笔记本为空但云端有 ' + cloudCounts.notebooks + ' 条，已阻止覆盖云端 metadata.json');
+                return false;
+            }
+            if (localCounts.lectures === 0 && cloudCounts.lectures > 0) {
+                console.error('[sync] 本地讲义为空但云端有 ' + cloudCounts.lectures + ' 条，已阻止覆盖云端 metadata.json');
                 return false;
             }
             if (localCounts.total === 0 && cloudCounts.total > 0) {
@@ -14114,8 +14232,25 @@
                         )
                     };
                 }
+                const mergedNotebooks = mergeNotebooksData(
+                    remoteMetadata?.notebooks,
+                    candidateBase?.notebooks,
+                    remoteBaseline
+                );
+                if (options.notebookDeletedId) {
+                    mergedNotebooks.items = (mergedNotebooks.items || [])
+                        .filter(notebook => notebook?.id !== options.notebookDeletedId);
+                    mergedNotebooks.reviews = (mergedNotebooks.reviews || [])
+                        .filter(review => review?.notebookId !== options.notebookDeletedId);
+                }
                 const candidate = {
                     ...candidateBase,
+                    lectures: mergeLecturesData(
+                        remoteMetadata?.lectures,
+                        candidateBase?.lectures,
+                        remoteBaseline
+                    ),
+                    notebooks: mergedNotebooks,
                     classroom: stripClassroomData(mergedIntent, true),
                     classroomTombstones: tombstones,
                     syncedAt: new Date().toISOString()
@@ -14148,6 +14283,10 @@
                         Date.parse(candidate.syncedAt) || 0);
                     await cleanupClassroomEntriesRemovedByMerge(liveBefore, applied);
                     appData.classroom = applied;
+                    appData.lectures = mergeLecturesData(candidate.lectures, appData.lectures,
+                        Date.parse(candidate.syncedAt) || 0);
+                    appData.notebooks = mergeNotebooksData(candidate.notebooks, appData.notebooks,
+                        Date.parse(candidate.syncedAt) || 0);
                     await markClassroomMetadataCloudCommitted(candidate.classroom);
                     saveData();
                     return { metadata: candidate, casCommitted: true };
@@ -14398,12 +14537,22 @@
                 .find(pg => pg && pg.id === pageId);
             const mediaIds = new Set();
             let pgData = await getFileData('nbpage_' + pageId).catch(() => null);
-            if (pgData) {
+            let pageContent = null;
+            try { pageContent = pgData ? JSON.parse(pgData) : null; } catch (e) {}
+            if (!pageContent && page) pageContent = { strokes: [], texts: [], media: [], recognized: null };
+            if (pageContent) {
+                if (!pageContent.updatedAt) {
+                    pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
+                }
+                if (page && (!page.updatedAt || syncTimestamp(pageContent.updatedAt) >
+                    syncTimestamp(page.updatedAt || page.createdAt))) {
+                    page.updatedAt = pageContent.updatedAt;
+                    saveData();
+                }
+                pgData = JSON.stringify(pageContent);
+                await saveFileData('nbpage_' + pageId, pgData);
                 await r2PutObject('notebooks/pages/nbpage_' + pageId, pgData, 'application/json');
-                try {
-                    const pc = JSON.parse(pgData);
-                    (pc.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
-                } catch (e) { /* 页面 JSON 损坏时仍继续上传背景媒体 */ }
+                (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
             }
             if (page && page.bgImage) mediaIds.add(page.bgImage);
             for (const mid of mediaIds) {
@@ -14439,7 +14588,13 @@
                 for (const page of (nb.pages || [])) {
                     if (!page || !page.id) continue;
                     let pageJson = await getFileData('nbpage_' + page.id).catch(() => null);
-                    const shouldPullPage = !missingOnly || !pageJson;
+                    let localPageUpdatedAt = 0;
+                    try {
+                        localPageUpdatedAt = syncTimestamp(pageJson && JSON.parse(pageJson).updatedAt);
+                    } catch (e) {}
+                    const cloudPageUpdatedAt = syncTimestamp(page.updatedAt);
+                    const shouldPullPage = !missingOnly || !pageJson ||
+                        (cloudPageUpdatedAt > 0 && cloudPageUpdatedAt > localPageUpdatedAt);
                     if (shouldPullPage) {
                         try {
                             const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + page.id);
@@ -14506,7 +14661,7 @@
             const next = previous.catch(() => {}).then(async () => {
                 const config = appData.settings && appData.settings.r2Config;
                 if (!appDataLoaded || !notebookId || !config || !config.accessKeyId ||
-                    !config.autoSyncOnChange) return;
+                    (!config.autoSyncEnabled && !config.autoSyncOnChange)) return;
                 let nb = (appData.notebooks?.items || []).find(item => item && item.id === notebookId);
                 if (!nb || !nb.lastOpenedPageId || !r2NotebookPositionTimestamp(nb)) return;
 
@@ -14549,7 +14704,8 @@
                 return;
             }
             const config = appData.settings.r2Config;
-            if (!config || !config.accessKeyId || !config.autoSyncOnChange) {
+            if (!config || !config.accessKeyId ||
+                (!config.autoSyncEnabled && !config.autoSyncOnChange)) {
                 return;
             }
             
@@ -14564,6 +14720,24 @@
             r2SyncInProgress = true;
             
             try {
+                const notebookBundleActions = ['notebook_close', 'notebook_page_add',
+                    'notebook_page_update', 'notebook_review_add', 'notebook_review_update'];
+                if (notebookBundleActions.includes(action)) {
+                    if (fileId) await r2SyncNotebookPageBundle(fileId);
+                    else if (action === 'notebook_page_add') await r2SyncAllNotebookPages();
+                } else if (action === 'notebook_metadata_update' && fileId) {
+                    const notebook = (appData.notebooks?.items || []).find(item => item?.id === fileId);
+                    if (notebook) {
+                        for (const page of (notebook.pages || [])) {
+                            if (page?.id) await r2SyncNotebookPageBundle(page.id);
+                        }
+                    }
+                }
+                if (action === 'lecture_upload' && fileId) {
+                    const lectureData = await getFileData(fileId).catch(() => null);
+                    if (!lectureData) throw new Error(i18n('lecture_content_not_found'));
+                    await r2PutObject('lectures/' + fileId, lectureData, 'text/plain; charset=utf-8');
+                }
                 let metadataPublishResult = null;
                 // 所有课堂大对象都必须先完整提交，最后才发布 metadata 索引。
                 if (action === 'recording_upload' && fileId) {
@@ -14588,11 +14762,14 @@
                         await r2SyncClassroomNote(found.note);
                     }
                     metadataPublishResult = await r2SyncMetadataOnly({ classroomOnly: true });
-                } else if (action !== 'notebook_close') {
+                } else {
+                    const notebookWasDeleted = action === 'notebook_metadata_update' && fileId &&
+                        !(appData.notebooks?.items || []).some(notebook => notebook?.id === fileId);
                     metadataPublishResult = await r2SyncMetadataOnly({
-                        allowEmpty: ['classroom_delete', 'classroom_note_delete',
+                        allowEmpty: notebookWasDeleted || ['classroom_delete', 'classroom_note_delete',
                             'recording_delete', 'classroom_folder_delete'].includes(action),
-                        classroomOnly: CLASSROOM_DELETE_ACTIONS.includes(action)
+                        classroomOnly: CLASSROOM_DELETE_ACTIONS.includes(action),
+                        notebookDeletedId: notebookWasDeleted ? fileId : null
                     });
                 }
                 if (['classroom_delete', 'classroom_note_delete', 'recording_delete',
@@ -14620,16 +14797,6 @@
                     }
                 }
 
-                // 关闭笔记本只上传当前页 bundle；位置走独立小对象，避免仅翻页/关闭
-                // 就用整份本地 metadata 覆盖另一设备的新数据。
-                if ((action === 'notebook_close' || action === 'notebook_review_add' || action === 'notebook_review_update') && fileId) {
-                    await r2SyncNotebookPageBundle(fileId);
-                }
-                if (action === 'notebook_page_add') {
-                    if (fileId) await r2SyncNotebookPageBundle(fileId);
-                    else await r2SyncAllNotebookPages();
-                }
-
                 // 删除笔记本页面：删除云端页面对象
                 if (action === 'notebook_page_delete' && fileId) {
                     try { await r2DeleteObject('notebooks/pages/nbpage_' + fileId); } catch (e) { /* 忽略 */ }
@@ -14650,14 +14817,6 @@
 
                 if (action === 'recording_delete' && fileId) {
                     await r2DeleteRecording({ id: fileId });
-                }
-
-                // 如果是上传讲义内容，同步讲义文件到云端
-                if (action === 'lecture_upload' && fileId) {
-                    const lecData = await getFileData(fileId).catch(() => null);
-                    if (lecData) {
-                        await r2PutObject('lectures/' + fileId, lecData, 'text/plain; charset=utf-8');
-                    }
                 }
 
                 // 如果是上传论文摘要，同步摘要到云端
@@ -14736,7 +14895,8 @@
                 const retryableClassroomAction = ['recording_upload', 'classroom_upload',
                     'classroom_note_upload', 'classroom_delete', 'classroom_note_delete',
                     'recording_delete', 'classroom_folder_delete'].includes(action);
-                if (retryableClassroomAction && config.autoSyncOnChange && Number(attempt || 0) < 8) {
+                if (retryableClassroomAction &&
+                    (config.autoSyncEnabled || config.autoSyncOnChange) && Number(attempt || 0) < 8) {
                     const key = action + ':' + fileId;
                     if (!r2ClassroomRetryTimers.has(key)) {
                         const nextAttempt = Number(attempt || 0) + 1;
@@ -15502,6 +15662,24 @@
                         }
                     }
                 }
+                let uploadedLectures = 0;
+                if (appData.lectures) {
+                    for (const bookId of Object.keys(appData.lectures)) {
+                        const lecture = appData.lectures[bookId];
+                        for (const chapter of (lecture.chapters || [])) {
+                            if (chapter.status !== 'ready' || !chapter.id) continue;
+                            const lectureData = await getFileData(
+                                lecContentKey(bookId, chapter.id)).catch(() => null);
+                            if (!lectureData) continue;
+                            await r2PutObject('lectures/' + lecContentKey(bookId, chapter.id),
+                                lectureData, 'text/plain; charset=utf-8');
+                            uploadedLectures++;
+                        }
+                    }
+                }
+                await r2SyncAllNotebookPages();
+                metadata.lectures = stripLectureContent(appData.lectures);
+                metadata.notebooks = appData.notebooks || { items: [], reviews: [] };
                 metadata.classroom = stripClassroomData(appData.classroom, true);
                 metadata.syncedAt = new Date().toISOString();
                 const metadataPublishResult = await r2PublishMetadataWithCas(metadata,
@@ -15523,24 +15701,6 @@
                         const fileKey = 'files/' + doc.id + '.pdf';
                         await r2PutObject(fileKey, fileData, 'application/pdf');
                         uploadedFiles++;
-                    }
-                }
-
-                // 4. 上传讲义内容 (从IndexedDB获取)
-                let uploadedLectures = 0;
-                if (appData.lectures) {
-                    for (const bookId of Object.keys(appData.lectures)) {
-                        const ld = appData.lectures[bookId];
-                        if (!ld.chapters) continue;
-                        for (const ch of ld.chapters) {
-                            if (ch.status === 'ready' && ch.id) {
-                                const lecData = await getFileData(lecContentKey(bookId, ch.id)).catch(() => null);
-                                if (lecData) {
-                                    await r2PutObject('lectures/' + lecContentKey(bookId, ch.id), lecData, 'text/plain; charset=utf-8');
-                                    uploadedLectures++;
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -15619,29 +15779,6 @@
                                 await saveFileData(redoKey, rd.drawing);
                                 await r2PutObject('exercises/drawings/' + redoKey, rd.drawing, 'image/png');
                             }
-                        }
-                    }
-                }
-
-                // 8. 上传笔记本页面内容与媒体 (从IndexedDB获取)
-                for (const nb of (appData.notebooks?.items || [])) {
-                    for (const pg of (nb.pages || [])) {
-                        const pgData = await getFileData('nbpage_' + pg.id).catch(() => null);
-                        if (pgData) {
-                            await r2PutObject('notebooks/pages/nbpage_' + pg.id, pgData, 'application/json');
-                            // 上传该页引用的媒体资源
-                            try {
-                                const pc = JSON.parse(pgData);
-                                const mediaIds = [];
-                                (pc.media || []).forEach(m => { if (m.mediaId) mediaIds.push(m.mediaId); });
-                                if (pg.bgImage) mediaIds.push(pg.bgImage);
-                                for (const mid of mediaIds) {
-                                    const mData = await getFileData('nbmedia_' + mid).catch(() => null);
-                                    if (mData) {
-                                        await r2PutObject('notebooks/media/nbmedia_' + mid, mData, 'application/octet-stream');
-                                    }
-                                }
-                            } catch (e) { /* 页面 JSON 损坏时跳过媒体 */ }
                         }
                     }
                 }
@@ -15757,11 +15894,41 @@
                     const qt = Date.parse(q && (q.writtenAt || q.updatedAt || q.completedAt || q.generatedAt) || '');
                     if (!isNaN(qt) && qt > maxTs) maxTs = qt;
                 });
+                (obj && obj.pages || []).forEach(page => {
+                    const pageTs = syncTimestamp(page && (page.updatedAt || page.createdAt));
+                    if (pageTs > maxTs) maxTs = pageTs;
+                });
                 return maxTs;
             };
             const positionTs = (obj) => Number(obj && obj.lastOpenedPageUpdatedAt) || 0;
             const mergeNotebookItem = (cloudItem, localItem) => {
                 const result = { ...(ts(localItem) > ts(cloudItem) ? localItem : cloudItem) };
+                const localPages = new Map((localItem?.pages || [])
+                    .filter(page => page?.id)
+                    .map(page => [page.id, page]));
+                const cloudPageIds = new Set();
+                const cloudNotebookUpdatedAt = syncTimestamp(cloudItem?.updatedAt || cloudItem?.createdAt);
+                const localNotebookUpdatedAt = syncTimestamp(localItem?.updatedAt || localItem?.createdAt);
+                result.pages = (cloudItem?.pages || []).map(cloudPage => {
+                    if (!cloudPage?.id) return cloudPage;
+                    cloudPageIds.add(cloudPage.id);
+                    const localPage = localPages.get(cloudPage.id);
+                    if (!localPage) {
+                        return syncTimestamp(cloudPage.updatedAt || cloudPage.createdAt) >
+                            localNotebookUpdatedAt ? cloudPage : null;
+                    }
+                    return syncTimestamp(localPage.updatedAt || localPage.createdAt) >
+                        syncTimestamp(cloudPage.updatedAt || cloudPage.createdAt)
+                        ? localPage : cloudPage;
+                }).filter(Boolean);
+                for (const localPage of (localItem?.pages || [])) {
+                    if (!localPage?.id || cloudPageIds.has(localPage.id)) continue;
+                    if (!(cloudItem?.pages || []).length ||
+                        syncTimestamp(localPage.updatedAt || localPage.createdAt) > cloudNotebookUpdatedAt ||
+                        localNotebookUpdatedAt > cloudNotebookUpdatedAt) {
+                        result.pages.push(localPage);
+                    }
+                }
                 const cloudPositionTs = positionTs(cloudItem);
                 const localPositionTs = positionTs(localItem);
                 const positionSource = localPositionTs > cloudPositionTs
@@ -16040,6 +16207,7 @@
                 const cloudBooks = metadata.books || [];
                 const cloudPapers = metadata.papers || [];
                 const cloudSyncedAtMs = metadata.syncedAt ? Date.parse(metadata.syncedAt) : 0;
+                let repairMetadataAfterStartup = false;
                 if ((cloudBooks.length + cloudPapers.length) === 0 && (localBooks.length + localPapers.length) > 0) {
                     console.warn('[startup-sync] 云端书籍索引为空但本地有 ' + (localBooks.length + localPapers.length) + ' 条，保留本地数据并回传云端');
                     try {
@@ -16066,7 +16234,16 @@
                 appData.papers = mergeDocsPreferringLocalProgress(cloudPapers, localPapers, cloudSyncedAtMs);
                 appData.notes = mergePreferNonEmpty(metadata.notes, appData.notes);
                 appData.archived = (metadata.archived && metadata.archived.length > 0) ? metadata.archived : (appData.archived || []);
-                appData.lectures = mergePreferNonEmpty(metadata.lectures, appData.lectures);
+                const mergedLectures = mergeLecturesData(
+                    metadata.lectures,
+                    appData.lectures,
+                    cloudSyncedAtMs
+                );
+                if (JSON.stringify(stripLectureContent(mergedLectures)) !==
+                    JSON.stringify(metadata.lectures || {})) {
+                    repairMetadataAfterStartup = true;
+                }
+                appData.lectures = mergedLectures;
                 appData.drafts = mergePreferNonEmpty(metadata.drafts, appData.drafts);
                 appData.classroomTombstones = mergeClassroomTombstones(
                     metadata.classroomTombstones, appData.classroomTombstones);
@@ -16098,12 +16275,17 @@
                 const localNbCount = (((appData.notebooks || {}).items) || []).length;
                 if (cloudNbCount === 0 && localNbCount > 0) {
                     console.warn('[startup-sync] 云端笔记本索引为空但本地有数据，保留本地笔记本');
+                    repairMetadataAfterStartup = true;
                 } else {
                     appData.notebooks = mergeNotebooksData(
                         metadata.notebooks,
                         appData.notebooks,
                         cloudSyncedAtMs
                     );
+                }
+                if (JSON.stringify(appData.notebooks || { items: [], reviews: [] }) !==
+                    JSON.stringify(metadata.notebooks || { items: [], reviews: [] })) {
+                    repairMetadataAfterStartup = true;
                 }
                 if (metadata.exercises) {
                     const cloudEx = metadata.exercises;
@@ -16168,6 +16350,21 @@
                 appDataLoaded = true;
                 saveData();
                 refreshAllUIFromAppData();
+                if (repairMetadataAfterStartup) {
+                    for (const bookId of Object.keys(appData.lectures || {})) {
+                        for (const chapter of (appData.lectures[bookId]?.chapters || [])) {
+                            if (chapter.status !== 'ready' || !chapter.id) continue;
+                            const lectureData = await getFileData(
+                                lecContentKey(bookId, chapter.id)).catch(() => null);
+                            if (lectureData) {
+                                await r2PutObject('lectures/' + lecContentKey(bookId, chapter.id),
+                                    lectureData, 'text/plain; charset=utf-8');
+                            }
+                        }
+                    }
+                    await r2SyncAllNotebookPages();
+                    await r2SyncMetadataOnly();
+                }
                 if (config.lastSyncTime || metadata.syncedAt) {
                     r2LastSyncTime = metadata.syncedAt || config.lastSyncTime;
                 }
@@ -16260,10 +16457,15 @@
                             if (ch.status === 'ready' && ch.id) {
                                 const lecKey = lecContentKey(bookId, ch.id);
                                 const local = await getFileData(lecKey).catch(() => null);
-                                if (!local) {
+                                const localUpdatedAt = await getLectureContentUpdatedAt(bookId, ch.id);
+                                const cloudUpdatedAt = lectureContentTimestamp(ch);
+                                if (!local || (cloudUpdatedAt > 0 && cloudUpdatedAt > localUpdatedAt)) {
                                     try {
                                         const cloudData = await r2GetObject('lectures/' + lecKey);
-                                        if (cloudData) { await saveFileData(lecKey, cloudData); pulledLectures++; }
+                                        if (cloudData) {
+                                            await saveLectureContent(bookId, ch.id, cloudData, cloudUpdatedAt);
+                                            pulledLectures++;
+                                        }
                                     } catch(e) { console.warn('启动拉取讲义失败:', lecKey, e); }
                                 }
                             }
@@ -16423,6 +16625,9 @@
                 // 完整恢复仍需保留尚未发布到云端的本地录音；快照必须位于
                 // syncFromR2 自己的作用域内，供后面的课堂合并使用。
                 const localClassroomBeforeRestore = appData.classroom || { courses: [], seminars: [] };
+                const localLecturesBeforeRestore = appData.lectures || {};
+                const localNotebooksBeforeRestore = appData.notebooks || { items: [], reviews: [] };
+                const cloudRestoreSyncedAtMs = syncTimestamp(metadata.syncedAt);
                 appData.classroomTombstones = mergeClassroomTombstones(
                     metadata.classroomTombstones, appData.classroomTombstones);
                 const restoreTombstones = mergeClassroomTombstones(
@@ -16446,7 +16651,11 @@
                 appData.papers = metadata.papers || [];
                 appData.notes = metadata.notes || {};
                 appData.archived = metadata.archived || [];
-                appData.lectures = metadata.lectures || {};
+                appData.lectures = mergeLecturesData(
+                    metadata.lectures,
+                    localLecturesBeforeRestore,
+                    cloudRestoreSyncedAtMs
+                );
                 appData.drafts = metadata.drafts || {};
                 const cloudClassroomForRestore = applyClassroomOutboxTombstones(
                     metadata.classroom, restoreTombstones);
@@ -16461,7 +16670,11 @@
                 appData.classroom = mergedClassroom;
                 appData.exercises = metadata.exercises || { folders: [], wrongByFolder: {}, archivedWrong: {} };
                 if (!appData.exercises.archivedWrong) appData.exercises.archivedWrong = {};
-                appData.notebooks = metadata.notebooks || { items: [], reviews: [] };
+                appData.notebooks = mergeNotebooksData(
+                    metadata.notebooks,
+                    localNotebooksBeforeRestore,
+                    cloudRestoreSyncedAtMs
+                );
                 appData.settings = { ...metadata.settings, ...localApiSettings, r2Config: localR2Config };
                 // 用户主动从云端完整恢复，数据可信，允许后续上传
                 appDataLoaded = true;
@@ -16557,7 +16770,8 @@
                                 try {
                                     const lecData = await r2GetObject('lectures/' + lecKey);
                                     if (lecData) {
-                                        await saveFileData(lecKey, lecData);
+                                        await saveLectureContent(bookId, ch.id, lecData,
+                                            lectureContentTimestamp(ch));
                                         downloadedLectures++;
                                     }
                                 } catch (e) {
@@ -18756,10 +18970,13 @@ ${i18n('prompt_outline_gen')}`;
             // 初始化讲义数组
             if (!appData.lectures) appData.lectures = {};
             if (!appData.lectures[bookId]) {
+                const now = new Date().toISOString();
                 appData.lectures[bookId] = {
                     status: 'generating',
                     chapters: [],
-                    currentChapter: 0
+                    currentChapter: 0,
+                    createdAt: now,
+                    updatedAt: now
                 };
             }
             const lectureData = appData.lectures[bookId];
@@ -18779,7 +18996,9 @@ ${i18n('prompt_outline_gen')}`;
                 return;
             }
 
+            const lectureUpdatedAt = new Date().toISOString();
             lectureData.status = 'generating';
+            lectureData.updatedAt = lectureUpdatedAt;
             // 把 outline 落到 lectureData.chapters（保留已生成的状态，内容在 IndexedDB）
             const existingByTitle = {};
             (lectureData.chapters || []).forEach(c => { if (c.title) existingByTitle[c.title] = c; });
@@ -18792,7 +19011,9 @@ ${i18n('prompt_outline_gen')}`;
                     startPage: ch.startPage,
                     endPage: ch.endPage,
                     progress: prev ? prev.progress : 0,
-                    status: prev && prev.status === 'ready' ? 'ready' : 'pending'
+                    status: prev && prev.status === 'ready' ? 'ready' : 'pending',
+                    createdAt: (prev && prev.createdAt) || lectureUpdatedAt,
+                    updatedAt: (prev && prev.updatedAt) || lectureUpdatedAt
                 };
             });
 
@@ -18862,8 +19083,11 @@ ${i18n('prompt_lecture_gen')}`;
                 const contentText = result || i18n('toast_content_gen_failed');
                 chapter.status = 'ready';
                 chapter.generatedAt = new Date().toISOString();
+                chapter.updatedAt = chapter.generatedAt;
+                chapter.contentUpdatedAt = chapter.generatedAt;
+                lectureData.updatedAt = chapter.generatedAt;
                 // 内容存入 IndexedDB，不放 localStorage
-                await saveLectureContent(bookId, chapter.id, contentText);
+                await saveLectureContent(bookId, chapter.id, contentText, chapter.contentUpdatedAt);
                 // 同时在内存中缓存，供当前会话直接使用
                 chapter._contentCache = contentText;
                 saveData();
@@ -18883,6 +19107,8 @@ ${i18n('prompt_lecture_gen')}`;
             } catch (err) {
                 console.error('生成章节内容失败:', err);
                 chapter.status = 'error';
+                chapter.updatedAt = new Date().toISOString();
+                lectureData.updatedAt = chapter.updatedAt;
                 saveData();
                 showToast(i18n('toast_gen_failed') + err.message);
                 // 刷新讲义界面，让用户看到错误状态而非一直转圈
@@ -18982,18 +19208,20 @@ ${i18n('prompt_lecture_gen')}`;
 
             // 从内存缓存或 IndexedDB 加载讲义内容
             let contentText = chapter._contentCache || null;
-            if (!contentText && chapter.status === 'ready' && chapter.id) {
-                container.innerHTML = '<p style="text-align:center;color:var(--text-muted);">' + i18n('loading_lecture') + '</p>';
-                try {
-                    contentText = await getLectureContent(currentLecture.bookId, chapter.id);
-                    if (contentText) {
-                        chapter._contentCache = contentText;
-                    }
-                } catch(e) {
-                    console.error('从 IndexedDB 加载讲义内容失败:', e);
-                }
-                // IndexedDB 中也没有，尝试从 R2 云端拉取
+            if (chapter.status === 'ready' && chapter.id) {
                 if (!contentText) {
+                    container.innerHTML = '<p style="text-align:center;color:var(--text-muted);">' + i18n('loading_lecture') + '</p>';
+                    try {
+                        contentText = await getLectureContent(currentLecture.bookId, chapter.id);
+                        if (contentText) chapter._contentCache = contentText;
+                    } catch(e) {
+                        console.error('从 IndexedDB 加载讲义内容失败:', e);
+                    }
+                }
+                const localUpdatedAt = await getLectureContentUpdatedAt(
+                    currentLecture.bookId, chapter.id);
+                const cloudUpdatedAt = lectureContentTimestamp(chapter);
+                if (!contentText || (cloudUpdatedAt > 0 && cloudUpdatedAt > localUpdatedAt)) {
                     const config = appData.settings && appData.settings.r2Config;
                     if (config && config.accessKeyId) {
                         container.innerHTML = '<p style="text-align:center;color:var(--text-muted);">' + i18n('recovering_lecture') + '</p>';
@@ -19001,7 +19229,8 @@ ${i18n('prompt_lecture_gen')}`;
                             const lecKey = lecContentKey(currentLecture.bookId, chapter.id);
                             const cloudData = await r2GetObject('lectures/' + lecKey);
                             if (cloudData) {
-                                await saveFileData(lecKey, cloudData);
+                                await saveLectureContent(currentLecture.bookId, chapter.id,
+                                    cloudData, cloudUpdatedAt);
                                 contentText = cloudData;
                                 chapter._contentCache = contentText;
                                 console.log('[lecture] 已从云端恢复讲义内容:', lecKey);
@@ -19219,13 +19448,19 @@ ${i18n('prompt_lecture_gen')}`;
             const chapter = appData.lectures[currentLecture.bookId].chapters[currentLecture.chapterIndex];
             chapter.maxProgress = Math.max(chapter.maxProgress || 0, progress);
             chapter.scrollPosition = container.scrollTop;
+            chapter.progressUpdatedAt = Date.now();
+            chapter.updatedAt = new Date(chapter.progressUpdatedAt).toISOString();
+            appData.lectures[currentLecture.bookId].updatedAt = chapter.updatedAt;
             
             // 右上角显示当前进度
             document.getElementById('lectureProgressBadge').textContent = progress + '%';
             
             // 延迟保存，避免频繁写入
             clearTimeout(window.lectureProgressSaveTimeout);
-            window.lectureProgressSaveTimeout = setTimeout(() => saveData(), 1000);
+            window.lectureProgressSaveTimeout = setTimeout(() => {
+                saveData();
+                debouncedChatSync();
+            }, 1000);
         }
 
         // 生成失败后重试
@@ -19236,6 +19471,8 @@ ${i18n('prompt_lecture_gen')}`;
             const chapter = lectureData.chapters[currentLecture.chapterIndex];
             if (!chapter) return;
             chapter.status = 'pending';
+            chapter.updatedAt = new Date().toISOString();
+            lectureData.updatedAt = chapter.updatedAt;
             delete chapter._contentCache;
             saveData();
             generateChapterContent(currentLecture.bookId, currentLecture.chapterIndex);
@@ -19258,6 +19495,8 @@ ${i18n('prompt_lecture_gen')}`;
                 chapter.status = 'pending';
                 chapter.scrollPosition = 0;
                 chapter.maxProgress = 0;
+                chapter.updatedAt = new Date().toISOString();
+                appData.lectures[currentLecture.bookId].updatedAt = chapter.updatedAt;
                 saveData();
                 debouncedChatSync();
                 generateChapterContent(currentLecture.bookId, currentLecture.chapterIndex);
@@ -27252,8 +27491,14 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         async function nbLoadPageContent(pageId) {
             let raw = null;
             try { raw = await getFileData('nbpage_' + pageId); } catch (e) { /* IDB 异常 */ }
-            if (!raw) {
-                // 本地没有 → 尝试云端拉取（另一设备写的内容）
+            let localUpdatedAt = 0;
+            try { localUpdatedAt = syncTimestamp(raw && JSON.parse(raw).updatedAt); } catch (e) {}
+            const page = (appData.notebooks?.items || [])
+                .flatMap(notebook => notebook.pages || [])
+                .find(item => item?.id === pageId);
+            const cloudUpdatedAt = syncTimestamp(page?.updatedAt);
+            if (!raw || (cloudUpdatedAt > 0 && cloudUpdatedAt > localUpdatedAt)) {
+                // 本地没有或云端页面时间戳更新 → 拉取另一设备保存的内容
                 const cfg = appData.settings && appData.settings.r2Config;
                 if (cfg && cfg.accessKeyId) {
                     try {
@@ -27346,7 +27591,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const nb = {
                 id: nbUid('nb'), name, template,
                 createdAt: now, updatedAt: now,
-                pages: [{ id: nbUid('nbp'), template, createdAt: now }]
+                pages: [{ id: nbUid('nbp'), template, createdAt: now, updatedAt: now }]
             };
             nbData().items.unshift(nb);
             saveData();
@@ -27418,11 +27663,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const cfg = appData.settings && appData.settings.r2Config;
                 for (const pg of (nb.pages || [])) {
                     try { await deleteFileData('nbpage_' + pg.id); } catch (e) {}
-                    if (cfg && cfg.accessKeyId && cfg.autoSyncOnChange) {
+                    if (cfg && cfg.accessKeyId && (cfg.autoSyncEnabled || cfg.autoSyncOnChange)) {
                         try { await r2DeleteObject('notebooks/pages/nbpage_' + pg.id); } catch (e) {}
                     }
                 }
-                if (cfg && cfg.accessKeyId && cfg.autoSyncOnChange) {
+                if (cfg && cfg.accessKeyId && (cfg.autoSyncEnabled || cfg.autoSyncOnChange)) {
                     try { await r2DeleteObject(r2NotebookPositionKey(nbId)); } catch (e) {}
                 }
             })();
@@ -27477,8 +27722,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const nb = nbGetNotebook(id);
             if (!nb) return;
             if (!nb.pages || !nb.pages.length) {
-                nb.pages = [{ id: nbUid('nbp'), template: nb.template || 'blank', createdAt: new Date().toISOString() }];
+                const now = new Date().toISOString();
+                nb.pages = [{ id: nbUid('nbp'), template: nb.template || 'blank', createdAt: now, updatedAt: now }];
+                nbTouch(nb);
                 saveData();
+                nbSyncNotebookEvent('notebook_page_add', nb.pages[0].id);
             }
             nbRestoreLocalPosition(nb);
             const cloudPositionTs = r2NotebookPositionTimestamp(cloudPosition);
@@ -27556,14 +27804,21 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             delete nbThumbCache[pageId];
             try {
                 // 下划线开头的运行时缓存字段（如 _bb 包围盒）不落盘
+                const updatedAt = new Date().toISOString();
+                nbState.content.updatedAt = updatedAt;
                 await saveFileData('nbpage_' + pageId, JSON.stringify(nbState.content, (k, v) => k.startsWith('_') ? undefined : v));
+                page.updatedAt = updatedAt;
+                const notebook = nbCurrentNotebook();
+                if (notebook) nbTouch(notebook);
+                saveData();
+                nbSyncNotebookEvent('notebook_page_update', pageId);
             } catch (e) {
                 console.error('[nb] 页面保存失败:', e);
                 showToast(i18n('storage_save_failed'));
                 nbState.dirty = true;
                 return;
             }
-            // 笔画更新只保存到本地 IndexedDB；云同步在打开/关闭、页面结构变更和加入复习时进行。
+            // 页面正文与元数据使用同一更新时间戳同步。
         }
 
         async function nbLoadPage(index, syncPosition = true) {
@@ -27614,10 +27869,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             // 已是最后一页 → 自动以当前页模板追加新页
             await nbSavePageNow();
             const cur = nbCurrentPage();
-            nb.pages.push({ id: nbUid('nbp'), template: (cur && cur.template) || nb.template || 'blank', createdAt: new Date().toISOString() });
+            const now = new Date().toISOString();
+            const page = { id: nbUid('nbp'), template: (cur && cur.template) || nb.template || 'blank', createdAt: now, updatedAt: now };
+            nb.pages.push(page);
             nbTouch(nb);
             saveData();
-            nbSyncNotebookEvent('notebook_page_add');
+            nbSyncNotebookEvent('notebook_page_add', page.id);
             nbLoadPage(nb.pages.length - 1);
             showToast(i18n('page_created'));
         }
@@ -28874,13 +29131,14 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             await nbSavePageNow();
             const sel = document.getElementById('nbNewPageTpl');
             const tpl = (!sel || sel.value === '__cur__') ? (nbCurrentPage().template || 'blank') : sel.value;
-            const page = { id: nbUid('nbp'), template: tpl, createdAt: new Date().toISOString() };
+            const now = new Date().toISOString();
+            const page = { id: nbUid('nbp'), template: tpl, createdAt: now, updatedAt: now };
             const at = nbState.pageIndex + (after ? 1 : 0);
             nb.pages.splice(at, 0, page);
             nbTouch(nb);
             saveData();
             nbHidePanel();
-            nbSyncNotebookEvent('notebook_page_add');
+            nbSyncNotebookEvent('notebook_page_add', page.id);
             nbLoadPage(at);
             showToast(i18n('page_inserted'));
         }
@@ -29194,7 +29452,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     const dataUrl = cv.toDataURL('image/jpeg', 0.8);
                     const mediaId = nbUid('m');
                     await saveFileData('nbmedia_' + mediaId, dataUrl);
-                    nb.pages.splice(at, 0, { id: nbUid('nbp'), template: 'blank', bgImage: mediaId, createdAt: new Date().toISOString() });
+                    const now = new Date().toISOString();
+                    nb.pages.splice(at, 0, { id: nbUid('nbp'), template: 'blank', bgImage: mediaId, createdAt: now, updatedAt: now });
                     at++;
                     if (i % 5 === 0) showToast(i18n('pdf_import_progress', i, count));
                 }

@@ -13325,6 +13325,7 @@
         let r2LastSyncTime = null;
         let r2SyncInProgress = false;
         let r2PendingSyncQueue = []; // 排队等待的文件变更同步任务队列
+        let activeLectureGenerationCount = 0;
         const r2ClassroomRetryTimers = new Map();
         let r2StartupMetadataReady = Promise.resolve();
         let _resolveR2StartupMetadataReady = null;
@@ -13575,6 +13576,10 @@
         async function performAutoSync() {
             if (!appDataLoaded) {
                 console.warn('[sync] 数据未加载完成，跳过定时同步');
+                return;
+            }
+            if (activeLectureGenerationCount > 0) {
+                console.log('[sync] 讲义仍在生成，延后定时同步');
                 return;
             }
             const config = appData.settings.r2Config;
@@ -14706,6 +14711,13 @@
             const config = appData.settings.r2Config;
             if (!config || !config.accessKeyId ||
                 (!config.autoSyncEnabled && !config.autoSyncOnChange)) {
+                return;
+            }
+
+            if (activeLectureGenerationCount > 0) {
+                if (!r2PendingSyncQueue.some(t => t.fileId === fileId && t.action === action)) {
+                    r2PendingSyncQueue.push({ fileId, action, attempt });
+                }
                 return;
             }
             
@@ -19055,6 +19067,7 @@ ${i18n('prompt_outline_gen')}`;
                 displayLectureContent();
             }
 
+            activeLectureGenerationCount++;
             try {
                 const systemPrompt = i18n('prompt_lecture_sys');
 
@@ -19116,6 +19129,16 @@ ${i18n('prompt_lecture_gen')}`;
                     displayLectureContent();
                 }
                 renderNotesPage();
+            } finally {
+                activeLectureGenerationCount = Math.max(0, activeLectureGenerationCount - 1);
+                if (activeLectureGenerationCount === 0 && !r2SyncInProgress && r2PendingSyncQueue.length > 0) {
+                    const lectureUploadIndex = r2PendingSyncQueue.findIndex(item =>
+                        item.action === 'lecture_upload');
+                    const pending = lectureUploadIndex >= 0
+                        ? r2PendingSyncQueue.splice(lectureUploadIndex, 1)[0]
+                        : r2PendingSyncQueue.shift();
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                }
             }
         }
 

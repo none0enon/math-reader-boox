@@ -9702,7 +9702,7 @@
                 // IndexedDB 也没有，尝试从 R2 云端拉取恢复
                 if (!fileData) {
                     const r2cfg = appData.settings?.r2Config;
-                    if (r2cfg?.endpoint && r2cfg?.accessKeyId && r2cfg?.secretAccessKey && r2cfg?.bucketName) {
+                    if (r2cfg?.endpoint && r2cfg?.accessKeyId && r2cfg?.secretKey && r2cfg?.bucketName) {
                         showToast(i18n('toast_local_file_lost'));
                         try {
                             const cloudData = await r2GetObject('files/' + doc.id + '.pdf');
@@ -14096,9 +14096,24 @@
                 const mergedIntent = remoteClassroomCount === 0 && localClassroomCount > 0
                     ? localClassroom
                     : mergeClassroomData(remoteClassroom, localClassroom, remoteBaseline);
-                const candidateBase = options.classroomOnly && remoteMetadata
+                let candidateBase = options.classroomOnly && remoteMetadata
                     ? remoteMetadata
                     : localMetadata;
+                if (!options.classroomOnly) {
+                    candidateBase = {
+                        ...candidateBase,
+                        books: mergeDocsPreferringLocalProgress(
+                            (appData.books || []).map(book => cleanDocForSync(book)),
+                            remoteMetadata?.books || [],
+                            Number.MAX_SAFE_INTEGER
+                        ),
+                        papers: mergeDocsPreferringLocalProgress(
+                            (appData.papers || []).map(paper => cleanDocForSync(paper)),
+                            remoteMetadata?.papers || [],
+                            Number.MAX_SAFE_INTEGER
+                        )
+                    };
+                }
                 const candidate = {
                     ...candidateBase,
                     classroom: stripClassroomData(mergedIntent, true),
@@ -15660,8 +15675,8 @@
 
         // On app startup, if auto-sync is enabled and R2 is configured, pull the
         // latest metadata once in the background so the user sees the newest data.
-        // Silent: no toast on success, logs on failure. Does not pull PDF files
-        // (those are pulled on demand by the existing flow when a doc is opened).
+        // Silent: no toast on success, logs on failure. Missing resource files are
+        // restored in the background after metadata is ready.
         // 把云端 docs 合并进本地 docs：对每一本相同 id 的文档，
         // 阅读进度字段 (currentPage / progress) 按 progressUpdatedAt 时间戳取较新的那份。
         // 其余字段（标题、annotations 等）仍以云端为准。
@@ -15694,6 +15709,18 @@
                 for (const f of fields) {
                     const localFTs = Number(local[f.tsKey]) || 0;
                     const cloudFTs = Number(cloudDoc[f.tsKey]) || 0;
+                    if (f.key === 'aiOutline') {
+                        const localHasOutline = Array.isArray(local.aiOutline?.chapters) &&
+                            local.aiOutline.chapters.length > 0;
+                        const cloudHasOutline = Array.isArray(cloudDoc.aiOutline?.chapters) &&
+                            cloudDoc.aiOutline.chapters.length > 0;
+                        if (cloudHasOutline && !localHasOutline) continue;
+                        if (localHasOutline && !cloudHasOutline) {
+                            result[f.key] = local[f.key];
+                            result[f.tsKey] = local[f.tsKey];
+                            continue;
+                        }
+                    }
                     if (localFTs >= cloudFTs) {
                         result[f.key] = local[f.key];
                         result[f.tsKey] = local[f.tsKey];
@@ -16000,7 +16027,7 @@
             r2SyncInProgress = true;
             let ownsR2SyncLock = true;
             try {
-                const metadataStr = await r2GetObjectWithTimeout('metadata.json', 5000);
+                const metadataStr = await r2GetObject('metadata.json');
                 if (!metadataStr) {
                     finishR2StartupMetadataSync();
                     return;
@@ -16156,6 +16183,16 @@
                 }
 
                 // 后台拉取本地缺失的资源文件（只拉本地没有的）
+                for (const doc of [...(appData.books || []), ...(appData.papers || [])]) {
+                    if (!doc?.id) continue;
+                    const localFile = await getFileData(doc.id).catch(() => null);
+                    if (localFile) continue;
+                    try {
+                        const cloudFile = await r2GetObject('files/' + doc.id + '.pdf');
+                        if (cloudFile) await saveFileData(doc.id, cloudFile);
+                    } catch (e) { console.warn('启动拉取书籍失败:', doc.id, e); }
+                }
+
                 let pulledMaterials = 0;
                 for (const listKey of ['courses', 'seminars']) {
                     for (const folder of (appData.classroom?.[listKey] || [])) {
@@ -18703,7 +18740,7 @@ ${i18n('prompt_outline_gen')}`;
                 book.bookmarksUpdatedAt = Date.now();
                 book.outlineUpdatedAt = Date.now();
                 saveData();
-                debouncedChatSync();
+                triggerSyncOnFileChange(bookId, 'outline_update');
                 showToast(i18n('toast_outline_generated', chapters.length));
             } catch (e) {
                 console.error('生成大纲失败:', e);

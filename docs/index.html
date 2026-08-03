@@ -7196,6 +7196,7 @@
                 try { saveCurrentExTimer(); } catch (e) {}
                 try { saveCurrentDrawingToCache(); } catch (e) {}
                 try { nbFlushPositionSync(); } catch (e) {}
+                try { flushLectureProgressSync(); } catch (e) {}
                 try {
                     if (classroomRecordingState?.recorder?.state === 'recording') {
                         classroomRecordingState.recorder.requestData();
@@ -7494,11 +7495,16 @@
             return 'lecture_' + bookId + '_' + chapterId;
         }
 
-        async function saveLectureContent(bookId, chapterId, content, updatedAt) {
+        // options.cloudSynced: 这份正文就是从云端取回来的，登记为"云端已有该版本"，
+        // 后续同步不必再把它原样传回去。
+        async function saveLectureContent(bookId, chapterId, content, updatedAt, options = {}) {
             const key = lecContentKey(bookId, chapterId);
             await saveFileData(key, content);
             const timestamp = syncTimestamp(updatedAt) || Date.now();
             await saveFileData(key + '__updated_at__', String(timestamp));
+            if (options.cloudSynced) {
+                await saveFileData(key + '__cloud_at__', String(timestamp));
+            }
         }
 
         async function getLectureContent(bookId, chapterId) {
@@ -7511,10 +7517,22 @@
             return Number(await getFileData(key).catch(() => 0)) || 0;
         }
 
+        // 已确认存在于云端的正文版本时间戳（0 = 从未确认过）
+        async function getLectureContentCloudAt(bookId, chapterId) {
+            const key = lecContentKey(bookId, chapterId) + '__cloud_at__';
+            return Number(await getFileData(key).catch(() => 0)) || 0;
+        }
+
+        async function markLectureContentCloudAt(bookId, chapterId, timestamp) {
+            const key = lecContentKey(bookId, chapterId) + '__cloud_at__';
+            try { await saveFileData(key, String(Number(timestamp) || Date.now())); } catch (e) {}
+        }
+
         async function deleteLectureContent(bookId, chapterId) {
             const key = lecContentKey(bookId, chapterId);
             try { await deleteFileData(key); } catch(e) {}
             try { await deleteFileData(key + '__updated_at__'); } catch(e) {}
+            try { await deleteFileData(key + '__cloud_at__'); } catch(e) {}
         }
 
         // 删除某本书的所有讲义内容
@@ -8477,6 +8495,7 @@
                 document.getElementById('lectureViewer').classList.remove('show');
                 document.getElementById('lectureFooter').style.display = 'none';
                 document.body.classList.remove('lecture-active');
+                flushLectureProgressSync();
             }
 
             // 控制草稿小条显示
@@ -13347,6 +13366,18 @@
         const CLASSROOM_DELETE_ACTIONS = ['classroom_delete', 'classroom_note_delete',
             'recording_delete', 'classroom_folder_delete'];
 
+        // 这些 action 只发布课堂子树（classroomOnly），不携带书籍/讲义/笔记本的改动，
+        // 因此不能替别的任务发布 metadata。
+        const CLASSROOM_ONLY_METADATA_ACTIONS = ['recording_upload', 'classroom_upload',
+            'classroom_note_upload', ...CLASSROOM_DELETE_ACTIONS];
+
+        // metadata 是整份快照，一批变更只需要最后发布一次。队列里还排着会发布完整
+        // 快照的任务时，当前任务就把发布权让给它，避免一批讲义生成产生多次同步。
+        function syncActionPublishesFullMetadata(action) {
+            return !CLASSROOM_ONLY_METADATA_ACTIONS.includes(action);
+        }
+        let r2DeferredMetadataPublish = false;
+
         function mergeClassroomTombstones(...sources) {
             const merged = new Map();
             for (const source of sources) {
@@ -13850,17 +13881,7 @@
                 }
                 if (classroomPayloadSyncFailed) return;
 
-                for (const bookId of Object.keys(appData.lectures || {})) {
-                    for (const chapter of (appData.lectures[bookId]?.chapters || [])) {
-                        if (chapter.status !== 'ready' || !chapter.id) continue;
-                        const lectureData = await getFileData(
-                            lecContentKey(bookId, chapter.id)).catch(() => null);
-                        if (lectureData) {
-                            await r2PutObject('lectures/' + lecContentKey(bookId, chapter.id),
-                                lectureData, 'text/plain; charset=utf-8');
-                        }
-                    }
-                }
+                await r2SyncChangedLectureContents();
                 await r2SyncAllNotebookPages();
 
                 // 再把合并后的结果推回云端
@@ -13998,6 +14019,9 @@
                 if (r2PendingSyncQueue.length > 0) {
                     const pending = r2PendingSyncQueue.shift();
                     triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                } else if (r2DeferredMetadataPublish) {
+                    r2DeferredMetadataPublish = false;
+                    triggerSyncOnFileChange(null, 'metadata_update');
                 }
             }
         }
@@ -14035,17 +14059,30 @@
             return Number.isFinite(parsed) ? parsed : 0;
         }
 
-        function lectureSyncTimestamp(item) {
-            let latest = Math.max(
+        // 讲义对象的"结构/正文"时间戳：只反映生成、重生成、章节调整等真正改变
+        // 内容的操作。阅读进度（progressUpdatedAt）刻意不计入——否则在一台设备上
+        // 滚动一下讲义，就会让内容更旧的本地对象整体压过云端较新的章节元数据。
+        function lectureStructureTimestamp(item) {
+            return Math.max(
                 syncTimestamp(item?.updatedAt),
                 syncTimestamp(item?.generatedAt),
                 syncTimestamp(item?.createdAt),
-                Number(item?.progressUpdatedAt) || 0
+                syncTimestamp(item?.contentUpdatedAt)
             );
-            for (const chapter of (item?.chapters || [])) {
-                latest = Math.max(latest, lectureSyncTimestamp(chapter));
+        }
+
+        // 判断"本地独有的讲义是不是新建的"时才把章节时间戳卷进来：整本讲义没有
+        // 自己的 createdAt 时，靠章节的生成时间识别本地新建，避免被误判成云端已删除。
+        function lectureBookStructureTimestamp(lecture) {
+            let latest = lectureStructureTimestamp(lecture);
+            for (const chapter of (lecture?.chapters || [])) {
+                latest = Math.max(latest, lectureStructureTimestamp(chapter));
             }
             return latest;
+        }
+
+        function lectureProgressTimestamp(item) {
+            return Number(item?.progressUpdatedAt) || 0;
         }
 
         function lectureContentTimestamp(chapter) {
@@ -14070,23 +14107,30 @@
                     cloudIds.add(cloudChapter.id);
                     const localChapter = localById.get(cloudChapter.id);
                     if (!localChapter) return cloudChapter;
-                    const result = {
-                        ...(lectureSyncTimestamp(localChapter) > lectureSyncTimestamp(cloudChapter)
-                            ? localChapter : cloudChapter)
-                    };
-                    const cloudProgressTs = Number(cloudChapter.progressUpdatedAt) || 0;
-                    const localProgressTs = Number(localChapter.progressUpdatedAt) || 0;
-                    if (localProgressTs > cloudProgressTs) {
-                        result.progress = localChapter.progress;
-                        result.maxProgress = localChapter.maxProgress;
-                        result.scrollPosition = localChapter.scrollPosition;
-                        result.progressUpdatedAt = localChapter.progressUpdatedAt;
+                    // 章节主体按结构时间戳取新，阅读进度按 progressUpdatedAt 单独取新，
+                    // 两者互不影响：滚动不会翻转正文归属，重生成也不会丢掉阅读位置。
+                    const base = lectureStructureTimestamp(localChapter) >
+                        lectureStructureTimestamp(cloudChapter) ? localChapter : cloudChapter;
+                    const result = { ...base };
+                    const cloudProgressTs = lectureProgressTimestamp(cloudChapter);
+                    const localProgressTs = lectureProgressTimestamp(localChapter);
+                    const progressSource = localProgressTs > cloudProgressTs ? localChapter
+                        : cloudProgressTs > localProgressTs ? cloudChapter : base;
+                    if (progressSource !== base) {
+                        for (const field of ['progress', 'scrollPosition', 'progressUpdatedAt']) {
+                            if (progressSource[field] !== undefined) result[field] = progressSource[field];
+                        }
                     }
+                    // maxProgress 是"历史最高进度"，两端取最大值而不是取较新的那份
+                    const maxProgress = Math.max(Number(localChapter.maxProgress) || 0,
+                        Number(cloudChapter.maxProgress) || 0);
+                    if (maxProgress > 0) result.maxProgress = maxProgress;
                     return result;
                 });
                 for (const localChapter of (localChapters || [])) {
                     if (!localChapter?.id || cloudIds.has(localChapter.id)) continue;
-                    if (!(cloudChapters || []).length || lectureSyncTimestamp(localChapter) > baseline) {
+                    if (!(cloudChapters || []).length ||
+                        lectureStructureTimestamp(localChapter) > baseline) {
                         merged.push(localChapter);
                     }
                 }
@@ -14100,8 +14144,10 @@
                     merged[bookId] = cloudLecture;
                     continue;
                 }
+                // 整本讲义只按自身结构时间戳选主体；章节新旧由 mergeChapters 逐章判断，
+                // 不再让某一章的滚动时间把整本对象判成"本地更新"。
                 const result = {
-                    ...(lectureSyncTimestamp(localLecture) > lectureSyncTimestamp(cloudLecture)
+                    ...(lectureStructureTimestamp(localLecture) > lectureStructureTimestamp(cloudLecture)
                         ? localLecture : cloudLecture)
                 };
                 result.chapters = mergeChapters(cloudLecture?.chapters, localLecture?.chapters);
@@ -14109,7 +14155,8 @@
             }
             for (const bookId of Object.keys(local)) {
                 if (Object.prototype.hasOwnProperty.call(cloud, bookId)) continue;
-                if (!Object.keys(cloud).length || lectureSyncTimestamp(local[bookId]) > baseline) {
+                if (!Object.keys(cloud).length ||
+                    lectureBookStructureTimestamp(local[bookId]) > baseline) {
                     merged[bookId] = local[bookId];
                 }
             }
@@ -14336,7 +14383,12 @@
                 syncedAt: new Date().toISOString()
             };
 
-            return await r2PublishMetadataWithCas(metadata, classroomIntent, options);
+            const result = await r2PublishMetadataWithCas(metadata, classroomIntent, options);
+            // 完整快照已提交，此前让出发布权的任务无需再补发
+            if (!options.classroomOnly && result?.casCommitted) {
+                r2DeferredMetadataPublish = false;
+            }
+            return result;
         }
 
         // 清理doc对象用于同步：去掉data、chatHistory中去掉screenshot并限制30条
@@ -14393,6 +14445,53 @@
                 });
             });
             return c;
+        }
+
+        // 增量上传单个章节正文。讲义正文是大对象，每轮同步全量重传是流量的主要来源，
+        // 因此只在两个条件同时成立时才上传：
+        //   1. 本地正文比"已确认在云端的版本"新（__cloud_at__ 记录上次成功提交的版本）
+        //   2. 本地正文不比索引里声明的正文版本旧——避免把本机的旧正文回传，
+        //      覆盖掉另一台设备刚重新生成的内容
+        // options.force：手动"同步到云端"时全量重传，同时兼作云端对象丢失后的修复入口。
+        async function r2SyncLectureContentIfChanged(bookId, chapter, options = {}) {
+            if (!bookId || !chapter?.id || chapter.status !== 'ready') return false;
+            const key = lecContentKey(bookId, chapter.id);
+            const localTs = await getLectureContentUpdatedAt(bookId, chapter.id);
+            if (!options.force) {
+                const cloudAt = await getLectureContentCloudAt(bookId, chapter.id);
+                if (cloudAt > 0 && localTs <= cloudAt) return false;
+                const declaredTs = lectureContentTimestamp(chapter);
+                if (declaredTs > 0 && localTs > 0 && localTs < declaredTs) return false;
+            }
+            const data = await getFileData(key).catch(() => null);
+            if (!data) return false;
+            await r2PutObject('lectures/' + key, data, 'text/plain; charset=utf-8');
+            await markLectureContentCloudAt(bookId, chapter.id,
+                localTs || lectureContentTimestamp(chapter) || Date.now());
+            return true;
+        }
+
+        // bookId 可能含下划线，无法从 lecture_<bookId>_<chapterId> 反向切分，按索引反查。
+        function _findLectureChapterByContentKey(fileId) {
+            for (const bookId of Object.keys(appData.lectures || {})) {
+                for (const chapter of (appData.lectures[bookId]?.chapters || [])) {
+                    if (chapter?.id && lecContentKey(bookId, chapter.id) === fileId) {
+                        return { bookId, chapter };
+                    }
+                }
+            }
+            return null;
+        }
+
+        // 遍历所有 ready 章节做增量上传，返回实际上传的条数。
+        async function r2SyncChangedLectureContents(options = {}) {
+            let uploaded = 0;
+            for (const bookId of Object.keys(appData.lectures || {})) {
+                for (const chapter of (appData.lectures[bookId]?.chapters || [])) {
+                    if (await r2SyncLectureContentIfChanged(bookId, chapter, options)) uploaded++;
+                }
+            }
+            return uploaded;
         }
 
         // 普通课堂素材采用与录音相同的两阶段提交：先把不可变正文对象写完整，
@@ -14749,6 +14848,14 @@
                     const lectureData = await getFileData(fileId).catch(() => null);
                     if (!lectureData) throw new Error(i18n('lecture_content_not_found'));
                     await r2PutObject('lectures/' + fileId, lectureData, 'text/plain; charset=utf-8');
+                    // 登记已提交的正文版本，定时同步就不会再重传同一份内容
+                    const uploaded = _findLectureChapterByContentKey(fileId);
+                    if (uploaded) {
+                        const contentTs = await getLectureContentUpdatedAt(
+                            uploaded.bookId, uploaded.chapter.id);
+                        await markLectureContentCloudAt(uploaded.bookId, uploaded.chapter.id,
+                            contentTs || lectureContentTimestamp(uploaded.chapter));
+                    }
                 }
                 let metadataPublishResult = null;
                 // 所有课堂大对象都必须先完整提交，最后才发布 metadata 索引。
@@ -14777,12 +14884,21 @@
                 } else {
                     const notebookWasDeleted = action === 'notebook_metadata_update' && fileId &&
                         !(appData.notebooks?.items || []).some(notebook => notebook?.id === fileId);
-                    metadataPublishResult = await r2SyncMetadataOnly({
-                        allowEmpty: notebookWasDeleted || ['classroom_delete', 'classroom_note_delete',
-                            'recording_delete', 'classroom_folder_delete'].includes(action),
-                        classroomOnly: CLASSROOM_DELETE_ACTIONS.includes(action),
-                        notebookDeletedId: notebookWasDeleted ? fileId : null
-                    });
+                    // 删除类任务带着专属发布选项，必须自己提交；其余的完整快照发布可以
+                    // 合并到队列中后面的任务，一批变更只同步一次 metadata。
+                    const canDeferPublish = !notebookWasDeleted &&
+                        !CLASSROOM_DELETE_ACTIONS.includes(action) &&
+                        r2PendingSyncQueue.some(task => syncActionPublishesFullMetadata(task.action));
+                    if (canDeferPublish) {
+                        r2DeferredMetadataPublish = true;
+                    } else {
+                        metadataPublishResult = await r2SyncMetadataOnly({
+                            allowEmpty: notebookWasDeleted || ['classroom_delete', 'classroom_note_delete',
+                                'recording_delete', 'classroom_folder_delete'].includes(action),
+                            classroomOnly: CLASSROOM_DELETE_ACTIONS.includes(action),
+                            notebookDeletedId: notebookWasDeleted ? fileId : null
+                        });
+                    }
                 }
                 if (['classroom_delete', 'classroom_note_delete', 'recording_delete',
                     'classroom_folder_delete'].includes(action) &&
@@ -14904,9 +15020,12 @@
                 }
             } catch (err) {
                 console.error('文件变更同步失败:', err);
+                // 讲义/摘要正文失败时也重试：它们的 metadata 发布排在正文提交之后，
+                // 不重试就会让刚生成的内容一直停留在本地。
                 const retryableClassroomAction = ['recording_upload', 'classroom_upload',
                     'classroom_note_upload', 'classroom_delete', 'classroom_note_delete',
-                    'recording_delete', 'classroom_folder_delete'].includes(action);
+                    'recording_delete', 'classroom_folder_delete',
+                    'lecture_upload', 'abstract_upload'].includes(action);
                 if (retryableClassroomAction &&
                     (config.autoSyncEnabled || config.autoSyncOnChange) && Number(attempt || 0) < 8) {
                     const key = action + ':' + fileId;
@@ -14926,6 +15045,11 @@
                 if (r2PendingSyncQueue.length > 0) {
                     const pending = r2PendingSyncQueue.shift();
                     triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                } else if (r2DeferredMetadataPublish) {
+                    // 让出发布权的任务最终没能被后续任务代为提交（例如后者失败了），
+                    // 队列排空时补一次，保证本批变更不会停留在本地。
+                    r2DeferredMetadataPublish = false;
+                    triggerSyncOnFileChange(null, 'metadata_update');
                 }
             }
         }
@@ -15674,21 +15798,8 @@
                         }
                     }
                 }
-                let uploadedLectures = 0;
-                if (appData.lectures) {
-                    for (const bookId of Object.keys(appData.lectures)) {
-                        const lecture = appData.lectures[bookId];
-                        for (const chapter of (lecture.chapters || [])) {
-                            if (chapter.status !== 'ready' || !chapter.id) continue;
-                            const lectureData = await getFileData(
-                                lecContentKey(bookId, chapter.id)).catch(() => null);
-                            if (!lectureData) continue;
-                            await r2PutObject('lectures/' + lecContentKey(bookId, chapter.id),
-                                lectureData, 'text/plain; charset=utf-8');
-                            uploadedLectures++;
-                        }
-                    }
-                }
+                // 手动"同步到云端"是全量推送，同时充当云端正文丢失后的修复入口。
+                const uploadedLectures = await r2SyncChangedLectureContents({ force: true });
                 await r2SyncAllNotebookPages();
                 metadata.lectures = stripLectureContent(appData.lectures);
                 metadata.notebooks = appData.notebooks || { items: [], reviews: [] };
@@ -16363,17 +16474,8 @@
                 saveData();
                 refreshAllUIFromAppData();
                 if (repairMetadataAfterStartup) {
-                    for (const bookId of Object.keys(appData.lectures || {})) {
-                        for (const chapter of (appData.lectures[bookId]?.chapters || [])) {
-                            if (chapter.status !== 'ready' || !chapter.id) continue;
-                            const lectureData = await getFileData(
-                                lecContentKey(bookId, chapter.id)).catch(() => null);
-                            if (lectureData) {
-                                await r2PutObject('lectures/' + lecContentKey(bookId, chapter.id),
-                                    lectureData, 'text/plain; charset=utf-8');
-                            }
-                        }
-                    }
+                    // 修复只补齐云端缺的那部分：正文按版本增量上传，不把本机旧正文回传。
+                    await r2SyncChangedLectureContents();
                     await r2SyncAllNotebookPages();
                     await r2SyncMetadataOnly();
                 }
@@ -16475,7 +16577,8 @@
                                     try {
                                         const cloudData = await r2GetObject('lectures/' + lecKey);
                                         if (cloudData) {
-                                            await saveLectureContent(bookId, ch.id, cloudData, cloudUpdatedAt);
+                                            await saveLectureContent(bookId, ch.id, cloudData,
+                                                cloudUpdatedAt, { cloudSynced: true });
                                             pulledLectures++;
                                         }
                                     } catch(e) { console.warn('启动拉取讲义失败:', lecKey, e); }
@@ -16783,7 +16886,7 @@
                                     const lecData = await r2GetObject('lectures/' + lecKey);
                                     if (lecData) {
                                         await saveLectureContent(bookId, ch.id, lecData,
-                                            lectureContentTimestamp(ch));
+                                            lectureContentTimestamp(ch), { cloudSynced: true });
                                         downloadedLectures++;
                                     }
                                 } catch (e) {
@@ -19105,8 +19208,8 @@ ${i18n('prompt_lecture_gen')}`;
                 chapter._contentCache = contentText;
                 saveData();
                 showToast(i18n('toast_lecture_synced'));
-                debouncedChatSync();
-                // 讲义内容也单独同步到云端
+                // 讲义正文单独同步到云端；lecture_upload 提交正文后自己会发布 metadata，
+                // 这里不再另外触发一次 metadata 同步。
                 triggerSyncOnFileChange(lecContentKey(bookId, chapter.id), 'lecture_upload');
                 sendNotification(i18n('toast_lecture_synced'), chapter.title);
 
@@ -19253,7 +19356,7 @@ ${i18n('prompt_lecture_gen')}`;
                             const cloudData = await r2GetObject('lectures/' + lecKey);
                             if (cloudData) {
                                 await saveLectureContent(currentLecture.bookId, chapter.id,
-                                    cloudData, cloudUpdatedAt);
+                                    cloudData, cloudUpdatedAt, { cloudSynced: true });
                                 contentText = cloudData;
                                 chapter._contentCache = contentText;
                                 console.log('[lecture] 已从云端恢复讲义内容:', lecKey);
@@ -19338,14 +19441,13 @@ ${i18n('prompt_lecture_gen')}`;
             // 使用KaTeX渲染数学公式
             renderLectureMath(container);
             
-            // 恢复滚动位置
+            // 恢复滚动位置（程序化滚动，不计入阅读进度）
             if (einkMode) {
                 einkLectureCurrentPage = 0;
-                container.scrollTop = 0;
+                setLectureScrollTop(container, 0);
                 setTimeout(function() { einkUpdateLecturePages(); }, 100);
             } else {
-                const savedScroll = chapter.scrollPosition || 0;
-                container.scrollTop = savedScroll;
+                setLectureScrollTop(container, chapter.scrollPosition || 0);
             }
         }
         
@@ -19457,6 +19559,33 @@ ${i18n('prompt_lecture_gen')}`;
             }
         }
 
+        // 程序化设置 scrollTop（恢复阅读位置、墨水屏重置分页）同样会触发 onscroll。
+        // 这段窗口期内不记进度，否则打开讲义就会写一次时间戳并触发一次云同步，
+        // 墨水屏归零还会把另一台设备存的阅读位置抹成 0。
+        let _lectureProgrammaticScrollUntil = 0;
+        function setLectureScrollTop(container, top) {
+            if (!container) return;
+            _lectureProgrammaticScrollUntil = Date.now() + 400;
+            container.scrollTop = top;
+        }
+
+        // 有尚未推送到云端的讲义阅读进度
+        let _lectureProgressSyncPending = false;
+        function flushLectureProgressSync() {
+            flushLectureProgressSave();
+            if (!_lectureProgressSyncPending) return;
+            _lectureProgressSyncPending = false;
+            triggerSyncOnFileChange(null, 'metadata_update');
+        }
+
+        // 立刻把防抖中的进度写回本地（退出讲义 / app 切后台）
+        function flushLectureProgressSave() {
+            if (!window.lectureProgressSaveTimeout) return;
+            clearTimeout(window.lectureProgressSaveTimeout);
+            window.lectureProgressSaveTimeout = null;
+            saveData();
+        }
+
         function updateLectureProgress() {
             if (!currentLecture) return;
             // Classroom notes have their own progress handler
@@ -19466,23 +19595,36 @@ ${i18n('prompt_lecture_gen')}`;
             const container = document.getElementById('lectureViewerContent');
             const scrollHeight = container.scrollHeight - container.clientHeight;
             const progress = scrollHeight > 0 ? Math.round((container.scrollTop / scrollHeight) * 100) : 100;
-            
-            // 更新进度 - 显示当前滚动位置，同时记录历史最高进度用于卡片显示
-            const chapter = appData.lectures[currentLecture.bookId].chapters[currentLecture.chapterIndex];
-            chapter.maxProgress = Math.max(chapter.maxProgress || 0, progress);
-            chapter.scrollPosition = container.scrollTop;
-            chapter.progressUpdatedAt = Date.now();
-            chapter.updatedAt = new Date(chapter.progressUpdatedAt).toISOString();
-            appData.lectures[currentLecture.bookId].updatedAt = chapter.updatedAt;
-            
+
             // 右上角显示当前进度
             document.getElementById('lectureProgressBadge').textContent = progress + '%';
-            
-            // 延迟保存，避免频繁写入
+
+            if (Date.now() < _lectureProgrammaticScrollUntil) return;
+
+            const chapter = appData.lectures[currentLecture.bookId].chapters[currentLecture.chapterIndex];
+            if (!chapter) return;
+            const scrollPosition = Math.round(container.scrollTop);
+            const maxProgress = Math.max(Number(chapter.maxProgress) || 0, progress);
+            // 位置和历史最高进度都没变（回弹、重排、恢复到原位）就什么都不写，
+            // 避免无谓的 progressUpdatedAt 抖动和随之而来的同步。
+            if (scrollPosition === Math.round(Number(chapter.scrollPosition) || 0) &&
+                maxProgress === (Number(chapter.maxProgress) || 0)) {
+                return;
+            }
+
+            // 只更新进度字段和它自己的时间戳。chapter.updatedAt / lectureData.updatedAt
+            // 表示正文与章节结构的版本，滚动不得改动它们，否则合并时内容较旧的本地
+            // 章节会整体压过云端较新的版本。
+            chapter.maxProgress = maxProgress;
+            chapter.scrollPosition = scrollPosition;
+            chapter.progressUpdatedAt = Date.now();
+            _lectureProgressSyncPending = true;
+
+            // 延迟保存，避免频繁写入。阅读进度只落本地，退出讲义时再统一推送云端。
             clearTimeout(window.lectureProgressSaveTimeout);
             window.lectureProgressSaveTimeout = setTimeout(() => {
+                window.lectureProgressSaveTimeout = null;
                 saveData();
-                debouncedChatSync();
             }, 1000);
         }
 
@@ -20631,6 +20773,9 @@ ${i18n('prompt_lecture_gen')}`;
             saveLectureDraft();
             collapseLectureDraftPanel();
             hideLectureSelectionMenu();
+            // 阅读期间的进度只写本地，退出时统一推一次，多设备仍能接上进度，
+            // 但一次阅读最多产生一次同步而不是每滚动一下一次。
+            flushLectureProgressSync();
 
             // Restore book link button visibility
             document.getElementById('lectureToBookBtn').style.display = '';
@@ -21021,7 +21166,8 @@ ${i18n('prompt_lecture_gen')}`;
             document.getElementById('lectureViewer').classList.remove('show');
             document.getElementById('lectureFooter').style.display = 'none';
             document.body.classList.remove('lecture-active');
-            
+            flushLectureProgressSync();
+
             // 打开书籍并跳转到对应页码
             openDoc(currentLecture.bookId);
             setTimeout(() => {
@@ -21123,7 +21269,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 delete paper.aiAbstract;
                 saveData();
                 showToast(i18n('toast_abstract_generated'));
-                debouncedChatSync();
+                // abstract_upload 同样会发布 metadata，无需重复触发
                 triggerSyncOnFileChange(abstractKey(paperId), 'abstract_upload');
                 renderNotesPage();
                 sendNotification(i18n('notification_abstract_done'), paper.title + i18n('abstract_added'));

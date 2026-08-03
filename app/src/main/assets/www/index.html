@@ -9701,8 +9701,8 @@
                 }
                 // IndexedDB 也没有，尝试从 R2 云端拉取恢复
                 if (!fileData) {
-                    const r2cfg = appData.settings?.r2Config;
-                    if (r2cfg?.endpoint && r2cfg?.accessKeyId && r2cfg?.secretAccessKey && r2cfg?.bucketName) {
+u                    const r2cfg = appData.settings?.r2Config;
+                    if (r2cfg?.endpoint && r2cfg?.accessKeyId && r2cfg?.secretKey && r2cfg?.bucketName) {
                         showToast(i18n('toast_local_file_lost'));
                         try {
                             const cloudData = await r2GetObject('files/' + doc.id + '.pdf');

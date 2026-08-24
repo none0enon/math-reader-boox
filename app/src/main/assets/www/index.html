@@ -23496,6 +23496,36 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 };
             }
 
+            // Safari is the only MediaRecorder that cannot produce WebM, so every iOS PWA
+            // records fragmented MP4. Regrouping its fragments only copies byte ranges, so
+            // an 80-90 minute lecture splits in milliseconds and uses memory proportional
+            // to one segment rather than to the whole recording. Decoding is the fallback
+            // for the containers this cannot handle, not the other way round.
+            const splitFragmented = window.RecordingAI && window.RecordingAI.splitFragmentedMp4;
+            if (typeof splitFragmented === 'function') {
+                const fragmented = await splitFragmented(blob, {
+                    maxSegmentMs: RECORDING_AI_SEGMENT_MS,
+                    maxSegmentBytes: RECORDING_AI_SEGMENT_BYTES,
+                    mimeType: (blob.type || 'audio/mp4').split(';')[0],
+                    totalDurationMs: duration > 0 ? Math.round(duration * 1000) : 0
+                }).catch(e => {
+                    console.warn('[recording/ai] 分片 MP4 分段失败，回退解码:', e);
+                    return null;
+                });
+                if (fragmented && fragmented.segments.length) {
+                    return {
+                        segments: fragmented.segments.map(item => ({
+                            index: item.index,
+                            durationMs: item.durationMs,
+                            mimeType: item.mimeType,
+                            byteLength: item.byteLength,
+                            load: async () => item.blob
+                        })),
+                        cleanup: async () => {}
+                    };
+                }
+            }
+
             const context = _createLocalSplitContext();
             if (!context) throw new Error(i18n('local_audio_split_unsupported'));
             const estimatedSeconds = _estimateRecordingSeconds(blob, duration);

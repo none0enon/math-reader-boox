@@ -7038,6 +7038,24 @@
             prompt_wrong_item_context:'\n[Erreur {0}] Question {1} (note : {2}/10)\nProblème : {3}\n', prompt_wrong_ai_comment:'Commentaire IA : {0}\n', prompt_single_wrong_context:'[Erreur] Question {0} (note : {1}/10)\nProblème : {2}\n', prompt_wrong_grade_analysis:'Notation et analyse IA :\n{0}\n', prompt_wrong_images_user:'Les images ci-dessus sont les réponses manuscrites aux erreurs sélectionnées.\n\nQuestion de l’utilisateur : {0}'
         });
         Object.assign(I18N.zh, {
+            files_api_processing_timeout:'Files API 处理超时',
+            rec_uploading_long_recording:'正在上传长录音到 Gemini…',
+            rec_processing_long_recording:'Gemini 正在处理整段长录音…',
+            prompt_long_recording_file:'这是完整的长录音。必须覆盖从开头到结尾的全部内容，并按约 5 分钟的时间范围组织详细纪要。覆盖全程比逐字逐句更重要；请保留关键论述、例子、公式、结论和待办事项，不得只处理录音开头。'
+        });
+        Object.assign(I18N.en, {
+            files_api_processing_timeout:'Files API processing timed out',
+            rec_uploading_long_recording:'Uploading the long recording to Gemini…',
+            rec_processing_long_recording:'Gemini is processing the complete long recording…',
+            prompt_long_recording_file:'This is the complete long recording. Cover it from beginning to end and organize detailed minutes in roughly five-minute time ranges. Full coverage matters more than a word-for-word transcript; preserve key arguments, examples, formulas, conclusions, and action items. Do not process only the beginning.'
+        });
+        Object.assign(I18N.fr, {
+            files_api_processing_timeout:'Le traitement Files API a expiré',
+            rec_uploading_long_recording:'Téléversement du long enregistrement vers Gemini…',
+            rec_processing_long_recording:'Gemini traite l’enregistrement long complet…',
+            prompt_long_recording_file:'Ceci est l’enregistrement long complet. Couvre-le du début à la fin et organise un compte rendu détaillé par plages d’environ cinq minutes. La couverture complète est plus importante qu’une transcription mot à mot ; conserve les arguments, exemples, formules, conclusions et actions. Ne traite pas uniquement le début.'
+        });
+        Object.assign(I18N.zh, {
             nb_template_blank:'空白', nb_template_wide:'宽横线', nb_template_narrow:'窄横线', nb_template_cornell:'康奈尔', nb_template_meeting:'会议记录', pages_count:'{0} 页', unnamed_notebook:'未命名笔记本', notebook_created:'笔记本已创建', rename_notebook_prompt:'重命名笔记本：', confirm_delete_notebook:'删除笔记本「{0}」及其全部 {1} 页内容？', deleted_notebook:'已删除的笔记本', page_deleted:'页面已删除', storage_save_failed:'保存失败：存储空间异常', page_created:'已新建一页', page_inserted:'已插入新页',
             cornell_cues:'线索', cornell_notes:'笔记', cornell_summary:'总结', meeting_topic:'会议主题：', meeting_time:'时间：', meeting_participants:'参与人：', meeting_agenda:'议程 / 讨论', meeting_actions:'行动项', brush_number:'笔刷 {0}', fountain_pen:'钢笔', highlighter:'高光笔', enlarge:'放大', shrink:'缩小', change_color:'改色', ai_recognize:'AI 识别', copy:'复制', ai_recognizing:'AI 识别中…', ai_recognition_failed:'AI 识别失败：{0}', ai_recognition_result:'AI 识别结果', insert_as_text_box:'插入为文本框', copy_text:'复制文本', copied:'已复制', copy_failed:'复制失败', vertical:'竖排', horizontal:'横排', audio_missing:'音频不存在', recording:'录音',
             change_template:'更改模板', apply_current_page:'应用到当前页', apply_entire_notebook:'应用到整个笔记本', template_applied_page:'已应用到当前页', template_applied_notebook:'已应用到整个笔记本', shape_circle:'圆', shape_rectangle:'长方形', shape_triangle:'三角形', shape_line:'直线', shape_smooth_curve:'平滑曲线', shape_arrow:'箭头', shape_axes_2d:'二维坐标系', shape_axes_3d:'三维坐标系', insert_shape_hint:'插入图形（在页面上拖动绘制）', drag_to_draw:'在页面上拖动绘制', current_page_template:'当前页模板（{0}）', page_management_count:'页面管理（共 {0} 页）', insert_before_current:'在当前页前插入', insert_after_current:'在当前页后插入', insert_pdf_file:'插入 PDF 文件', delete_current_page:'删除当前页', zoom_range:'范围 50% – 200%',
@@ -12380,6 +12398,23 @@
         // 判断一个 URL 是否为 Google Gemini 端点（用 host 判断，不依赖下拉框）
         function isGeminiUrl(url) {
             return typeof url === 'string' && url.indexOf('generativelanguage.googleapis.com') !== -1;
+        }
+
+        function _configuredGeminiRecordingConfig() {
+            const settings = appData.settings || {};
+            const candidates = [{
+                url: settings.aiApiUrl,
+                key: settings.aiApiKey,
+                model: settings.aiModel,
+                provider: settings.apiProvider || ''
+            }, {
+                url: settings.backupUrl,
+                key: settings.backupKey,
+                model: settings.backupModel,
+                provider: settings.backupProvider || ''
+            }];
+            return candidates.find(config => config.url && config.key && config.model &&
+                (isGeminiUrl(config.url) || config.provider === 'custom')) || null;
         }
 
         async function fetchModels(type) {
@@ -18820,8 +18855,18 @@
                                 if (match) {
                                     parts.push({ inline_data: { mime_type: match[1], data: match[2] } });
                                 }
-                            } else if (item.type === 'audio' && (item.audio?.data || item.audio?.blob)) {
-                                const mime = item.audio.mimeType || 'audio/webm';
+                            } else if (item.type === 'audio' &&
+                                (item.audio?.data || item.audio?.blob || item.audio?.fileUri)) {
+                                const mime = window.RecordingAI?.normalizeGeminiAudioMime(
+                                    item.audio.mimeType || 'audio/webm') ||
+                                    item.audio.mimeType || 'audio/webm';
+                                if (item.audio.fileUri) {
+                                    parts.push({ file_data: {
+                                        mime_type: mime,
+                                        file_uri: item.audio.fileUri
+                                    } });
+                                    continue;
+                                }
                                 const audioBlob = item.audio.blob || null;
                                 let b64 = item.audio.data || null;
                                 const approxBytes = audioBlob ? audioBlob.size : Math.floor(b64.length * 3 / 4);
@@ -18916,8 +18961,9 @@
         }
 
         // 走 Gemini Files API：先发 start 拿到 upload URL，再上传字节，最后得到 file_uri
-        async function geminiUploadFile(base, key, bytes, mimeType, displayName) {
+        async function geminiUploadFile(base, key, bytes, mimeType, displayName, options = {}) {
             // base 形如 https://generativelanguage.googleapis.com/v1beta
+            const normalizedMime = window.RecordingAI?.normalizeGeminiAudioMime(mimeType) || mimeType;
             const origin = base.replace(/\/v1beta.*$/, '');
             const startUrl = origin + '/upload/v1beta/files?key=' + encodeURIComponent(key);
             const startResp = await fetch(startUrl, {
@@ -18926,7 +18972,7 @@
                     'X-Goog-Upload-Protocol': 'resumable',
                     'X-Goog-Upload-Command': 'start',
                     'X-Goog-Upload-Header-Content-Length': String(bytes.size ?? bytes.length),
-                    'X-Goog-Upload-Header-Content-Type': mimeType,
+                    'X-Goog-Upload-Header-Content-Type': normalizedMime,
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({ file: { display_name: displayName } })
@@ -18950,23 +18996,43 @@
                 throw new Error(i18n('files_api_upload_failed', putResp.status, t));
             }
             const info = await putResp.json();
-            // 上传后文件有个 ACTIVE 状态过程，通常 PDF 立即可用，但保险起见轮询一次
+            // Long audio can need substantially longer than a PDF to become ACTIVE.
             const fileObj = info.file || info;
             const name = fileObj.name;
-            const mime = fileObj.mimeType || mimeType;
+            const mime = window.RecordingAI?.normalizeGeminiAudioMime(
+                fileObj.mimeType || normalizedMime) || fileObj.mimeType || normalizedMime;
             let uri = fileObj.uri;
-            // 轮询直到 state=ACTIVE
-            if (fileObj.state && fileObj.state !== 'ACTIVE') {
-                for (let i = 0; i < 20; i++) {
-                    await new Promise(r => setTimeout(r, 1000));
+            let state = fileObj.state || 'ACTIVE';
+            if (name && state !== 'ACTIVE') {
+                const timeoutMs = Math.max(10000, Number(options.processingTimeoutMs) || 60000);
+                const deadline = Date.now() + timeoutMs;
+                while (state !== 'ACTIVE' && Date.now() < deadline) {
+                    await new Promise(r => setTimeout(r, 2000));
                     const poll = await fetch(base + '/' + name + '?key=' + encodeURIComponent(key));
                     if (!poll.ok) break;
                     const pd = await poll.json();
-                    if (pd.state === 'ACTIVE') { uri = pd.uri; break; }
-                    if (pd.state === 'FAILED') throw new Error(i18n('files_api_processing_failed'));
+                    state = pd.state || state;
+                    if (state === 'ACTIVE') { uri = pd.uri || uri; break; }
+                    if (state === 'FAILED') throw new Error(i18n('files_api_processing_failed'));
                 }
+                if (state !== 'ACTIVE') throw new Error(i18n('files_api_processing_timeout'));
             }
-            return { file_uri: uri, mime_type: mime };
+            if (!uri) throw new Error(i18n('files_api_processing_failed'));
+            return { name, file_uri: uri, mime_type: mime };
+        }
+
+        async function geminiDeleteFile(base, key, name) {
+            if (!base || !key || !name) return;
+            try {
+                const response = await fetch(base + '/' + name + '?key=' + encodeURIComponent(key), {
+                    method: 'DELETE'
+                });
+                if (!response.ok && response.status !== 404) {
+                    console.warn('Gemini temporary file cleanup failed:', response.status);
+                }
+            } catch (error) {
+                console.warn('Gemini temporary file cleanup failed:', error);
+            }
         }
 
         // OpenAI-compatible API call with message history (保留兼容)
@@ -23668,6 +23734,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         const RECORDING_AI_SEGMENT_MS = 5 * 60 * 1000;
         const RECORDING_AI_SEGMENT_BYTES = 10 * 1024 * 1024;
         const RECORDING_AI_WAV_RATE = 16000;
+        const RECORDING_AI_LONG_MAX_TOKENS = 32768;
 
         async function _probeAudioDuration(blob) {
             return new Promise((resolve, reject) => {
@@ -23694,6 +23761,29 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 };
                 audio.src = url;
             });
+        }
+
+        async function _prepareGeminiFileRecordingAi(blob, durationSeconds) {
+            const config = _configuredGeminiRecordingConfig();
+            if (!config) throw new Error(i18n('large_recording_requires_gemini'));
+            const base = config.url.replace(/\/+$/, '').replace(/\/models$/, '');
+            const mimeType = window.RecordingAI.normalizeGeminiAudioMime(
+                blob.type || 'audio/mp4');
+            showToast(i18n('rec_uploading_long_recording'));
+            const file = await geminiUploadFile(base, config.key, blob, mimeType,
+                'long-recording', { processingTimeoutMs: 10 * 60 * 1000 });
+            return {
+                mode: 'gemini-file',
+                segments: [{
+                    index: 0,
+                    durationMs: Math.max(0, Math.round(Number(durationSeconds || 0) * 1000)),
+                    mimeType: file.mime_type,
+                    byteLength: blob.size,
+                    geminiConfig: config,
+                    geminiFile: file
+                }],
+                cleanup: async () => geminiDeleteFile(base, config.key, file.name)
+            };
         }
 
         function _encodeAudioBufferSliceAsWav(buffer, startFrame, endFrame) {
@@ -23739,6 +23829,14 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         async function _prepareBrowserRecordingAiSegments(blob, knownDurationSeconds) {
             let duration = Number(knownDurationSeconds || 0);
             if (!(duration > 0)) duration = await _probeAudioDuration(blob);
+            const useGeminiFile = window.RecordingAI?.shouldUseGeminiFileAudio({
+                mimeType: blob.type,
+                durationSeconds: duration,
+                byteLength: blob.size,
+                maxDurationMs: RECORDING_AI_SEGMENT_MS,
+                maxBytes: RECORDING_AI_SEGMENT_BYTES
+            });
+            if (useGeminiFile) return _prepareGeminiFileRecordingAi(blob, duration);
             if (duration > 0 && duration * 1000 <= RECORDING_AI_SEGMENT_MS &&
                 blob.size <= RECORDING_AI_SEGMENT_BYTES) {
                 return {
@@ -23923,7 +24021,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             const blob = await getRecordingBlob(material);
             if (!blob?.size) throw new Error(i18n('recording_content_missing'));
-            return _prepareBrowserRecordingAiSegments(blob, material.duration);
+            return _prepareBrowserRecordingAiSegments(blob,
+                Number(material.duration || 0) || Number(idbManifest?.duration || 0));
         }
 
         async function generateClassroomRecordingNote(type, folderId, sessionId, materialIndex, options = {}) {
@@ -23951,6 +24050,21 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         }
                     },
                     transcribe: async (segment, context) => {
+                        if (segment.geminiFile) {
+                            showToast(i18n('rec_processing_long_recording'));
+                            const longSystem = systemPrompt + '\n\n' +
+                                i18n('prompt_long_recording_file');
+                            return doGeminiRequest(segment.geminiConfig, longSystem, [{
+                                role: 'user',
+                                content: [
+                                    { type: 'audio', audio: {
+                                        fileUri: segment.geminiFile.file_uri,
+                                        mimeType: segment.geminiFile.mime_type
+                                    } },
+                                    { type: 'text', text: userMsg }
+                                ]
+                            }], { maxTokens: RECORDING_AI_LONG_MAX_TOKENS, temperature: 0.3 });
+                        }
                         let partBlob = null;
                         try {
                             partBlob = await segment.load();
@@ -23980,7 +24094,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     }
                 });
                 let content = job.content;
-                if (job.segmentCount > 1) {
+                if (job.segmentCount > 1 || prepared.mode === 'gemini-file') {
                     content = '# ' + material.ref + ' ' + i18n('rec_note_badge') + '\n\n' + content;
                 }
                 const note = await _commitGeneratedClassroomNote({

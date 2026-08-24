@@ -35,8 +35,12 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -63,10 +67,19 @@ public final class RecordingBridge {
     private static final long MAX_WAV_DATA_BYTES = 0xffff_ffffL - 36L;
     private static final long DECODER_STALL_TIMEOUT_MS = 30_000L;
     private static final long CODEC_DEQUEUE_TIMEOUT_US = 10_000L;
+    // A caller that stopped polling has navigated away or had its renderer restarted.
+    // Preparing a 90 minute recording can take minutes, so abandoned work must stop on its
+    // own instead of burning CPU and disk behind a page that will never read the result.
+    // Kept well above the once-a-minute timer throttling a backgrounded WebView is subject to.
+    private static final long AI_JOB_ABANDON_TIMEOUT_MS = 5L * 60L * 1000L;
+    private static final long AI_JOB_RESULT_RETENTION_MS = 15L * 60L * 1000L;
+    private static final int MAX_ACTIVE_AI_JOBS = 2;
+    private static final int AI_CANCEL_CHECK_SAMPLES = 256;
 
     private final Context context;
     private final File root;
     private final File aiSegmentsRoot;
+    private final Map<String, AiSegmentJob> aiJobs = new ConcurrentHashMap<>();
 
     public RecordingBridge(Context context) {
         this.context = context.getApplicationContext();
@@ -328,15 +341,150 @@ public final class RecordingBridge {
     }
 
     /**
+     * Blocking segmentation, kept for page bundles that predate the job API below.
+     *
+     * A JavaScript bridge call blocks the calling WebView thread until it returns, and
+     * preparing an 80-90 minute recording takes long enough that the page stops painting
+     * entirely. Prefer {@link #startAiSegments} plus {@link #pollAiSegments}.
+     */
+    @JavascriptInterface
+    public String prepareAiSegments(String sourceId, long maxDurationMs, long maxBytes) {
+        return runAiSegments(sourceId, newAiJobId(), maxDurationMs, maxBytes, 0L,
+                new AiJobControl());
+    }
+
+    /**
+     * Starts segmentation on a background thread and returns immediately with a job id.
+     * The page polls {@link #pollAiSegments} for progress and for the final payload, which is
+     * byte-for-byte the payload {@link #prepareAiSegments} would have returned.
+     *
+     * @param sourceDurationMsHint recording length known to the caller, used to reserve disk
+     *                             for the PCM fallback when the container carries no duration.
+     */
+    @JavascriptInterface
+    public String startAiSegments(String sourceId, long maxDurationMs, long maxBytes,
+                                  long sourceDurationMsHint) {
+        pruneAiJobs();
+        if (!SAFE_ID.matcher(sourceId == null ? "" : sourceId).matches()) {
+            return aiSegmentError(sourceId, "", "INVALID_ID", false, null).toString();
+        }
+        int active = 0;
+        for (AiSegmentJob existing : aiJobs.values()) {
+            if (existing.isFinished()) continue;
+            // A retry supersedes whatever is still running for the same recording; a renderer
+            // that was killed mid-job never got to cancel its own worker.
+            if (existing.sourceId.equals(sourceId)) existing.control.cancelled = true;
+            else active++;
+        }
+        if (active >= MAX_ACTIVE_AI_JOBS) {
+            return aiSegmentError(sourceId, "", "AI_JOB_BUSY", true, null).toString();
+        }
+
+        final String jobId = newAiJobId();
+        final AiSegmentJob job = new AiSegmentJob(sourceId);
+        aiJobs.put(jobId, job);
+        final long durationHint = Math.max(0L, sourceDurationMsHint);
+        Thread worker = new Thread(() -> {
+            String result;
+            try {
+                result = runAiSegments(sourceId, jobId, maxDurationMs, maxBytes, durationHint,
+                        job.control);
+            } catch (Throwable t) {
+                Log.w(TAG, "AI segment job crashed", t);
+                result = aiSegmentError(sourceId, jobId, "AI_SEGMENT_IO_ERROR", true, t).toString();
+            }
+            job.complete(result);
+        }, "ai-segments-" + jobId);
+        worker.setDaemon(true);
+        try {
+            worker.start();
+        } catch (Throwable t) {
+            aiJobs.remove(jobId);
+            return aiSegmentError(sourceId, jobId, "AI_JOB_START_FAILED", true, t).toString();
+        }
+
+        try {
+            return new JSONObject()
+                    .put("ok", true)
+                    .put("code", "STARTED")
+                    .put("state", "RUNNING")
+                    .put("jobId", jobId)
+                    .put("generation", jobId)
+                    .put("id", sourceId)
+                    .toString();
+        } catch (Throwable t) {
+            return aiSegmentError(sourceId, jobId, "AI_JOB_START_FAILED", true, t).toString();
+        }
+    }
+
+    /** Reports progress while a job runs and the final payload once it has finished. */
+    @JavascriptInterface
+    public String pollAiSegments(String jobId) {
+        pruneAiJobs();
+        AiSegmentJob job = jobId == null ? null : aiJobs.get(jobId);
+        if (job == null) {
+            return aiSegmentError("", jobId, "AI_JOB_NOT_FOUND", false, null).toString();
+        }
+        String result = job.result();
+        if (result != null) return result;
+        job.control.markPolled();
+        try {
+            return new JSONObject()
+                    .put("ok", true)
+                    .put("code", "RUNNING")
+                    .put("state", "RUNNING")
+                    .put("jobId", jobId)
+                    .put("id", job.sourceId)
+                    .put("segmentCount", job.control.segmentCount)
+                    .toString();
+        } catch (Throwable t) {
+            return aiSegmentError(job.sourceId, jobId, "AI_SEGMENT_IO_ERROR", true, t).toString();
+        }
+    }
+
+    /** Asks a running job to stop. Any files it already wrote are removed by the worker. */
+    @JavascriptInterface
+    public String cancelAiSegments(String jobId) {
+        AiSegmentJob job = jobId == null ? null : aiJobs.get(jobId);
+        if (job != null) job.control.cancelled = true;
+        pruneAiJobs();
+        try {
+            return new JSONObject()
+                    .put("ok", true)
+                    .put("code", job == null ? "AI_JOB_NOT_FOUND" : "CANCELLING")
+                    .put("jobId", jobId == null ? "" : jobId)
+                    .toString();
+        } catch (Throwable t) {
+            return aiSegmentError("", jobId, "AI_SEGMENT_IO_ERROR", true, t).toString();
+        }
+    }
+
+    private static String newAiJobId() {
+        return "aijob_" + Long.toString(System.currentTimeMillis(), 36) + "_" +
+                UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    private void pruneAiJobs() {
+        long now = System.currentTimeMillis();
+        List<String> expired = new ArrayList<>();
+        for (Map.Entry<String, AiSegmentJob> entry : aiJobs.entrySet()) {
+            AiSegmentJob job = entry.getValue();
+            if (job.isFinished() && now - job.finishedAt > AI_JOB_RESULT_RETENTION_MS) {
+                expired.add(entry.getKey());
+            }
+        }
+        for (String key : expired) aiJobs.remove(key);
+    }
+
+    /**
      * Produces independently decodable, bounded audio files. Encoded-sample remuxing is the
      * preferred fast path. If the framework muxer cannot accept the source codec (notably Opus
      * on Android 8/9), the source is streamed through MediaCodec and committed as mono PCM16 WAV
      * segments instead. At no point is the whole recording or decoded PCM held in memory.
      */
-    @JavascriptInterface
-    public String prepareAiSegments(String sourceId, long maxDurationMs, long maxBytes) {
+    private String runAiSegments(String sourceId, String jobId, long maxDurationMs, long maxBytes,
+                                 long sourceDurationMsHint, AiJobControl control) {
         File jobDir = null;
-        String jobId = "";
         try {
             if (!SAFE_ID.matcher(sourceId == null ? "" : sourceId).matches()) {
                 throw new AiSegmentException("INVALID_ID", "Invalid recording id");
@@ -348,6 +496,9 @@ public final class RecordingBridge {
             if (maxBytes < MIN_AI_SEGMENT_BYTES) {
                 throw new AiSegmentException("INVALID_BYTE_LIMIT",
                         "maxBytes must be at least " + MIN_AI_SEGMENT_BYTES);
+            }
+            if (!isSafeAiJobId(jobId)) {
+                throw new AiSegmentException("INVALID_JOB_ID", "Invalid AI segment job id");
             }
 
             final File source;
@@ -379,8 +530,6 @@ public final class RecordingBridge {
 
             AudioTrackInfo inspectedTrack = inspectAudioTrack(source);
             String codecMime = inspectedTrack.mimeType;
-            jobId = "aijob_" + Long.toString(System.currentTimeMillis(), 36) + "_" +
-                    UUID.randomUUID().toString().replace("-", "").substring(0, 12);
             jobDir = requireAiJobDir(jobId, true);
 
             AiPreparedSegments prepared = null;
@@ -388,7 +537,7 @@ public final class RecordingBridge {
             try {
                 AiMuxTarget target = AiMuxTarget.forCodec(codecMime);
                 prepared = prepareRemuxSegments(source, jobDir, jobId, target,
-                        maxDurationMs, maxBytes);
+                        maxDurationMs, maxBytes, control);
             } catch (AiSegmentException remuxError) {
                 if (!shouldUsePcmFallback(remuxError.code)) throw remuxError;
                 fallbackReason = remuxError.code;
@@ -400,8 +549,9 @@ public final class RecordingBridge {
                 // unpublished generation before decoding so the final manifest is all-or-none.
                 deleteTree(jobDir);
                 jobDir = requireAiJobDir(jobId, true);
+                control.segmentCount = 0;
                 prepared = preparePcmWavSegments(source, jobDir, jobId,
-                        maxDurationMs, maxBytes);
+                        maxDurationMs, maxBytes, sourceDurationMsHint, control);
             }
 
             long createdAt = System.currentTimeMillis();
@@ -444,7 +594,7 @@ public final class RecordingBridge {
             return aiSegmentError(sourceId, jobId, "UNSUPPORTED_CONTAINER", false, e).toString();
         } catch (Throwable t) {
             deleteTreeQuietly(jobDir);
-            Log.w(TAG, "prepareAiSegments failed", t);
+            Log.w(TAG, "AI segment preparation failed", t);
             return aiSegmentError(sourceId, jobId, "AI_SEGMENT_IO_ERROR", true, t).toString();
         }
     }
@@ -460,7 +610,8 @@ public final class RecordingBridge {
 
     private AiPreparedSegments prepareRemuxSegments(File source, File jobDir, String jobId,
                                                      AiMuxTarget target, long maxDurationMs,
-                                                     long maxBytes) throws AiSegmentException {
+                                                     long maxBytes, AiJobControl control)
+            throws AiSegmentException {
         MediaExtractor extractor = null;
         AiSegmentWriter writer = null;
         try {
@@ -481,8 +632,10 @@ public final class RecordingBridge {
             JSONArray segments = new JSONArray();
             long sourceFirstPtsUs = -1L;
             int segmentIndex = 0;
+            long readSamples = 0L;
 
             while (true) {
+                if (++readSamples % AI_CANCEL_CHECK_SAMPLES == 0L) control.checkAlive();
                 sampleBuffer.clear();
                 int sampleSize = extractor.readSampleData(sampleBuffer, 0);
                 if (sampleSize < 0) break;
@@ -502,6 +655,7 @@ public final class RecordingBridge {
                     segments.put(writer.finish(samplePtsUs, sourceFirstPtsUs, maxBytes));
                     writer = null;
                     segmentIndex++;
+                    control.segmentCount = segmentIndex;
                     if (segmentIndex >= MAX_AI_SEGMENTS) {
                         throw new AiSegmentException("TOO_MANY_SEGMENTS",
                                 "Recording requires too many segments");
@@ -538,6 +692,7 @@ public final class RecordingBridge {
                 long endPtsUs = writer.lastPtsUs + lastFrameUs;
                 segments.put(writer.finish(endPtsUs, sourceFirstPtsUs, maxBytes));
                 writer = null;
+                control.segmentCount = segments.length();
             }
             if (segments.length() == 0) {
                 throw new AiSegmentException("NO_AUDIO_SAMPLES",
@@ -558,7 +713,9 @@ public final class RecordingBridge {
     }
 
     private AiPreparedSegments preparePcmWavSegments(File source, File jobDir, String jobId,
-                                                      long maxDurationMs, long maxBytes)
+                                                      long maxDurationMs, long maxBytes,
+                                                      long sourceDurationMsHint,
+                                                      AiJobControl control)
             throws AiSegmentException {
         MediaExtractor extractor = null;
         MediaCodec decoder = null;
@@ -588,6 +745,13 @@ public final class RecordingBridge {
 
             long sourceDurationUs = track.format.containsKey(MediaFormat.KEY_DURATION)
                     ? Math.max(0L, track.format.getLong(MediaFormat.KEY_DURATION)) : 0L;
+            if (sourceDurationUs <= 0L && sourceDurationMsHint > 0L) {
+                // MediaRecorder writes a streamed container with no Duration element, so the
+                // extractor reports nothing here. Without the caller's hint the segmenter would
+                // reserve room for a single WAV segment and only discover it is 170 MB short
+                // partway through decoding a 90 minute lecture.
+                sourceDurationUs = Math.multiplyExact(sourceDurationMsHint, 1000L);
+            }
             MediaCodec.BufferInfo outputInfo = new MediaCodec.BufferInfo();
             boolean inputEos = false;
             boolean outputEos = false;
@@ -595,6 +759,7 @@ public final class RecordingBridge {
             long lastProgressMs = SystemClock.elapsedRealtime();
 
             while (!outputEos) {
+                control.checkAlive();
                 boolean progressed = false;
                 if (!inputEos) {
                     int inputIndex = decoder.dequeueInputBuffer(CODEC_DEQUEUE_TIMEOUT_US);
@@ -659,6 +824,7 @@ public final class RecordingBridge {
                             pcm.position(outputInfo.offset);
                             pcm.limit((int) end);
                             processor.consume(pcm.slice().order(ByteOrder.nativeOrder()));
+                            control.segmentCount = processor.committedSegmentCount();
                         }
                         outputEos = (outputInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                     } finally {
@@ -1119,6 +1285,57 @@ public final class RecordingBridge {
         while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
     }
 
+    /**
+     * Cooperative cancellation plus the progress a poller can read while a job runs.
+     * A job whose page stopped polling stops on its own: the WebView renderer can be
+     * restarted at any time, and nothing would otherwise abandon a running decode.
+     */
+    private static final class AiJobControl {
+        volatile boolean cancelled;
+        volatile int segmentCount;
+        volatile long lastPolledAt = System.currentTimeMillis();
+        volatile boolean pollable;
+
+        void markPolled() {
+            lastPolledAt = System.currentTimeMillis();
+        }
+
+        void checkAlive() throws AiSegmentException {
+            if (cancelled) {
+                throw new AiSegmentException("AI_JOB_CANCELLED", "AI segmentation was cancelled");
+            }
+            if (pollable && System.currentTimeMillis() - lastPolledAt > AI_JOB_ABANDON_TIMEOUT_MS) {
+                throw new AiSegmentException("AI_JOB_ABANDONED",
+                        "AI segmentation was abandoned by its caller");
+            }
+        }
+    }
+
+    private static final class AiSegmentJob {
+        final String sourceId;
+        final AiJobControl control = new AiJobControl();
+        volatile String result;
+        volatile long finishedAt;
+
+        AiSegmentJob(String sourceId) {
+            this.sourceId = sourceId == null ? "" : sourceId;
+            this.control.pollable = true;
+        }
+
+        boolean isFinished() {
+            return result != null;
+        }
+
+        String result() {
+            return result;
+        }
+
+        void complete(String payload) {
+            this.finishedAt = System.currentTimeMillis();
+            this.result = payload == null ? "" : payload;
+        }
+    }
+
     private static final class AiSegmentException extends Exception {
         final String code;
         final boolean retryable;
@@ -1407,6 +1624,10 @@ public final class RecordingBridge {
             } else {
                 segmenter.writeSample(mono);
             }
+        }
+
+        int committedSegmentCount() {
+            return segmenter.segments.length();
         }
 
         JSONArray finish() throws AiSegmentException {

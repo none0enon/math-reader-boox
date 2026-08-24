@@ -7,6 +7,10 @@
 
     const MIN_AI_TEXT_CHARS = 8;
     const SUMMARY_MAX_CHARS_HINT = 1200;
+    // An 80-90 minute lecture is close to twenty sequential model calls. Throwing every
+    // finished segment away because one response came back bad is what left users with no
+    // note at all, so a job may keep going as long as most of the recording transcribed.
+    const DEFAULT_MIN_SUCCESS_RATIO = 0.6;
 
     function validationError(code, message) {
         const error = new Error(message);
@@ -70,6 +74,24 @@
         return wrapped;
     }
 
+    function normalizeSuccessRatio(value) {
+        const ratio = Number(value);
+        if (!Number.isFinite(ratio)) return DEFAULT_MIN_SUCCESS_RATIO;
+        return Math.min(1, Math.max(0, ratio));
+    }
+
+    // The placeholder is merged into the transcript like any other part, so it must survive
+    // validateAiText and read as an explicit gap rather than as transcribed speech.
+    function segmentPlaceholder(index, total, error, render) {
+        if (typeof render === 'function') {
+            const custom = render(index, total, error);
+            if (typeof custom === 'string' && custom.trim()) return custom.trim();
+        }
+        const reason = error && error.message ? error.message : String(error || 'unknown error');
+        return '> [transcription unavailable] Recording segment ' + (index + 1) + '/' + total +
+            ' could not be transcribed: ' + safeRef(reason);
+    }
+
     async function runRecordingNoteJob(options) {
         options = options || {};
         const segments = options.segments;
@@ -85,7 +107,10 @@
             throw new Error('A transcribe function is required');
         }
 
+        const allowPartial = options.allowPartial === true;
+        const minSuccessRatio = normalizeSuccessRatio(options.minSuccessRatio);
         const parts = [];
+        const failures = [];
         const total = segments.length;
         for (let index = 0; index < total; index++) {
             let attempt = 0;
@@ -104,13 +129,28 @@
                     break;
                 } catch (error) {
                     if (!await canRetry(retry, error, context)) {
-                        throw segmentError(error, index, total);
+                        const failure = segmentError(error, index, total);
+                        if (!allowPartial) throw failure;
+                        failures.push({ index, error: failure });
+                        parts.push(validateAiText(segmentPlaceholder(index, total, error,
+                            options.placeholder)));
+                        await emitProgress(onProgress, {
+                            phase: 'segment-failed', index, total, attempt, error: failure
+                        });
+                        break;
                     }
                     await emitProgress(onProgress, {
                         phase: 'retry', index, total, attempt, error
                     });
                 }
             }
+        }
+
+        const succeeded = total - failures.length;
+        if (failures.length && (succeeded < 1 || succeeded / total < minSuccessRatio)) {
+            // Too little of the recording came back to be worth saving; surface the first
+            // real failure rather than a transcript that is mostly placeholders.
+            throw failures[0].error;
         }
 
         // This deterministic merge is the authoritative transcript. A model-generated
@@ -130,13 +170,16 @@
                 '\n\n---\n\n# \u5206\u6bb5\u5168\u6587\n\n' + merged;
         }
 
-        await emitProgress(onProgress, { phase: 'complete', total });
+        await emitProgress(onProgress, { phase: 'complete', total, failed: failures.length });
         return {
             content,
             merged,
             summary,
             parts: parts.slice(),
-            segmentCount: total
+            segmentCount: total,
+            failedSegments: failures.map(function (failure) {
+                return { index: failure.index, message: failure.error.message };
+            })
         };
     }
 

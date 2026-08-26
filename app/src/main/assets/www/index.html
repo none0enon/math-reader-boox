@@ -18954,10 +18954,12 @@
             try {
                 const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
                 const outline = await pdf.getOutline();
+                const fingerprint = pdf.fingerprints?.[0] || '';
                 if (!outline || outline.length === 0) {
-                    return { totalPages: pdf.numPages, outline: '' };
+                    return { totalPages: pdf.numPages, outline: '', outlinePages: [], fingerprint };
                 }
                 const lines = [];
+                const outlinePages = [];
                 async function walk(items, depth) {
                     for (const it of items) {
                         let pageNum = '';
@@ -18976,6 +18978,7 @@
                         if (!placeholder) {
                             const indent = '  '.repeat(depth);
                             lines.push(`${indent}- ${it.title}${pageNum ? i18n('bookmark_page_suffix', pageNum) : ''}`);
+                            if (pageNum) outlinePages.push(Number(pageNum));
                         }
                         if (it.items && it.items.length) {
                             await walk(it.items, placeholder ? depth : depth + 1);
@@ -18983,10 +18986,10 @@
                     }
                 }
                 await walk(outline, 0);
-                return { totalPages: pdf.numPages, outline: lines.join('\n') };
+                return { totalPages: pdf.numPages, outline: lines.join('\n'), outlinePages, fingerprint };
             } catch (e) {
                 console.error('检查 PDF 失败:', e);
-                return { totalPages: 0, outline: '' };
+                return { totalPages: 0, outline: '', outlinePages: [], fingerprint: '' };
             }
         }
 
@@ -19046,6 +19049,96 @@
             }).sort((a, b) => a.startPage - b.startPage || a.endPage - b.endPage);
         }
 
+        function isOutlineTokenLimitError(error) {
+            const message = String(error?.message || error || '');
+            return /input token count exceeds|maximum number of tokens allowed|context[_ ]length[_ ]exceeded|context window|too many (?:input )?tokens/i.test(message);
+        }
+
+        function buildOutlinePageRanges(totalPages, maxPages, outlinePages) {
+            const boundaries = [...new Set((outlinePages || [])
+                .map(Number)
+                .filter(page => Number.isInteger(page) && page > 1 && page <= totalPages))]
+                .sort((a, b) => a - b);
+            const ranges = [];
+            let startPage = 1;
+            while (startPage <= totalPages) {
+                const targetEnd = Math.min(totalPages, startPage + maxPages - 1);
+                if (targetEnd === totalPages) {
+                    ranges.push({ startPage, endPage: totalPages });
+                    break;
+                }
+                const earliestUsefulBoundary = startPage + Math.floor(maxPages / 2);
+                const candidates = boundaries.filter(page => page >= earliestUsefulBoundary && page <= targetEnd + 1);
+                const nextStart = candidates.length ? candidates[candidates.length - 1] : targetEnd + 1;
+                ranges.push({ startPage, endPage: nextStart - 1 });
+                startPage = nextStart;
+            }
+            return ranges;
+        }
+
+        function outlineDraftSignature(pdfInfo, bytesLength) {
+            const settings = appData.settings || {};
+            return [
+                pdfInfo.fingerprint || '', bytesLength, pdfInfo.totalPages || '',
+                OUTLINE_PDF_CHUNK_MAX_PAGES, currentLang,
+                settings.apiProvider || '', settings.aiModel || '',
+                settings.backupProvider || '', settings.backupModel || ''
+            ].join('|');
+        }
+
+        function persistOutlineDraft(bookId, draft) {
+            const currentBook = appData.books.find(b => b.id === bookId);
+            if (!currentBook) return;
+            draft.updatedAt = Date.now();
+            currentBook.outlineGenerationDraft = draft;
+            saveData();
+        }
+
+        async function generateOutlinePageRange(sourcePdf, userText, bookTitle, totalPages, startPage, endPage, draft, saveDraft) {
+            const rangeKey = `${startPage}-${endPage}`;
+            const cached = draft.completedRanges.find(item => item.rangeKey === rangeKey);
+            if (cached) return cached.chapters;
+
+            if (!draft.tokenLimitedRanges.includes(rangeKey)) {
+                try {
+                const slice = await sliceLoadedPdfPages(sourcePdf, startPage, endPage);
+                const result = await callAI(
+                    i18n('prompt_outline_chunk_sys', startPage, endPage, totalPages),
+                    [{ role: 'user', content: userText }],
+                    {
+                        maxTokens: 8192,
+                        pdfAttachment: { ...slice, name: `${bookTitle}-${startPage}-${endPage}.pdf` }
+                    }
+                );
+                let chapters;
+                try {
+                    chapters = parseOutlineChapters(result);
+                } catch (parseError) {
+                    console.error('分段大纲 JSON 解析失败:', parseError, result);
+                    throw new Error(i18n('toast_ai_return_parse_fail'));
+                }
+                if (chapters.length === 0) throw new Error(i18n('toast_ai_no_valid_outline'));
+                    const normalized = normalizeOutlineChunkChapters(chapters, startPage, endPage);
+                    draft.completedRanges.push({ rangeKey, startPage, endPage, chapters: normalized });
+                    saveDraft();
+                    return normalized;
+                } catch (error) {
+                    if (!isOutlineTokenLimitError(error) || startPage >= endPage) throw error;
+                    draft.tokenLimitedRanges.push(rangeKey);
+                    saveDraft();
+                }
+            }
+
+            const leftEnd = Math.floor((startPage + endPage) / 2);
+            const left = await generateOutlinePageRange(
+                sourcePdf, userText, bookTitle, totalPages, startPage, leftEnd, draft, saveDraft
+            );
+            const right = await generateOutlinePageRange(
+                sourcePdf, userText, bookTitle, totalPages, leftEnd + 1, endPage, draft, saveDraft
+            );
+            return [...left, ...right];
+        }
+
         // ==================== 生成大纲（Step 1） ====================
         async function generateAIOutline(bookId) {
             let book = appData.books.find(b => b.id === bookId);
@@ -19067,6 +19160,17 @@
             const pdfInfo = await inspectBookPdf(bytes);
             const totalPages = pdfInfo.totalPages || Number(book.totalPages) || 1;
             const existingOutline = pdfInfo.outline;
+            const draftSignature = outlineDraftSignature(pdfInfo, bytes.length);
+            let draft = book.outlineGenerationDraft;
+            if (!draft || draft.signature !== draftSignature) {
+                draft = {
+                    signature: draftSignature,
+                    wholeTokenLimited: false,
+                    completedRanges: [],
+                    tokenLimitedRanges: []
+                };
+            }
+            const saveDraft = () => persistOutlineDraft(bookId, draft);
 
             showToast(i18n('toast_ai_generating_outline'));
 
@@ -19083,46 +19187,46 @@ ${i18n('prompt_outline_gen')}`;
 
             try {
                 let chapters = [];
-                if (totalPages > OUTLINE_PDF_CHUNK_MAX_PAGES) {
-                    if (!window.PDFLib) throw new Error(i18n('pdf_lib_not_loaded'));
-                    const sourcePdf = await PDFLib.PDFDocument.load(bytes);
-                    const chunkCount = Math.ceil(totalPages / OUTLINE_PDF_CHUNK_MAX_PAGES);
-                    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
-                        const chunkStart = chunkIndex * OUTLINE_PDF_CHUNK_MAX_PAGES + 1;
-                        const chunkEnd = Math.min(totalPages, chunkStart + OUTLINE_PDF_CHUNK_MAX_PAGES - 1);
-                        showToast(i18n('toast_ai_generating_outline_chunk', chunkIndex + 1, chunkCount, chunkStart, chunkEnd));
-                        const slice = await sliceLoadedPdfPages(sourcePdf, chunkStart, chunkEnd);
-                        const result = await callAI(
-                            i18n('prompt_outline_chunk_sys', chunkStart, chunkEnd, totalPages),
-                            [{ role: 'user', content: userText }],
-                            {
-                                maxTokens: 8192,
-                                pdfAttachment: { ...slice, name: `${bookTitle}-${chunkStart}-${chunkEnd}.pdf` }
-                            }
-                        );
-                        let chunkChapters;
-                        try {
-                            chunkChapters = parseOutlineChapters(result);
-                        } catch (parseError) {
-                            console.error('分段大纲 JSON 解析失败:', parseError, result);
-                            throw new Error(i18n('toast_ai_return_parse_fail'));
-                        }
-                        if (chunkChapters.length === 0) {
-                            throw new Error(i18n('toast_ai_no_valid_outline'));
-                        }
-                        chapters.push(...normalizeOutlineChunkChapters(chunkChapters, chunkStart, chunkEnd));
-                    }
-                } else {
-                    const result = await callAI(i18n('prompt_outline_sys'), [{ role: 'user', content: userText }], {
+                let wholeRequestSucceeded = false;
+                let wholeResult = null;
+                try {
+                    if (draft.wholeTokenLimited) throw new Error('OUTLINE_WHOLE_TOKEN_LIMIT_ALREADY_KNOWN');
+                    wholeResult = await callAI(i18n('prompt_outline_sys'), [{ role: 'user', content: userText }], {
                         maxTokens: 8192,
                         pdfAttachment: { bytes, name: bookTitle + '.pdf' }
                     });
+                    wholeRequestSucceeded = true;
+                } catch (wholeError) {
+                    const knownTokenLimit = wholeError?.message === 'OUTLINE_WHOLE_TOKEN_LIMIT_ALREADY_KNOWN';
+                    if (!knownTokenLimit && !isOutlineTokenLimitError(wholeError)) throw wholeError;
+                    if (!draft.wholeTokenLimited) {
+                        draft.wholeTokenLimited = true;
+                        saveDraft();
+                    }
+                    console.warn('整本 PDF 超出输入 token 上限，改为分段生成大纲。');
+                }
+
+                if (wholeRequestSucceeded) {
                     try {
-                        chapters = parseOutlineChapters(result);
+                        chapters = parseOutlineChapters(wholeResult);
                     } catch (parseError) {
                         showToast(i18n('toast_ai_return_parse_fail'));
-                        console.error('Outline JSON 解析失败:', parseError, result);
+                        console.error('Outline JSON 解析失败:', parseError, wholeResult);
                         return;
+                    }
+                } else {
+                    if (!window.PDFLib) throw new Error(i18n('pdf_lib_not_loaded'));
+                    const sourcePdf = await PDFLib.PDFDocument.load(bytes);
+                    const ranges = buildOutlinePageRanges(
+                        totalPages, OUTLINE_PDF_CHUNK_MAX_PAGES, pdfInfo.outlinePages
+                    );
+                    for (let chunkIndex = 0; chunkIndex < ranges.length; chunkIndex++) {
+                        const { startPage: chunkStart, endPage: chunkEnd } = ranges[chunkIndex];
+                        showToast(i18n('toast_ai_generating_outline_chunk', chunkIndex + 1, ranges.length, chunkStart, chunkEnd));
+                        const chunkChapters = await generateOutlinePageRange(
+                            sourcePdf, userText, bookTitle, totalPages, chunkStart, chunkEnd, draft, saveDraft
+                        );
+                        chapters.push(...chunkChapters);
                     }
                 }
 
@@ -19153,6 +19257,7 @@ ${i18n('prompt_outline_gen')}`;
                 }));
                 book.bookmarksUpdatedAt = Date.now();
                 book.outlineUpdatedAt = Date.now();
+                delete book.outlineGenerationDraft;
                 saveData();
                 triggerSyncOnFileChange(bookId, 'outline_update');
                 showToast(i18n('toast_outline_generated', chapters.length));

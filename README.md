@@ -53,22 +53,6 @@ This repository ships the current Math Reader web app as an Android APK. BOOX/E 
 
 API Key 保存在本机设置中，不会随 R2 元数据同步到云端；完整 ZIP 备份会包含本机设置，因此仍须把 ZIP 当作敏感文件保管。
 
-**AI 作答准则（内置，无需配置）**
-
-下列准则会自动附加到讲解、阅读问 AI、讲义、课堂笔记与批改的系统提示中：
-
-> 在各种问ai中，严格禁止“根据xx性质”“根据xx定理”而对定理内容性质内容不做任何阐述和解释的不负责任的回答。
->
-> 一个定理如果存在多个版本和推广，必须保证使用的定理版本和讲解的定理版本字节级一致，禁止使用拓展定理却只给出基础版本说明。
->
-> 回答必须和之前保持至少50%的一致性，在所有前文的基础上回答。
->
-> 禁止更改聊天历史已经出现过的数学符号和记号。
->
-> 严谨数学，禁止口语化。
-
-OCR、手写识别、大纲生成、识题、录音转写与 Quiz 出题只做识别或结构化抽取，不注入该准则。
-
 ### 3. 书架：导入和管理资料
 
 1. 打开 **书架**，点击“书籍”或“论文”栏的空白处。
@@ -249,22 +233,6 @@ Open **Settings → API Setting**:
 Use a strong text/LaTeX model for chat, outlines, lectures, and abstracts. Lasso questions, handwriting indexing, exercise extraction, and grading require vision input. Classroom transcription requires an API that accepts the audio sent by the app. PDF outline and lecture generation require a provider compatible with the app's PDF attachment calls.
 
 API credentials stay local and are excluded from R2 metadata sync. A full ZIP contains local settings, so protect the ZIP as a sensitive file.
-
-**Built-in answering standards (always on)**
-
-These standards are appended automatically to the system prompts used for explanations, reader questions, lectures, classroom notes, and grading:
-
-> In every question put to the AI, irresponsible answers that say "by the xx property" or "by the xx theorem" while giving no statement or explanation of the content of that theorem or property are strictly forbidden.
->
-> If a theorem has several versions and generalizations, the version used and the version explained must be identical byte for byte; using an extended theorem while giving only the statement of the basic version is forbidden.
->
-> Answers must stay at least 50% consistent with the previous ones, and must be given on the basis of everything said before.
->
-> Changing mathematical symbols and notation that have already appeared in the chat history is forbidden.
->
-> Rigorous mathematics; colloquial language is forbidden.
-
-OCR, handwriting recognition, outline generation, exercise extraction, audio transcription, and quiz generation only recognize or extract structure, so the standards are not injected there.
 
 ### 3. Library
 

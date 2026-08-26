@@ -53,20 +53,6 @@ This repository ships the current Math Reader web app as an Android APK. BOOX/E 
 
 API Key 保存在本机设置中，不会随 R2 元数据同步到云端；完整 ZIP 备份会包含本机设置，因此仍须把 ZIP 当作敏感文件保管。
 
-**AI 作答准则（内置，无需配置）**
-
-下列准则会自动附加到讲解、阅读问 AI、讲义、课堂笔记与批改的系统提示中：
-
-1. 禁止空引用：使用任何定理、性质、引理、推论或公式，必须先写出完整陈述（全部前提条件与结论），再逐条核验前提在当前情形成立，最后导出结论；严禁只写“由 XX 定理”“根据 XX 性质”而不给出内容。
-2. 版本一致：定理存在多个版本或推广时，必须指明所使用的版本，且写出的陈述与实际使用的版本一致，不得按推广版本使用却只陈述基础版本。
-3. 出处可核查：定理与性质必须给出真实出处（教材/文献与定理编号，或附件中的具体位置），禁止编造；无法确认出处时必须明确写出。
-4. 记号一致：沿用上下文、附件与既有对话中已出现的符号与记号，引入新记号必须先定义。
-5. 表达严谨：使用严格的数学语言，禁止口语化、比喻与类比；公式使用 LaTeX。
-
-多轮对话场景（阅读问 AI、错题问 AI）另外要求在全部前文的基础上作答：沿用前文已确立的定义、记号与结论，修正前文时必须显式说明修正内容与理由。
-
-OCR、手写识别、大纲生成、识题以及录音转写只做识别或结构化抽取，不注入该准则，以免干扰其输出格式或转写的忠实性。批改等要求固定 JSON 输出的任务会保留原有格式要求，准则只约束解答字段内的数学内容。
-
 ### 3. 书架：导入和管理资料
 
 1. 打开 **书架**，点击“书籍”或“论文”栏的空白处。
@@ -247,20 +233,6 @@ Open **Settings → API Setting**:
 Use a strong text/LaTeX model for chat, outlines, lectures, and abstracts. Lasso questions, handwriting indexing, exercise extraction, and grading require vision input. Classroom transcription requires an API that accepts the audio sent by the app. PDF outline and lecture generation require a provider compatible with the app's PDF attachment calls.
 
 API credentials stay local and are excluded from R2 metadata sync. A full ZIP contains local settings, so protect the ZIP as a sensitive file.
-
-**Built-in answering standards (always on)**
-
-The following standards are appended automatically to the system prompts used for explanations, reader questions, lectures, classroom notes, and grading:
-
-1. No bare citations. Whenever a theorem, property, lemma, corollary, or formula is used, it must first be stated in full (every hypothesis and its conclusion), each hypothesis must then be checked against the objects at hand, and only then may the conclusion be drawn. "By Theorem X" or "by the X property" with no content is forbidden.
-2. Version consistency. When a theorem has several versions or generalizations, the version used must be named and the stated version must match the one actually used; using a generalization while stating only the basic version is forbidden.
-3. Verifiable sources. Every theorem and property needs a real source (textbook or paper with theorem number, or a location in the attachment). Fabrication is forbidden, and an unconfirmed source must be declared as such.
-4. Notation consistency. Symbols and notation already used in the context, attachment, or conversation are kept; new notation must be defined before use.
-5. Rigorous language. Strict mathematical prose only, with no colloquialisms, metaphors, or analogies; mathematics is written in LaTeX.
-
-Multi-turn surfaces (reader chat, wrong-answer chat) additionally require answers to build on the whole preceding conversation: established definitions, notation, and conclusions are kept, and any correction of earlier content must be stated explicitly.
-
-OCR, handwriting recognition, outline generation, exercise extraction, and audio transcription only recognize or extract structure, so the standards are not injected there and their output format and transcript fidelity stay unchanged. Tasks with a fixed JSON output, such as grading, keep their format requirement; the standards constrain only the mathematical content inside the solution fields.
 
 ### 3. Library
 

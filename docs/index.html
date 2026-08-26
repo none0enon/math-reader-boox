@@ -16044,12 +16044,37 @@
                         syncTimestamp(cloudPage.updatedAt || cloudPage.createdAt)
                         ? localPage : cloudPage;
                 }).filter(Boolean);
-                for (const localPage of (localItem?.pages || [])) {
+                const localPageOrder = localItem?.pages || [];
+                for (let localIndex = 0; localIndex < localPageOrder.length; localIndex++) {
+                    const localPage = localPageOrder[localIndex];
                     if (!localPage?.id || cloudPageIds.has(localPage.id)) continue;
                     if (!(cloudItem?.pages || []).length ||
                         syncTimestamp(localPage.updatedAt || localPage.createdAt) > cloudNotebookUpdatedAt ||
                         localNotebookUpdatedAt > cloudNotebookUpdatedAt) {
-                        result.pages.push(localPage);
+                        // 云端列表是合并基底，但本地新插入页必须保持其相对位置；
+                        // 直接 push 会把“在当前页后插入”错误地移动到笔记本末尾。
+                        let insertAt = result.pages.length;
+                        let anchoredAfterPrevious = false;
+                        for (let i = localIndex - 1; i >= 0; i--) {
+                            const previousId = localPageOrder[i]?.id;
+                            const previousIndex = result.pages.findIndex(page => page?.id === previousId);
+                            if (previousIndex >= 0) {
+                                insertAt = previousIndex + 1;
+                                anchoredAfterPrevious = true;
+                                break;
+                            }
+                        }
+                        if (!anchoredAfterPrevious) {
+                            for (let i = localIndex + 1; i < localPageOrder.length; i++) {
+                                const nextId = localPageOrder[i]?.id;
+                                const nextIndex = result.pages.findIndex(page => page?.id === nextId);
+                                if (nextIndex >= 0) {
+                                    insertAt = nextIndex;
+                                    break;
+                                }
+                            }
+                        }
+                        result.pages.splice(insertAt, 0, localPage);
                     }
                 }
                 const cloudPositionTs = positionTs(cloudItem);
@@ -21869,21 +21894,32 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
-        function onClassroomColumnClick(e, type) {
-            if (e.target.closest('.classroom-folder')) return;
+        let _classroomFolderCreatePending = false;
+        async function onClassroomColumnClick(e, type) {
+            if (e.target.closest('.classroom-folder') || _classroomFolderCreatePending) return;
             const name = prompt(i18n(type === 'course' ? 'new_course_name_prompt' : 'new_seminar_name_prompt'));
             if (!name || !name.trim()) return;
-            if (!appData.classroom) appData.classroom = { courses: [], seminars: [] };
-            const list = type === 'course' ? appData.classroom.courses : appData.classroom.seminars;
-            list.push({
-                id: 'cls_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-                name: name.trim(),
-                createdAt: new Date().toISOString(),
-                sessions: []
-            });
-            saveData();
-            debouncedChatSync();
-            renderClassroomPage();
+            _classroomFolderCreatePending = true;
+            try {
+                // 启动云同步可能正在替换 classroom 快照。等 metadata 合并完成后再读取
+                // 最新数组并写入，避免第一次新建被稍后完成的启动拉取覆盖。
+                await r2StartupMetadataReady.catch(() => {});
+                if (!appData.classroom) appData.classroom = { courses: [], seminars: [] };
+                if (!Array.isArray(appData.classroom.courses)) appData.classroom.courses = [];
+                if (!Array.isArray(appData.classroom.seminars)) appData.classroom.seminars = [];
+                const list = type === 'course' ? appData.classroom.courses : appData.classroom.seminars;
+                list.push({
+                    id: 'cls_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+                    name: name.trim(),
+                    createdAt: new Date().toISOString(),
+                    sessions: []
+                });
+                saveData();
+                debouncedChatSync();
+                renderClassroomPage();
+            } finally {
+                _classroomFolderCreatePending = false;
+            }
         }
 
         function getClassroomFolder(type, folderId) {

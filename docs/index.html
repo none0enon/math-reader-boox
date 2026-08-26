@@ -6459,7 +6459,7 @@
                 toast_storage_full:'存储空间不足，数据可能未保存',toast_primary_failed:'主API失败，尝试备用API...',
                 toast_regen_failed:'重新生成失败: ',toast_outline_generated:'大纲已生成（{0} 节）',
                 toast_outline_loaded:'已加载 {0} 节大纲',toast_gen_outline_first:'请先点击"生成大纲"',
-                toast_ai_generating_outline:'AI 正在生成大纲...',toast_ai_return_parse_fail:'AI 返回格式解析失败',
+                toast_ai_generating_outline:'AI 正在生成大纲...',toast_ai_generating_outline_chunk:'AI 正在生成大纲（第 {0}/{1} 段，第 {2}-{3} 页）...',toast_ai_return_parse_fail:'AI 返回格式解析失败',
                 toast_ai_no_valid_outline:'AI 未返回有效大纲',toast_gen_failed:'生成失败: ',
                 toast_content_gen_failed:'内容生成失败',toast_generating_abstract:'正在生成摘要...',
                 toast_abstract_generated:'摘要已生成，正在同步到云端...',toast_asking_ai:'正在询问AI...',
@@ -6499,6 +6499,7 @@
 
 
                 prompt_outline_sys:'你是一个专业的数学教育专家。下面附件是一本完整的书（PDF）。\n请你通读附件，为这本书生成一份结构化大纲（每节大约 1 小时学习量），并给出每一节对应的 PDF 页码范围。\n\n【页码准确性要求——极其重要】\n- startPage 和 endPage 必须是 PDF 文件内的实际页码（从 1 开始计数），对照附件 PDF 真实页面。\n- 禁止按固定间隔机械填写（例如 1、3、5、7、9 或 1、10、20、30 这种等差分布是明显错误，严禁出现）。页码必须来自附件实际内容的章节边界判断。\n- 相邻节允许在同一页重叠 1 页：如果某页上半部分是上一节的结尾、下半部分是下一节的开头，则上一节 endPage 和下一节 startPage 可以是同一个页码。除此之外页码应连续，不得跳过或大段重复。\n- 覆盖全书，最后一节的 endPage 必须接近书籍总页数，不得只分到前面几页就停止。\n\n严格以 JSON 返回，不要有任何额外说明：\n{\n  "chapters": [\n    {"title": "第1节: 标题", "topics": ["主题1", "主题2"], "startPage": 1, "endPage": 20},\n    ...\n  ]\n}',
+                prompt_outline_chunk_sys:'你是一个专业的数学教育专家。附件是一本书中连续的 PDF 页段，不是整本书。请只根据附件实际内容为这一页段生成结构化大纲，每节约 1 小时学习量。附件第 1 页对应原书 PDF 第 {0} 页，附件最后一页对应原书 PDF 第 {1} 页；原书共 {2} 页。startPage 和 endPage 必须填写原书的绝对 PDF 页码并限制在 {0} 到 {1}，不得使用附件内从 1 重新开始的页码。必须根据真实内容边界划分，禁止按固定间隔机械填写；覆盖附件中的全部实质内容。章节若跨越附件边界，只描述附件中可见的部分。严格返回 JSON，不要有额外说明：{"chapters":[{"title":"标题","topics":["主题1","主题2"],"startPage":{0},"endPage":{1}}]}',
                 prompt_outline_author:'作者：',
                 prompt_outline_subject:'学科：',
                 prompt_outline_has_bookmark:'PDF 已有书签（供参考，页码以附件实际内容为准）：\n',
@@ -6645,7 +6646,7 @@
                 toast_storage_full:'Storage full, data may not be saved',toast_primary_failed:'Primary API failed, trying backup...',
                 toast_regen_failed:'Regeneration failed: ',toast_outline_generated:'Outline generated ({0} sections)',
                 toast_outline_loaded:'Loaded {0} section outline',toast_gen_outline_first:'Please click "Generate Outline" first',
-                toast_ai_generating_outline:'AI is generating outline...',toast_ai_return_parse_fail:'AI response parse failed',
+                toast_ai_generating_outline:'AI is generating outline...',toast_ai_generating_outline_chunk:'AI is generating outline (part {0}/{1}, pages {2}-{3})...',toast_ai_return_parse_fail:'AI response parse failed',
                 toast_ai_no_valid_outline:'AI returned no valid outline',toast_gen_failed:'Generation failed: ',
                 toast_content_gen_failed:'Content generation failed',toast_generating_abstract:'Generating abstract...',
                 toast_abstract_generated:'Abstract generated, syncing to cloud...',toast_asking_ai:'Asking AI...',
@@ -6685,6 +6686,7 @@
 
 
                 prompt_outline_sys:'You are a professional math education expert. The attachment is a complete book (PDF).\nRead the attachment and generate a structured outline (each section ~1 hour of study), with PDF page ranges.\n\n【Page accuracy - extremely important】\n- startPage and endPage must be actual PDF page numbers (from 1).\n- Do NOT fill at fixed intervals. Pages must come from actual content boundaries.\n- Adjacent sections may overlap by 1 page. Otherwise continuous.\n- Cover the entire book. Last section endPage must be close to total pages.\n\nReturn strictly as JSON:\n{\n  "chapters": [\n    {"title": "Section 1: Title", "topics": ["Topic1", "Topic2"], "startPage": 1, "endPage": 20},\n    ...\n  ]\n}',
+                prompt_outline_chunk_sys:'You are a professional math education expert. The attachment is a consecutive PDF excerpt from a book, not the complete book. Generate a structured outline for this excerpt only, with about one hour of study per section. Attachment page 1 is absolute PDF page {0} of the original book, and the final attachment page is absolute page {1}; the original book has {2} pages. startPage and endPage must use absolute original-PDF page numbers in the range {0}-{1}, never page numbers restarted from 1 inside the attachment. Derive boundaries from the actual content, never from fixed intervals, and cover all substantive content in the excerpt. If a chapter crosses an attachment boundary, describe only the visible portion. Return strict JSON with no extra text: {"chapters":[{"title":"Title","topics":["Topic 1","Topic 2"],"startPage":{0},"endPage":{1}}]}',
                 prompt_outline_author:'Author: ',
                 prompt_outline_subject:'Subject: ',
                 prompt_outline_has_bookmark:'PDF has bookmarks (for reference):\n',
@@ -6831,7 +6833,7 @@
                 toast_storage_full:'Stockage plein',toast_primary_failed:'API principale échouée, tentative secours...',
                 toast_regen_failed:'Échec régénération : ',toast_outline_generated:'Plan généré ({0} sections)',
                 toast_outline_loaded:'{0} sections chargées',toast_gen_outline_first:'Cliquez d\'abord sur "Générer un plan"',
-                toast_ai_generating_outline:'L\'IA génère le plan...',toast_ai_return_parse_fail:'Échec analyse réponse IA',
+                toast_ai_generating_outline:'L\'IA génère le plan...',toast_ai_generating_outline_chunk:'L\'IA génère le plan (partie {0}/{1}, pages {2}-{3})...',toast_ai_return_parse_fail:'Échec analyse réponse IA',
                 toast_ai_no_valid_outline:'Aucun plan valide',toast_gen_failed:'Échec : ',
                 toast_content_gen_failed:'Échec génération contenu',toast_generating_abstract:'Génération résumé...',
                 toast_abstract_generated:'Résumé généré, synchronisation...',toast_asking_ai:'Demande à l\'IA...',
@@ -6871,6 +6873,7 @@
 
 
                 prompt_outline_sys:'Tu es un expert en enseignement des mathématiques. La pièce jointe est un livre complet (PDF).\nLis et génère un plan structuré (chaque section ~1h), avec les pages PDF.\n\n【Précision des pages - très important】\n- startPage et endPage = numéros réels des pages PDF (à partir de 1).\n- NE PAS remplir à intervalles fixes. Pages basées sur les frontières réelles.\n- Chevauchement de 1 page autorisé. Sinon continu.\n- Couvrir tout le livre.\n\nRetourne en JSON strict :\n{\n  "chapters": [\n    {"title": "Section 1: Titre", "topics": ["Sujet1"], "startPage": 1, "endPage": 20},\n    ...\n  ]\n}',
+                prompt_outline_chunk_sys:'Tu es un expert en enseignement des mathématiques. La pièce jointe est un extrait PDF continu d\'un livre, et non le livre complet. Génère un plan structuré uniquement pour cet extrait, avec environ une heure d\'étude par section. La page 1 de la pièce jointe correspond à la page PDF absolue {0} du livre original, et sa dernière page à la page absolue {1} ; le livre compte {2} pages. startPage et endPage doivent utiliser les pages PDF absolues du livre original dans l\'intervalle {0}-{1}, sans recommencer à 1 dans la pièce jointe. Déduis les limites du contenu réel, jamais d\'intervalles fixes, et couvre tout le contenu substantiel de l\'extrait. Si un chapitre traverse la limite de l\'extrait, décris seulement la partie visible. Retourne uniquement un JSON strict : {"chapters":[{"title":"Titre","topics":["Sujet 1","Sujet 2"],"startPage":{0},"endPage":{1}}]}',
                 prompt_outline_author:'Auteur : ',
                 prompt_outline_subject:'Matière : ',
                 prompt_outline_has_bookmark:'Le PDF a des signets (pour référence) :\n',
@@ -18964,13 +18967,24 @@
             return bytes;
         }
 
-        // 用 PDF.js 读取 PDF 自带书签为树形文本（flatten）
-        async function extractBuiltinOutline(bytes) {
+        const OUTLINE_PDF_CHUNK_MAX_PAGES = 200;
+
+        function isPlaceholderPdfBookmark(title) {
+            return /^(?:p|page)\s*0*\d+$/i.test(String(title || '').trim());
+        }
+
+        // 用 PDF.js 读取实际页数，并把有意义的内置书签展开为树形文本。
+        // 一些扫描书会为每页生成 p0001、p0002 之类的伪书签，必须过滤掉。
+        async function inspectBookPdf(bytes) {
             try {
                 const pdf = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
                 const outline = await pdf.getOutline();
-                if (!outline || outline.length === 0) return '';
+                const fingerprint = pdf.fingerprints?.[0] || '';
+                if (!outline || outline.length === 0) {
+                    return { totalPages: pdf.numPages, outline: '', outlinePages: [], fingerprint };
+                }
                 const lines = [];
+                const outlinePages = [];
                 async function walk(items, depth) {
                     for (const it of items) {
                         let pageNum = '';
@@ -18985,23 +18999,26 @@
                                 }
                             }
                         } catch (e) { /* 跳过解析失败的项 */ }
-                        const indent = '  '.repeat(depth);
-                        lines.push(`${indent}- ${it.title}${pageNum ? i18n('bookmark_page_suffix', pageNum) : ''}`);
-                        if (it.items && it.items.length) await walk(it.items, depth + 1);
+                        const placeholder = isPlaceholderPdfBookmark(it.title);
+                        if (!placeholder) {
+                            const indent = '  '.repeat(depth);
+                            lines.push(`${indent}- ${it.title}${pageNum ? i18n('bookmark_page_suffix', pageNum) : ''}`);
+                            if (pageNum) outlinePages.push(Number(pageNum));
+                        }
+                        if (it.items && it.items.length) {
+                            await walk(it.items, placeholder ? depth : depth + 1);
+                        }
                     }
                 }
                 await walk(outline, 0);
-                return lines.join('\n');
+                return { totalPages: pdf.numPages, outline: lines.join('\n'), outlinePages, fingerprint };
             } catch (e) {
-                console.error('提取书签失败:', e);
-                return '';
+                console.error('检查 PDF 失败:', e);
+                return { totalPages: 0, outline: '', outlinePages: [], fingerprint: '' };
             }
         }
 
-        // 用 pdf-lib 切出指定页码范围的子 PDF，返回 { bytes, base64 }
-        async function slicePdfPages(sourceBytes, startPage, endPage) {
-            if (!window.PDFLib) throw new Error(i18n('pdf_lib_not_loaded'));
-            const src = await PDFLib.PDFDocument.load(sourceBytes);
+        async function sliceLoadedPdfPages(src, startPage, endPage) {
             const total = src.getPageCount();
             const s = Math.max(1, Math.min(total, startPage || 1));
             const e = Math.max(s, Math.min(total, endPage || total));
@@ -19012,6 +19029,139 @@
             pages.forEach(p => out.addPage(p));
             const bytes = await out.save();
             return { bytes, base64: uint8ToBase64(bytes) };
+        }
+
+        // 用 pdf-lib 切出指定页码范围的子 PDF，返回 { bytes, base64 }
+        async function slicePdfPages(sourceBytes, startPage, endPage) {
+            if (!window.PDFLib) throw new Error(i18n('pdf_lib_not_loaded'));
+            const src = await PDFLib.PDFDocument.load(sourceBytes);
+            return await sliceLoadedPdfPages(src, startPage, endPage);
+        }
+
+        function parseOutlineChapters(result) {
+            if (!(result || '').match(/\{[\s\S]*\}/)) return [];
+            const parsed = robustParseJSONObject(result);
+            return Array.isArray(parsed.chapters) ? parsed.chapters : [];
+        }
+
+        // 模型偶尔仍会按子 PDF 从 1 重新编号；识别这种情况后换算为原书绝对页码。
+        function normalizeOutlineChunkChapters(chapters, chunkStart, chunkEnd) {
+            const chunkLength = chunkEnd - chunkStart + 1;
+            const reportedPages = [];
+            chapters.forEach(ch => {
+                const start = Number(ch?.startPage);
+                const end = Number(ch?.endPage);
+                if (Number.isFinite(start)) reportedPages.push(start);
+                if (Number.isFinite(end)) reportedPages.push(end);
+            });
+            const usesLocalPages = chunkStart > 1 && reportedPages.length > 0
+                && Math.max(...reportedPages) <= chunkLength + 1;
+            const offset = usesLocalPages ? chunkStart - 1 : 0;
+
+            return chapters.map(ch => {
+                let start = Number(ch?.startPage);
+                let end = Number(ch?.endPage);
+                start = Number.isFinite(start) ? Math.round(start) + offset : chunkStart;
+                end = Number.isFinite(end) ? Math.round(end) + offset : start;
+                start = Math.max(chunkStart, Math.min(chunkEnd, start));
+                end = Math.max(start, Math.min(chunkEnd, end));
+                return {
+                    title: String(ch?.title || '').trim(),
+                    topics: Array.isArray(ch?.topics) ? ch.topics : (ch?.topics ? [String(ch.topics)] : []),
+                    startPage: start,
+                    endPage: end
+                };
+            }).sort((a, b) => a.startPage - b.startPage || a.endPage - b.endPage);
+        }
+
+        function isOutlineTokenLimitError(error) {
+            const message = String(error?.message || error || '');
+            return /input token count exceeds|maximum number of tokens allowed|context[_ ]length[_ ]exceeded|context window|too many (?:input )?tokens/i.test(message);
+        }
+
+        function buildOutlinePageRanges(totalPages, maxPages, outlinePages) {
+            const boundaries = [...new Set((outlinePages || [])
+                .map(Number)
+                .filter(page => Number.isInteger(page) && page > 1 && page <= totalPages))]
+                .sort((a, b) => a - b);
+            const ranges = [];
+            let startPage = 1;
+            while (startPage <= totalPages) {
+                const targetEnd = Math.min(totalPages, startPage + maxPages - 1);
+                if (targetEnd === totalPages) {
+                    ranges.push({ startPage, endPage: totalPages });
+                    break;
+                }
+                const earliestUsefulBoundary = startPage + Math.floor(maxPages / 2);
+                const candidates = boundaries.filter(page => page >= earliestUsefulBoundary && page <= targetEnd + 1);
+                const nextStart = candidates.length ? candidates[candidates.length - 1] : targetEnd + 1;
+                ranges.push({ startPage, endPage: nextStart - 1 });
+                startPage = nextStart;
+            }
+            return ranges;
+        }
+
+        function outlineDraftSignature(pdfInfo, bytesLength) {
+            const settings = appData.settings || {};
+            return [
+                pdfInfo.fingerprint || '', bytesLength, pdfInfo.totalPages || '',
+                OUTLINE_PDF_CHUNK_MAX_PAGES, currentLang,
+                settings.apiProvider || '', settings.aiModel || '',
+                settings.backupProvider || '', settings.backupModel || ''
+            ].join('|');
+        }
+
+        function persistOutlineDraft(bookId, draft) {
+            const currentBook = appData.books.find(b => b.id === bookId);
+            if (!currentBook) return;
+            draft.updatedAt = Date.now();
+            currentBook.outlineGenerationDraft = draft;
+            saveData();
+        }
+
+        async function generateOutlinePageRange(sourcePdf, userText, bookTitle, totalPages, startPage, endPage, draft, saveDraft) {
+            const rangeKey = `${startPage}-${endPage}`;
+            const cached = draft.completedRanges.find(item => item.rangeKey === rangeKey);
+            if (cached) return cached.chapters;
+
+            if (!draft.tokenLimitedRanges.includes(rangeKey)) {
+                try {
+                const slice = await sliceLoadedPdfPages(sourcePdf, startPage, endPage);
+                const result = await callAI(
+                    i18n('prompt_outline_chunk_sys', startPage, endPage, totalPages),
+                    [{ role: 'user', content: userText }],
+                    {
+                        maxTokens: 8192,
+                        pdfAttachment: { ...slice, name: `${bookTitle}-${startPage}-${endPage}.pdf` }
+                    }
+                );
+                let chapters;
+                try {
+                    chapters = parseOutlineChapters(result);
+                } catch (parseError) {
+                    console.error('分段大纲 JSON 解析失败:', parseError, result);
+                    throw new Error(i18n('toast_ai_return_parse_fail'));
+                }
+                if (chapters.length === 0) throw new Error(i18n('toast_ai_no_valid_outline'));
+                    const normalized = normalizeOutlineChunkChapters(chapters, startPage, endPage);
+                    draft.completedRanges.push({ rangeKey, startPage, endPage, chapters: normalized });
+                    saveDraft();
+                    return normalized;
+                } catch (error) {
+                    if (!isOutlineTokenLimitError(error) || startPage >= endPage) throw error;
+                    draft.tokenLimitedRanges.push(rangeKey);
+                    saveDraft();
+                }
+            }
+
+            const leftEnd = Math.floor((startPage + endPage) / 2);
+            const left = await generateOutlinePageRange(
+                sourcePdf, userText, bookTitle, totalPages, startPage, leftEnd, draft, saveDraft
+            );
+            const right = await generateOutlinePageRange(
+                sourcePdf, userText, bookTitle, totalPages, leftEnd + 1, endPage, draft, saveDraft
+            );
+            return [...left, ...right];
         }
 
         // ==================== 生成大纲（Step 1） ====================
@@ -19032,45 +19182,84 @@
                 return;
             }
 
-            const existingOutline = await extractBuiltinOutline(bytes);
+            const pdfInfo = await inspectBookPdf(bytes);
+            const totalPages = pdfInfo.totalPages || Number(book.totalPages) || 1;
+            const existingOutline = pdfInfo.outline;
+            const draftSignature = outlineDraftSignature(pdfInfo, bytes.length);
+            let draft = book.outlineGenerationDraft;
+            if (!draft || draft.signature !== draftSignature) {
+                draft = {
+                    signature: draftSignature,
+                    wholeTokenLimited: false,
+                    completedRanges: [],
+                    tokenLimitedRanges: []
+                };
+            }
+            const saveDraft = () => persistOutlineDraft(bookId, draft);
 
             showToast(i18n('toast_ai_generating_outline'));
 
             const bookTitle = book.title || 'book';
-            const systemPrompt = i18n('prompt_outline_sys');
 
             const userText = `${i18n('prompt_outline_user_prefix')}${book.title}
 ${book.author ? i18n('prompt_outline_author') + book.author : ''}
 ${book.subject ? i18n('prompt_outline_subject') + book.subject : ''}
-${i18n('prompt_outline_pages')}${book.totalPages || '?'}
+${i18n('prompt_outline_pages')}${totalPages}
 
 ${existingOutline ? i18n('prompt_outline_has_bookmark') + existingOutline : i18n('prompt_outline_no_bookmark')}
 
 ${i18n('prompt_outline_gen')}`;
 
             try {
-                const result = await callAI(systemPrompt, [{ role: 'user', content: userText }], {
-                    maxTokens: 8192,
-                    pdfAttachment: { bytes, name: bookTitle + '.pdf' }
-                });
+                let chapters = [];
+                let wholeRequestSucceeded = false;
+                let wholeResult = null;
+                try {
+                    if (draft.wholeTokenLimited) throw new Error('OUTLINE_WHOLE_TOKEN_LIMIT_ALREADY_KNOWN');
+                    wholeResult = await callAI(i18n('prompt_outline_sys'), [{ role: 'user', content: userText }], {
+                        maxTokens: 8192,
+                        pdfAttachment: { bytes, name: bookTitle + '.pdf' }
+                    });
+                    wholeRequestSucceeded = true;
+                } catch (wholeError) {
+                    const knownTokenLimit = wholeError?.message === 'OUTLINE_WHOLE_TOKEN_LIMIT_ALREADY_KNOWN';
+                    if (!knownTokenLimit && !isOutlineTokenLimitError(wholeError)) throw wholeError;
+                    if (!draft.wholeTokenLimited) {
+                        draft.wholeTokenLimited = true;
+                        saveDraft();
+                    }
+                    console.warn('整本 PDF 超出输入 token 上限，改为分段生成大纲。');
+                }
+
+                if (wholeRequestSucceeded) {
+                    try {
+                        chapters = parseOutlineChapters(wholeResult);
+                    } catch (parseError) {
+                        showToast(i18n('toast_ai_return_parse_fail'));
+                        console.error('Outline JSON 解析失败:', parseError, wholeResult);
+                        return;
+                    }
+                } else {
+                    if (!window.PDFLib) throw new Error(i18n('pdf_lib_not_loaded'));
+                    const sourcePdf = await PDFLib.PDFDocument.load(bytes);
+                    const ranges = buildOutlinePageRanges(
+                        totalPages, OUTLINE_PDF_CHUNK_MAX_PAGES, pdfInfo.outlinePages
+                    );
+                    for (let chunkIndex = 0; chunkIndex < ranges.length; chunkIndex++) {
+                        const { startPage: chunkStart, endPage: chunkEnd } = ranges[chunkIndex];
+                        showToast(i18n('toast_ai_generating_outline_chunk', chunkIndex + 1, ranges.length, chunkStart, chunkEnd));
+                        const chunkChapters = await generateOutlinePageRange(
+                            sourcePdf, userText, bookTitle, totalPages, chunkStart, chunkEnd, draft, saveDraft
+                        );
+                        chapters.push(...chunkChapters);
+                    }
+                }
 
                 // callAI 耗时较长，期间 performAutoSync 可能替换了 appData.books，
                 // 导致之前的 book 引用变成悬空对象，必须重新获取。
                 book = appData.books.find(b => b.id === bookId);
                 if (!book) return;
 
-                let chapters = [];
-                const m = (result || '').match(/\{[\s\S]*\}/);
-                if (m) {
-                    try {
-                        const parsed = robustParseJSONObject(result);
-                        chapters = parsed.chapters || [];
-                    } catch (e) {
-                        showToast(i18n('toast_ai_return_parse_fail'));
-                        console.error('Outline JSON 解析失败:', e, result);
-                        return;
-                    }
-                }
                 if (chapters.length === 0) {
                     showToast(i18n('toast_ai_no_valid_outline'));
                     return;
@@ -19082,7 +19271,7 @@ ${i18n('prompt_outline_gen')}`;
                         title: ch.title || (i18n('question_num', idx + 1)),
                         topics: ch.topics || [],
                         startPage: ch.startPage || 1,
-                        endPage: ch.endPage || (book.totalPages || 1)
+                        endPage: ch.endPage || totalPages
                     }))
                 };
                 book.bookmarks = book.aiOutline.chapters.map((ch, idx) => ({
@@ -19093,6 +19282,7 @@ ${i18n('prompt_outline_gen')}`;
                 }));
                 book.bookmarksUpdatedAt = Date.now();
                 book.outlineUpdatedAt = Date.now();
+                delete book.outlineGenerationDraft;
                 saveData();
                 triggerSyncOnFileChange(bookId, 'outline_update');
                 showToast(i18n('toast_outline_generated', chapters.length));

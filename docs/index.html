@@ -18827,7 +18827,7 @@
             let uri = fileObj.uri;
             const processingDeadline = Date.now() + 5 * 60 * 1000;
             let pollDelay = 1500;
-            while (fileObj.state && fileObj.state !== 'ACTIVE') {
+            while (fileObj.state !== 'ACTIVE') {
                 if (fileObj.state === 'FAILED') {
                     const detail = fileObj.error?.message || '';
                     throw new Error(i18n('files_api_processing_failed') + (detail ? ': ' + detail : ''));

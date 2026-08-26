@@ -29331,14 +29331,23 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 </div>`;
         }
         async function nbInsertPage(after) {
-            const nb = nbCurrentNotebook();
-            if (!nb) return;
+            const notebookId = nbState.notebookId;
+            const anchorPageId = nbCurrentPage()?.id;
+            if (!notebookId || !anchorPageId) return;
             await nbSavePageNow();
+            const nb = nbGetNotebook(notebookId);
+            if (!nb || nbState.notebookId !== notebookId) return;
+            const anchorIndex = (nb.pages || []).findIndex(page => page?.id === anchorPageId);
+            if (anchorIndex < 0) {
+                showToast(i18n('page_deleted'));
+                return;
+            }
             const sel = document.getElementById('nbNewPageTpl');
-            const tpl = (!sel || sel.value === '__cur__') ? (nbCurrentPage().template || 'blank') : sel.value;
+            const anchorPage = nb.pages[anchorIndex];
+            const tpl = (!sel || sel.value === '__cur__') ? (anchorPage.template || 'blank') : sel.value;
             const now = new Date().toISOString();
             const page = { id: nbUid('nbp'), template: tpl, createdAt: now, updatedAt: now };
-            const at = nbState.pageIndex + (after ? 1 : 0);
+            const at = anchorIndex + (after ? 1 : 0);
             nb.pages.splice(at, 0, page);
             nbTouch(nb);
             saveData();

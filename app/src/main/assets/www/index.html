@@ -6480,6 +6480,8 @@
                 prompt_math_ai:'你是一个数学AI助手。',prompt_user_notes:'用户笔记: ',prompt_none:'无',
                 prompt_help_instruction:'请根据用户问题给出帮助。回答必须严格基于纯数学：给出严谨的定义、定理与证明，使用规范的数学语言和符号。简洁、准确、数学专业。严禁使用任何比喻、类比或直觉化的形象说法；严禁从物理（如力、能量、运动、场等物理概念或物理直觉）角度进行解释。只就数学本身进行论述。',
                 prompt_workflow:'参考工作流程:\nstage1:用户提出附件相关问题，你结合附件给出回答。\nstage2:用户针对你的回答提出问题，你针对问题给出回答（禁止结合附件）。stage 2的回答必须完全独立,仅针对数学问题本身进行专业解释。严禁提及、暗示或关联任何附件内容。',
+                prompt_math_standards:'【定理引用准则——强制执行】\n1. 禁止空引用：凡使用任何定理、性质、引理、推论或公式，必须先完整写出其陈述（全部前提条件与结论），再逐条核验当前对象确实满足这些前提，最后导出结论。严禁出现“由 XX 定理”“根据 XX 性质”“由 XX 可知”这类只给名称、不给内容的推理步骤。\n2. 版本一致：同一定理存在多个版本或推广时，必须指明所使用的版本，并且写出的陈述与实际使用的版本完全一致。严禁使用推广版本却只陈述基础版本，也不得在陈述之外私自加强或减弱条件。\n3. 出处可核查：所有定理与性质必须有真实出处（教材或文献名称与定理编号，或附件中的具体位置）。严禁编造定理、性质、名称或条件；无法确认出处时必须明确写出“未能确认出处”，不得以名称含糊带过。\n4. 记号一致：沿用上下文、附件与既有对话中已出现的数学符号与记号，禁止擅自更改；引入新记号必须先给出定义。\n5. 表达严谨：使用严格的数学语言，禁止口语化表述、比喻、类比与直觉化说法；公式使用 LaTeX（行内 $...$ ，独立 $$...$$）。\n以上准则约束回答的数学内容；若本任务另有固定输出格式要求（例如只返回 JSON），格式要求优先，准则在该格式允许的文本字段内执行。',
+                prompt_math_dialog_standards:'【对话一致性准则】必须在全部前文的基础上作答：沿用前文已确立的定义、记号、约定与结论，不得给出与前文冲突的表述。确需修正前文时，必须显式指出被修正的内容、修正的理由与修正后的结论，禁止静默改写。',
                 prompt_ocr:'你是OCR识别助手，识别图片中的文字和数学公式。',
                 prompt_math_explain:'你是一个专业的数学讲师，为数学基础一般（仅学过基础数学分析和线性代数）的学生简洁解释数学内容。\n\n要求：\n- 使用严谨的数学语言，不要口语化表达\n- 直接陈述数学内容\n- 使用LaTeX格式：行内公式用 $...$ ，独立公式用 $$...$$',
                 prompt_chat_base:'你是一个友好、专业的数学学习助手。你的任务是帮助用户理解数学概念、解决数学问题、提供学习建议。\n请用清晰易懂的语言回答，必要时使用LaTeX格式的数学公式（用$...$包裹行内公式）。\n保持回答简洁但完整，如果问题复杂，可以分步骤解释。',
@@ -6667,6 +6669,8 @@
                 prompt_math_ai:'You are a math AI assistant.',prompt_user_notes:'User notes: ',prompt_none:'None',
                 prompt_help_instruction:'Help the user based on their question. Answers must be strictly grounded in pure mathematics: give rigorous definitions, theorems, and proofs using formal mathematical language and notation. Be concise, accurate, and mathematically professional. Strictly forbid any metaphors, analogies, or intuitive imagery; strictly forbid explanations from a physics perspective (forces, energy, motion, fields, or physical intuition). Discuss the mathematics itself only.',
                 prompt_workflow:'Workflow:\nstage1: User asks about the attachment, answer based on attachment.\nstage2: User asks follow-up, answer independently (no attachment reference). Stage 2 must be completely independent.',
+                prompt_math_standards:'[Theorem citation standards - mandatory]\n1. No bare citations: whenever a theorem, property, lemma, corollary, or formula is used, first state it in full (every hypothesis and its conclusion), then verify one by one that the objects at hand satisfy those hypotheses, and only then derive the conclusion. Steps such as "by Theorem X", "by the X property", or "it follows from X" that give a name without its content are forbidden.\n2. Version consistency: when a theorem has several versions or generalizations, name the version being used, and make the stated version identical to the one actually used. Using a generalization while stating only the basic version is forbidden, as is silently strengthening or weakening the stated hypotheses.\n3. Verifiable sources: every theorem and property must have a real source (textbook or paper with its theorem number, or a specific location in the attachment). Fabricating theorems, properties, names, or hypotheses is forbidden; when the source cannot be confirmed, state that explicitly instead of gesturing at a name.\n4. Notation consistency: keep the mathematical symbols and notation already used in the context, the attachment, and the existing conversation; do not change them. Define any new notation before using it.\n5. Rigorous language: use strict mathematical language; colloquialisms, metaphors, analogies, and intuitive imagery are forbidden. Use LaTeX ($...$ inline, $$...$$ display).\nThese standards govern the mathematical content of the answer. If the task also fixes an output format (for example, JSON only), the format requirement takes precedence and the standards apply inside the text fields that format allows.',
+                prompt_math_dialog_standards:'[Conversation consistency] Answer on the basis of the entire preceding conversation: keep the definitions, notation, conventions, and conclusions already established, and state nothing that contradicts them. If earlier content must be corrected, state explicitly what is corrected, why, and what the corrected conclusion is; silent rewriting is forbidden.',
                 prompt_ocr:'You are an OCR assistant. Recognize text and math formulas in images.',
                 prompt_math_explain:'You are a professional math lecturer. Explain math content concisely for students with basic math background (calculus and linear algebra only).\n\nRequirements:\n- Rigorous mathematical language\n- Direct statements\n- LaTeX: $...$ inline, $$...$$ display',
                 prompt_chat_base:'You are a friendly, professional math learning assistant. Help users understand math concepts, solve problems, and provide advice.\nAnswer clearly, using LaTeX ($...$) when needed.\nKeep answers concise but complete.',
@@ -6854,6 +6858,8 @@
                 prompt_math_ai:'Tu es un assistant IA en mathématiques.',prompt_user_notes:'Notes : ',prompt_none:'Aucune',
                 prompt_help_instruction:'Aide l\'utilisateur. Les réponses doivent reposer strictement sur les mathématiques pures : définitions, théorèmes et démonstrations rigoureux, avec un langage et une notation mathématiques formels. Sois concis, précis et professionnel. Interdis strictement toute métaphore, analogie ou image intuitive ; interdis strictement les explications d\'ordre physique (forces, énergie, mouvement, champs ou intuition physique). Traite uniquement des mathématiques elles-mêmes.',
                 prompt_workflow:'Workflow :\nstage1 : Question sur la pièce jointe → réponse basée sur la pièce jointe.\nstage2 : Suivi → réponse indépendante, sans référence à la pièce jointe.',
+                prompt_math_standards:'[Règles de citation des théorèmes - obligatoires]\n1. Aucune citation vide : chaque fois qu\'un théorème, une propriété, un lemme, un corollaire ou une formule est utilisé, énonce-le d\'abord intégralement (toutes les hypothèses et la conclusion), vérifie ensuite une à une que les objets considérés satisfont ces hypothèses, puis seulement déduis la conclusion. Les étapes du type « d\'après le théorème X », « par la propriété X » ou « il découle de X » qui donnent un nom sans son contenu sont interdites.\n2. Cohérence de version : lorsqu\'un théorème possède plusieurs versions ou généralisations, indique la version utilisée et fais en sorte que l\'énoncé donné soit identique à la version réellement employée. Utiliser une généralisation en n\'énonçant que la version de base est interdit, tout comme renforcer ou affaiblir silencieusement les hypothèses énoncées.\n3. Sources vérifiables : tout théorème et toute propriété doivent avoir une source réelle (manuel ou article avec le numéro du théorème, ou emplacement précis dans la pièce jointe). Inventer des théorèmes, propriétés, noms ou hypothèses est interdit ; si la source ne peut être confirmée, dis-le explicitement au lieu de te contenter d\'un nom.\n4. Cohérence des notations : conserve les symboles et notations déjà employés dans le contexte, la pièce jointe et la conversation existante ; ne les modifie pas. Définis toute nouvelle notation avant de l\'utiliser.\n5. Langage rigoureux : emploie un langage mathématique strict ; les formulations familières, métaphores, analogies et images intuitives sont interdites. Utilise LaTeX ($...$ en ligne, $$...$$ en bloc).\nCes règles portent sur le contenu mathématique de la réponse. Si la tâche impose en outre un format de sortie (par exemple uniquement du JSON), l\'exigence de format prime et les règles s\'appliquent à l\'intérieur des champs textuels autorisés par ce format.',
+                prompt_math_dialog_standards:'[Cohérence de la conversation] Réponds en te fondant sur l\'intégralité des échanges précédents : conserve les définitions, notations, conventions et conclusions déjà établies et n\'énonce rien qui les contredise. S\'il faut corriger un contenu antérieur, indique explicitement ce qui est corrigé, pourquoi, et quelle est la conclusion corrigée ; toute réécriture silencieuse est interdite.',
                 prompt_ocr:'Tu es un assistant OCR. Reconnais texte et formules dans les images.',
                 prompt_math_explain:'Tu es un professeur de mathématiques professionnel. Explique le contenu mathématique de manière concise pour des étudiants avec des bases en analyse et algèbre linéaire.\n\nExigences :\n- Langage mathématique rigoureux\n- Énoncés directs\n- LaTeX : $...$ en ligne, $$...$$ en bloc',
                 prompt_chat_base:'Tu es un assistant mathématique amical et professionnel. Aide à comprendre, résoudre et conseiller.\nUtilise LaTeX ($...$) si nécessaire. Reste concis mais complet.',
@@ -12907,7 +12913,7 @@
 
         async function requestTextSelectionAI(selectedText, userDesc) {
             const prompt = buildSelectionAskPrompt(selectedText, userDesc);
-            return await callAI(i18n('prompt_math_explain'), [{ role: 'user', content: prompt }])
+            return await callAI(withMathStandards(i18n('prompt_math_explain')), [{ role: 'user', content: prompt }])
                 || i18n('chat_no_ai_answer');
         }
 
@@ -12936,7 +12942,7 @@
                     { type: 'image_url', image_url: { url: sel.image } },
                     { type: 'text', text: tip }
                 ] }];
-                const aiResponse = await callAI(i18n('prompt_math_explain'), messages)
+                const aiResponse = await callAI(withMathStandards(i18n('prompt_math_explain')), messages)
                     || i18n('chat_no_ai_answer');
                 addDocAiComment(docId, sel.page, sel.cx, sel.cy, aiResponse, userDesc);
                 showToast(i18n('toast_note_added'));
@@ -18271,7 +18277,10 @@
             // Build system prompt
             const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
             const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
-            const systemPrompt = `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+            const systemPrompt = withMathStandards(
+                `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`,
+                { dialog: true }
+            );
 
             let pdfAttachment = null;
             if (currentDoc.type === 'pdf') {
@@ -18399,7 +18408,10 @@
             // Build system prompt with context
             const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
             const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
-            const systemPrompt = `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+            const systemPrompt = withMathStandards(
+                `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`,
+                { dialog: true }
+            );
 
             const apiMessages = buildReaderChatApiMessages(history);
 
@@ -18451,6 +18463,16 @@
                 saveReaderChatHistory(currentDoc.id, history);
                 renderReaderChatHistory();
             }
+        }
+
+        // ==================== 数学作答准则 ====================
+        // 讲解、答疑、讲义、课堂笔记与批改共用同一套准则：引用定理必须给出完整陈述，
+        // 禁止“由 XX 定理”式的空引用。dialog=true 时追加多轮对话的一致性要求。
+        // 识别类（OCR、手写识别）与纯结构化抽取（大纲、识题）不注入，避免干扰其输出格式。
+        function withMathStandards(systemPrompt, options = {}) {
+            const parts = [String(systemPrompt || '').trim(), i18n('prompt_math_standards')];
+            if (options.dialog) parts.push(i18n('prompt_math_dialog_standards'));
+            return parts.filter(Boolean).join('\n\n');
         }
 
         // ==================== 通用AI调用 ====================
@@ -19387,7 +19409,7 @@ ${i18n('prompt_outline_gen')}`;
 
             activeLectureGenerationCount++;
             try {
-                const systemPrompt = i18n('prompt_lecture_sys');
+                const systemPrompt = withMathStandards(i18n('prompt_lecture_sys'));
 
                 const userMessage = `${i18n('prompt_lecture_book')}${book.title}
 ${i18n('prompt_lecture_chapter')}${chapter.title}
@@ -21339,7 +21361,7 @@ ${i18n('prompt_lecture_gen')}`;
             }
 
             try {
-                const aiResponse = await callAI(i18n('prompt_math_explain'), [{ role: 'user', content: prompt }]) || i18n('chat_no_ai_answer');
+                const aiResponse = await callAI(withMathStandards(i18n('prompt_math_explain')), [{ role: 'user', content: prompt }]) || i18n('chat_no_ai_answer');
 
                 // 在选中文本下方插入AI回答笔记
                 const qDiv = document.getElementById('exerciseDoingQuestion');
@@ -21577,7 +21599,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     basePrompt += i18n('prompt_wrong_context') + window._wrongAIContext;
                 }
 
-                const systemPrompt = persona ? (persona + '\n\n' + basePrompt) : basePrompt;
+                const systemPrompt = withMathStandards(persona ? (persona + '\n\n' + basePrompt) : basePrompt, { dialog: true });
 
                 // 获取之前的聊天记录作为上下文
                 const chatMessages = [];
@@ -24054,6 +24076,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (isSeminar) {
                 systemPrompt += i18n('prompt_seminar_extra');
             }
+            systemPrompt = withMathStandards(systemPrompt);
 
             const userMsg = i18n('prompt_note_user', folder.name, session.title, material.ref);
 
@@ -24850,7 +24873,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             if (!confirm(i18n('confirm_delete'))) return;
 
-            const systemPrompt = i18n('prompt_grade_system');
+            const systemPrompt = withMathStandards(i18n('prompt_grade_system'));
 
             let graded = 0;
             let failed = 0;
@@ -27173,7 +27196,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             // Show loading
             showToast(i18n('toast_asking_ai'));
 
-            const systemPrompt = i18n('prompt_grade_system');
+            const systemPrompt = withMathStandards(i18n('prompt_grade_system'));
 
             try {
                 const msgContent = [{
@@ -27477,7 +27500,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             showToast(i18n('toast_asking_ai'));
 
-            const systemPrompt = i18n('prompt_grade_system');
+            const systemPrompt = withMathStandards(i18n('prompt_grade_system'));
 
             try {
                 const msgContent = [{
@@ -31052,7 +31075,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (btn) { btn.disabled = true; btn.textContent = i18n('grading'); }
             showToast(i18n('grading_in_progress'));
 
-            const systemPrompt = i18n('prompt_review_grade_system');
+            const systemPrompt = withMathStandards(i18n('prompt_review_grade_system'));
 
             try {
                 const msgContent = [{

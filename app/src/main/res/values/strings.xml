@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">数学阅读</string>
+    <string name="reader_process_restarted">阅读器进程已恢复，已返回书架</string>
 </resources>

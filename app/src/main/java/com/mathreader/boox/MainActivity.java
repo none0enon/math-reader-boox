@@ -9,8 +9,12 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
+import android.view.ViewGroup;
 import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -144,6 +148,40 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 injectAdapter();
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                // Android terminates the whole app when this callback is left
+                // unhandled. Treat a killed/crashed renderer as recoverable: the
+                // WebView itself cannot be reused, so detach it and recreate the
+                // activity on the bookshelf instead of letting the process exit.
+                Log.e(TAG, "WebView renderer gone; didCrash=" + detail.didCrash()
+                        + ", priority=" + detail.rendererPriorityAtExit());
+                if (penBridge != null) {
+                    penBridge.onDestroy();
+                    penBridge = null;
+                }
+                if (filePathCallback != null) {
+                    try {
+                        filePathCallback.onReceiveValue(null);
+                    } catch (Throwable ignored) {}
+                    filePathCallback = null;
+                }
+                pendingWebPermission = null;
+                if (view.getParent() instanceof ViewGroup) {
+                    ((ViewGroup) view.getParent()).removeView(view);
+                }
+                view.destroy();
+                if (webView == view) {
+                    webView = null;
+                }
+                Toast.makeText(MainActivity.this, R.string.reader_process_restarted,
+                        Toast.LENGTH_LONG).show();
+                if (!isFinishing() && !isDestroyed()) {
+                    new Handler(Looper.getMainLooper()).post(MainActivity.this::recreate);
+                }
+                return true;
             }
         });
 

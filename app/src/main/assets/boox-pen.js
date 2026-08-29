@@ -99,25 +99,16 @@
     var hasNative = false;
     try { hasNative = !!(native && native.isAvailable()); } catch (e) { /* 非 Boox 设备 */ }
 
-    window.__booxPen = {
-        active: hasNative,
-        onStroke: function () {},
-        refresh: function () {},
-        syncRegions: function () {},
-        commitUi: function () {}
-    };
+    window.__booxPen = { active: hasNative, onStroke: function () {}, refresh: function () {} };
     if (!hasNative) {
         console.log('boox-pen: native pen SDK not available, PWA runs unmodified');
         return;
     }
     console.log('boox-pen: native pen SDK active');
     // PWA 可主动请求重绘，清掉原生直渲染层的残留墨迹（套索轨迹、点按墨点等）
-    window.__booxPen.refresh = function () {
-        try { native.refresh(); } catch (e) {}
-    };
-    window.__booxPen.commitUi = function () {
-        try { native.commitUi(); } catch (e) {}
-    };
+    window.__booxPen.refresh = function () { scheduleRefresh(150); };
+
+    var DPR = window.devicePixelRatio || 1;
 
     // 可手写画布注册表，按优先级排列（覆盖层在前）。
     // eraserBtn: 对应橡皮按钮（active 时挂起原生直渲染，走 PWA 默认事件路径）
@@ -217,29 +208,24 @@
         activeEls = found.els;
         for (var g = 0; g < activeEls.length; g++) { installFingerGuard(activeEls[g]); }
         var vw = window.innerWidth, vh = window.innerHeight;
-        var dpr = window.devicePixelRatio || 1;
         var rects = found.els.map(function (el) {
             var r = el.getBoundingClientRect();
             return [
-                Math.round(Math.max(r.left, 0) * dpr),
-                Math.round(Math.max(r.top, 0) * dpr),
-                Math.round(Math.min(r.right, vw) * dpr),
-                Math.round(Math.min(r.bottom, vh) * dpr)
+                Math.round(Math.max(r.left, 0) * DPR),
+                Math.round(Math.max(r.top, 0) * DPR),
+                Math.round(Math.min(r.right, vw) * DPR),
+                Math.round(Math.min(r.bottom, vh) * DPR)
             ];
         });
         var cssW = found.cfg.cssWidth || 2;
         if (found.cfg.widthFlag && Number(window[found.cfg.widthFlag]) > 0) {
             cssW = Number(window[found.cfg.widthFlag]);
         }
-        setNative({ rects: rects, width: cssW * dpr });
+        setNative({ rects: rects, width: cssW * DPR });
     }
 
-    // 模式按钮切换后立即重算原生区域；同时通知原生侧
-    // DOM 已提交，恢复时机由 visual-state + 真实 onDraw 决定。
-    window.__booxPen.syncRegions = function () {
-        tick();
-        window.__booxPen.commitUi();
-    };
+    // 模式按钮切换后立即重算原生区域，避免等待轮询期间首笔仍落到旧画布。
+    window.__booxPen.syncRegions = tick;
 
     var tickTimer = setInterval(tick, 350);
     var nudgeTimer = null;
@@ -273,15 +259,21 @@
     }
 
     /* -------- 撤销/重做/清空 后强制重绘，清掉原生层残留笔迹 -------- */
+    var refreshTimer = null;
+    function scheduleRefresh(delay) {
+        if (refreshTimer) { clearTimeout(refreshTimer); }
+        refreshTimer = setTimeout(function () {
+            refreshTimer = null;
+            try { native.refresh(); } catch (e) {}
+        }, delay);
+    }
     document.addEventListener('click', function (e) {
         if (lastKey === 'off') { return; }
         var btn = e.target && e.target.closest ? e.target.closest('button') : null;
         if (!btn) { return; }
         var sig = (btn.id || '') + ' ' + (btn.getAttribute('onclick') || '') + ' ' + (btn.className || '');
-        if (/undo|redo|clear|清空|清除/i.test(sig)) {
-            try { native.refresh(); } catch (err) {}
-        }
-    });
+        if (/undo|redo|clear|清空|清除/i.test(sig)) { scheduleRefresh(350); }
+    }, true);
 
     /* -------- 原生笔迹回放 -------- */
     function dispatchPointer(el, type, x, y, pressure, buttons) {
@@ -312,9 +304,8 @@
     // points: [[viewPxX, viewPxY, pressure], ...]，erase: 笔侧橡皮
     window.__booxPen.onStroke = function (points, erase) {
         if (!activeEls.length || !points || !points.length) { return; }
-        var dpr = window.devicePixelRatio || 1;
         var pts = points.map(function (p) {
-            return [p[0] / dpr, p[1] / dpr, p[2] || 0.5];
+            return [p[0] / DPR, p[1] / DPR, p[2] || 0.5];
         });
         var x0 = pts[0][0], y0 = pts[0][1];
         var target = null;
@@ -341,8 +332,6 @@
             }
         }
         // 橡皮：画布内容已变，但原生层在直渲染时不展示底层更新，需要重绘
-        if (erase) {
-            try { native.refresh(); } catch (e) {}
-        }
+        if (erase) { scheduleRefresh(200); }
     };
 })();

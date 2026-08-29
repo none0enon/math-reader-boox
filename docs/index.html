@@ -28780,6 +28780,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
         function toggleNbEraser() {
             nbSetTool(nbState.tool === 'eraser' ? (nbState.prevTool || 'pen') : 'eraser');
+            // 原生区域平时每 350ms 轮询一次；橡皮必须立即释放/接管画布，
+            // 否则切换后的第一次落笔仍会被上一种模式处理。
+            if (window.__booxPen && typeof window.__booxPen.syncRegions === 'function') {
+                window.__booxPen.syncRegions();
+            }
         }
         // 单击 = 仅切换笔刷（永不弹窗，点当前笔刷也只是确保选中）；
         // 双击（同一笔刷 400ms 内第二次点击，手动计时判定，不依赖平台 dblclick）= 配置弹窗

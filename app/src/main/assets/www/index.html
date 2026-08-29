@@ -9710,6 +9710,75 @@
             }
         }
 
+        function detectBooxReaderRuntime() {
+            try {
+                const nativeBridge = window.BooxPenNative;
+                if (nativeBridge && typeof nativeBridge.isBooxDevice === 'function'
+                        && nativeBridge.isBooxDevice()) return true;
+                if (nativeBridge && typeof nativeBridge.isAvailable === 'function'
+                        && nativeBridge.isAvailable()) return true;
+            } catch (e) {}
+            return /\b(?:boox|onyx)\b/i.test(navigator.userAgent || '');
+        }
+
+        const READER_IS_BOOX_RUNTIME = detectBooxReaderRuntime();
+        const PDF_BASE64_DECODE_CHUNK_CHARS = 256 * 1024; // Must stay divisible by 4.
+
+        function yieldReaderUi() {
+            return new Promise(resolve => setTimeout(resolve, 0));
+        }
+
+        function showReaderPdfLoadingState() {
+            const wrapper = document.getElementById('pdfCanvasWrapper');
+            if (!wrapper) return;
+            const loading = document.createElement('div');
+            loading.id = 'readerPdfLoading';
+            loading.style.cssText = 'padding:40px;text-align:center;color:var(--text-secondary);';
+            loading.textContent = i18n('loading_pdf');
+            wrapper.replaceChildren(loading);
+        }
+
+        // Decode legacy data-URL PDFs without creating one full-size base64
+        // substring and one full-size binary string at the same time. Those
+        // temporary copies can exceed the BOOX WebView heap before PDF.js starts.
+        async function decodePdfFileData(fileData, shouldContinue) {
+            if (fileData instanceof Blob) {
+                const buffer = await fileData.arrayBuffer();
+                return !shouldContinue || shouldContinue() ? new Uint8Array(buffer) : null;
+            }
+            if (fileData instanceof ArrayBuffer) return new Uint8Array(fileData);
+            if (ArrayBuffer.isView(fileData)) {
+                return new Uint8Array(fileData.buffer, fileData.byteOffset, fileData.byteLength);
+            }
+            if (typeof fileData !== 'string') throw new Error('Unsupported PDF storage format');
+
+            const comma = fileData.indexOf(',');
+            if (comma < 0 || !fileData.slice(0, comma).toLowerCase().includes(';base64')) {
+                throw new Error('Invalid PDF data URL');
+            }
+            const encodedStart = comma + 1;
+            const encodedLength = fileData.length - encodedStart;
+            const padding = (fileData.endsWith('==') ? 2 : (fileData.endsWith('=') ? 1 : 0));
+            const decodedLength = Math.max(0, Math.floor(encodedLength * 3 / 4) - padding);
+            const bytes = new Uint8Array(decodedLength);
+            let written = 0;
+            let chunkIndex = 0;
+
+            for (let start = encodedStart; start < fileData.length;) {
+                let end = Math.min(fileData.length, start + PDF_BASE64_DECODE_CHUNK_CHARS);
+                if (end < fileData.length) end -= (end - start) % 4;
+                const rawChunk = atob(fileData.slice(start, end));
+                for (let i = 0; i < rawChunk.length; i++) bytes[written++] = rawChunk.charCodeAt(i);
+                start = end;
+                chunkIndex++;
+                if (start < fileData.length && chunkIndex % 4 === 0) {
+                    await yieldReaderUi();
+                    if (shouldContinue && !shouldContinue()) return null;
+                }
+            }
+            return written === bytes.length ? bytes : bytes.subarray(0, written);
+        }
+
         async function loadPDF(doc) {
             const documentLoadGeneration = ++readerDocumentLoadGeneration;
             let scrollReleaseScheduled = false;
@@ -9718,6 +9787,11 @@
                 // then release its GPU/heap resources before allocating the next.
                 suppressScrollWriteback = true;
                 await disposeReaderDocumentResources();
+                if (documentLoadGeneration !== readerDocumentLoadGeneration
+                        || !currentDoc || currentDoc.id !== doc.id) return;
+                showReaderPdfLoadingState();
+                document.getElementById('readerPageNav').style.display = 'none';
+                await new Promise(resolve => requestAnimationFrame(() => resolve()));
                 if (documentLoadGeneration !== readerDocumentLoadGeneration
                         || !currentDoc || currentDoc.id !== doc.id) return;
                 // 重置缩放倍率
@@ -9755,17 +9829,14 @@
                 if (documentLoadGeneration !== readerDocumentLoadGeneration
                         || !currentDoc || currentDoc.id !== doc.id) return;
                 
-                let data = fileData.split(',')[1];
-                let raw = atob(data);
-                let uint8 = new Uint8Array(raw.length);
-                for (let i = 0; i < raw.length; i++) uint8[i] = raw.charCodeAt(i);
+                let uint8 = await decodePdfFileData(fileData, () =>
+                    documentLoadGeneration === readerDocumentLoadGeneration
+                        && currentDoc && currentDoc.id === doc.id);
+                fileData = null;
+                if (!uint8) return;
 
                 const loadingTask = pdfjsLib.getDocument({ data: uint8 });
-                // PDF.js owns/transfers the byte buffer from here. Drop the
-                // temporary data-URL/base64/binary copies before parsing pages.
-                fileData = null;
-                data = null;
-                raw = null;
+                // PDF.js owns/transfers the byte buffer from here.
                 uint8 = null;
                 readerPdfLoadingTask = loadingTask;
                 let loadedPdfDoc;
@@ -9869,10 +9940,13 @@
         }
 
         // ==================== Continuous Scroll Mode (Note Mode) ====================
-        // A PDF page has both a PDF canvas and a same-sized annotation canvas. Keep
-        // each backing store modest on memory-constrained iPad PWAs and allow a
-        // scale below 1 at high zoom so the cap remains real.
-        const READER_MAX_CANVAS_PIXELS = 4 * 1024 * 1024;
+        // A PDF page has both a PDF canvas and a same-sized annotation canvas.
+        // BOOX WebView renderers have a tighter heap/GPU budget, so keep their
+        // backing stores and off-screen render window smaller.
+        const READER_MAX_CANVAS_PIXELS = (READER_IS_BOOX_RUNTIME ? 2 : 4) * 1024 * 1024;
+        const READER_RENDER_MARGIN_SCREENS = READER_IS_BOOX_RUNTIME ? 0.25 : 1;
+        const READER_KEEP_MARGIN_SCREENS = READER_IS_BOOX_RUNTIME ? 0.75 : 2;
+        const READER_PLACEHOLDER_BATCH_SIZE = 400;
         let renderedPages = new Set();
         let pageElements = {};
         let isRenderingAllPages = false;
@@ -9892,35 +9966,52 @@
             const wrapper = document.getElementById('pdfCanvasWrapper');
             releaseAllReaderCanvases();
             resetReaderInkHistory();
-            wrapper.innerHTML = '';
             renderedPages.clear();
             pageElements = {};
 
             try {
-                // 创建所有页面的占位符
-                for (let i = 1; i <= totalPages; i++) {
-                    const page = await sourcePdfDoc.getPage(i);
-                    if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc) return;
-                    const scale = getReaderRenderScale(page);
-                    const viewport = page.getViewport({ scale });
+                // Read one page for the initial aspect ratio. Calling getPage()
+                // for every page before first paint makes large PDFs appear as a
+                // white screen and keeps every PDFPageProxy cached by PDF.js.
+                const seedPageNum = Math.max(1, Math.min(totalPages, currentPage || 1));
+                const seedPage = await sourcePdfDoc.getPage(seedPageNum);
+                if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc) return;
+                const seedScale = getReaderRenderScale(seedPage);
+                const seedViewport = seedPage.getViewport({ scale: seedScale });
+                const fragment = document.createDocumentFragment();
 
+                // Most PDFs use one page size. Lightweight approximate
+                // placeholders make continuous scrolling available immediately;
+                // renderSinglePage corrects each page to its actual dimensions.
+                for (let i = 1; i <= totalPages; i++) {
                     const placeholder = document.createElement('div');
                     placeholder.className = 'pdf-page-placeholder';
                     placeholder.dataset.page = i;
-                    placeholder.style.width = viewport.width + 'px';
-                    placeholder.style.height = viewport.height + 'px';
+                    placeholder.style.width = seedViewport.width + 'px';
+                    placeholder.style.height = seedViewport.height + 'px';
                     placeholder.style.background = '#fff';
                     placeholder.style.boxShadow = 'var(--shadow)';
                     placeholder.style.position = 'relative';
+                    if (i === seedPageNum) {
+                        const pageLoading = document.createElement('div');
+                        pageLoading.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);';
+                        pageLoading.textContent = i18n('loading_pdf');
+                        placeholder.appendChild(pageLoading);
+                    }
 
-                    pageElements[i] = { placeholder, viewport, rendered: false };
-                    wrapper.appendChild(placeholder);
+                    pageElements[i] = { placeholder, viewport: seedViewport, rendered: false };
+                    fragment.appendChild(placeholder);
+                    if (i < totalPages && i % READER_PLACEHOLDER_BATCH_SIZE === 0) {
+                        await yieldReaderUi();
+                        if (renderGeneration !== readerRenderGeneration || pdfDoc !== sourcePdfDoc) return;
+                    }
                 }
+                wrapper.replaceChildren(fragment);
 
                 if (einkMode) {
                     isRenderingAllPages = false;
                     setupEinkReaderTapZones();
-                    einkShowPage(currentPage || 1);
+                    await einkShowPage(currentPage || 1);
                 } else {
                     // Position the placeholder list before allocating canvases.
                     // Deep-page restore must not first render the page-one window
@@ -9973,12 +10064,15 @@
             const container = document.getElementById('readerContainer');
             const containerRect = container.getBoundingClientRect();
             const scrollTop = container.scrollTop;
-            const viewportTop = scrollTop - containerRect.height;
-            const viewportBottom = scrollTop + containerRect.height * 2;
+            const viewportTop = scrollTop - containerRect.height * READER_RENDER_MARGIN_SCREENS;
+            const viewportBottom = scrollTop
+                + containerRect.height * (1 + READER_RENDER_MARGIN_SCREENS);
 
             const releaseOutsideKeepWindow = candidateScrollTop => {
-                const keepTop = candidateScrollTop - containerRect.height * 2;
-                const keepBottom = candidateScrollTop + containerRect.height * 3;
+                const keepTop = candidateScrollTop
+                    - containerRect.height * READER_KEEP_MARGIN_SCREENS;
+                const keepBottom = candidateScrollTop
+                    + containerRect.height * (1 + READER_KEEP_MARGIN_SCREENS);
                 for (let i = 1; i <= totalPages; i++) {
                     const pageData = pageElements[i];
                     if (!pageData || !pageData.rendered || pageData.renderingPromise) continue;
@@ -10028,8 +10122,11 @@
                 try { page.cleanup(); } catch (e) {}
                 return;
             }
-            const viewport = pageData.viewport;
+            const viewport = page.getViewport({ scale: getReaderRenderScale(page) });
             const placeholder = pageData.placeholder;
+            pageData.viewport = viewport;
+            placeholder.style.width = viewport.width + 'px';
+            placeholder.style.height = viewport.height + 'px';
 
             // 限制canvas实际像素，zoom大时降低DPR避免内存爆炸
             let dpr = window.devicePixelRatio || 1;
@@ -10785,7 +10882,7 @@
             }
         }
 
-        function einkShowPage(pageNum) {
+        async function einkShowPage(pageNum) {
             if (pageNum < 1 || pageNum > totalPages) return;
             closeAllNoteBubbles();
             clearReaderTextSelection();
@@ -10799,7 +10896,18 @@
             if (!pageData) return;
             pageData.placeholder.classList.add('eink-visible');
             currentPage = pageNum;
-            if (!pageData.rendered) renderSinglePage(pageNum);
+            // E-Ink mode shows only one page. Release every previous page before
+            // allocating the next pair of PDF/annotation canvases so memory does
+            // not grow with each page turn.
+            Array.from(renderedPages).forEach(renderedPage => {
+                if (renderedPage !== pageNum) releaseReaderPage(renderedPage);
+            });
+            if (!pageData.rendered) await renderSinglePage(pageNum);
+            if (pageElements[pageNum] !== pageData) return;
+            if (currentPage !== pageNum) {
+                releaseReaderPage(pageNum);
+                return;
+            }
             einkFitPage(pageData);
             document.getElementById('pageInfo').textContent = `${currentPage} / ${totalPages}`;
             if (!suppressScrollWriteback && !isRenderingAllPages && currentDoc && totalPages > 0) {

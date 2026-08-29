@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.util.Log;
 import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -20,6 +21,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
+import android.view.ViewGroup;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
@@ -144,6 +146,36 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 injectAdapter();
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                Log.e(TAG, "WebView renderer exited; didCrash=" + detail.didCrash()
+                        + ", priority=" + detail.rendererPriorityAtExit());
+                if (view != webView) {
+                    return true;
+                }
+
+                // A renderer that exceeded the BOOX memory budget cannot be reused.
+                // Remove it and recreate the activity instead of letting Android
+                // terminate the whole app (WebViewClient's default behavior).
+                if (penBridge != null) {
+                    penBridge.onDestroy();
+                    penBridge = null;
+                }
+                if (view.getParent() instanceof ViewGroup) {
+                    ((ViewGroup) view.getParent()).removeView(view);
+                }
+                view.destroy();
+                webView = null;
+                Toast.makeText(MainActivity.this, R.string.reader_restarted,
+                        Toast.LENGTH_LONG).show();
+                getWindow().getDecorView().post(() -> {
+                    if (!isFinishing() && !isDestroyed()) {
+                        recreate();
+                    }
+                });
+                return true;
             }
         });
 

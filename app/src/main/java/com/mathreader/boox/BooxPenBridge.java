@@ -2,6 +2,7 @@ package com.mathreader.boox;
 
 import android.app.Activity;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -96,6 +97,18 @@ public class BooxPenBridge {
     @JavascriptInterface
     public boolean isAvailable() {
         return sdkAvailable;
+    }
+
+    /**
+     * BOOX devices have a smaller WebView/GPU memory budget than most tablets.
+     * Expose the platform independently of pen-SDK initialization so the reader
+     * can still select its low-memory rendering profile if the SDK is unavailable.
+     */
+    @JavascriptInterface
+    public boolean isBooxDevice() {
+        String device = (Build.MANUFACTURER + " " + Build.BRAND + " " + Build.MODEL)
+                .toLowerCase(Locale.US);
+        return device.contains("onyx") || device.contains("boox");
     }
 
     /**

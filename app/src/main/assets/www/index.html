@@ -31363,6 +31363,56 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 nbInitCanvasEvents();
                 nbInitFileInputs();
                 nbRenderBrushBtns();
+                // Boox WebView 偶尔不会为完整的触摸/笔点按补发 click。
+                // 在 pointerup 上确认这是一次点按并主动 click；浏览器若随后又补发
+                // 原生 click，则在捕获阶段拦掉，保证按钮动作始终只执行一次。
+                const editor = document.getElementById('nbEditor');
+                const toolbarButtonSelector = '.nb-topbar button, .nb-leftbar button, .nb-float-toolbar button, .nb-panel button, .nb-outline button';
+                let pendingToolbarTap = null;
+                let suppressedToolbarClick = null;
+                editor?.addEventListener('pointerdown', (e) => {
+                    if (e.pointerType === 'mouse' || e.button !== 0 || pendingToolbarTap) return;
+                    const button = e.target.closest && e.target.closest(toolbarButtonSelector);
+                    if (!button || button.disabled) return;
+                    pendingToolbarTap = {
+                        pointerId: e.pointerId,
+                        button,
+                        x: e.clientX,
+                        y: e.clientY,
+                        moved: false
+                    };
+                    try { button.setPointerCapture(e.pointerId); } catch (err) {}
+                }, true);
+                editor?.addEventListener('pointermove', (e) => {
+                    const tap = pendingToolbarTap;
+                    if (!tap || tap.pointerId !== e.pointerId || tap.moved) return;
+                    tap.moved = Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > 12;
+                }, true);
+                editor?.addEventListener('pointercancel', (e) => {
+                    if (pendingToolbarTap?.pointerId === e.pointerId) pendingToolbarTap = null;
+                }, true);
+                editor?.addEventListener('pointerup', (e) => {
+                    const tap = pendingToolbarTap;
+                    if (!tap || tap.pointerId !== e.pointerId) return;
+                    pendingToolbarTap = null;
+                    if (tap.moved || tap.button.disabled) return;
+                    e.preventDefault();
+                    suppressedToolbarClick = { button: tap.button, until: performance.now() + 700 };
+                    tap.button.click();
+                }, true);
+                editor?.addEventListener('click', (e) => {
+                    const suppressed = suppressedToolbarClick;
+                    if (!suppressed || performance.now() > suppressed.until) {
+                        suppressedToolbarClick = null;
+                        return;
+                    }
+                    if (!e.isTrusted) return;
+                    const button = e.target.closest && e.target.closest(toolbarButtonSelector);
+                    if (button !== suppressed.button) return;
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    suppressedToolbarClick = null;
+                }, true);
                 // 面板打开时点击空白处（面板与其唤出按钮之外）自动关闭
                 document.addEventListener('pointerdown', (e) => {
                     const panel = document.getElementById('nbPanel');

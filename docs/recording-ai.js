@@ -7,6 +7,34 @@
 
     const MIN_AI_TEXT_CHARS = 8;
     const SUMMARY_MAX_CHARS_HINT = 1200;
+    const GEMINI_FILE_AUDIO_MIMES = new Set([
+        'audio/wav', 'audio/mp3', 'audio/aiff', 'audio/aac', 'audio/ogg',
+        'audio/flac', 'audio/mpeg', 'audio/m4a', 'audio/opus'
+    ]);
+
+    function normalizeGeminiAudioMime(value) {
+        const mime = String(value || '').split(';', 1)[0].trim().toLowerCase();
+        // Safari MediaRecorder exposes AAC in an MP4 audio container as audio/mp4. Gemini's
+        // audio input schema calls the same container audio/m4a.
+        if (mime === 'audio/mp4' || mime === 'audio/x-m4a') return 'audio/m4a';
+        if (mime === 'audio/x-wav') return 'audio/wav';
+        return mime;
+    }
+
+    function supportsGeminiFileAudio(value) {
+        return GEMINI_FILE_AUDIO_MIMES.has(normalizeGeminiAudioMime(value));
+    }
+
+    function shouldUseGeminiFileAudio(options) {
+        options = options || {};
+        if (!supportsGeminiFileAudio(options.mimeType)) return false;
+        const durationMs = Math.max(0, Number(options.durationSeconds) || 0) * 1000;
+        const byteLength = Math.max(0, Number(options.byteLength) || 0);
+        const maxDurationMs = Math.max(0, Number(options.maxDurationMs) || 0);
+        const maxBytes = Math.max(0, Number(options.maxBytes) || 0);
+        return (maxDurationMs > 0 && durationMs > maxDurationMs) ||
+            (maxBytes > 0 && byteLength > maxBytes);
+    }
 
     function validationError(code, message) {
         const error = new Error(message);
@@ -141,6 +169,9 @@
     }
 
     return {
+        normalizeGeminiAudioMime,
+        supportsGeminiFileAudio,
+        shouldUseGeminiFileAudio,
         validateAiText,
         mergeRecordingParts,
         runRecordingNoteJob

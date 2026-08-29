@@ -108,6 +108,8 @@
     // PWA 可主动请求重绘，清掉原生直渲染层的残留墨迹（套索轨迹、点按墨点等）
     window.__booxPen.refresh = function () { scheduleRefresh(150); };
 
+    var DPR = window.devicePixelRatio || 1;
+
     // 可手写画布注册表，按优先级排列（覆盖层在前）。
     // eraserBtn: 对应橡皮按钮（active 时挂起原生直渲染，走 PWA 默认事件路径）
     // eraserToggle: 全局函数名，回放原生笔侧橡皮笔迹时临时切换
@@ -131,9 +133,8 @@
     var activeCfg = null;
     var activeEls = [];
     var lastKey = 'off';
-    var nativeDrawingEnabled = false;
 
-    function isGeometryVisible(el) {
+    function isDrawable(el) {
         if (!el || !el.isConnected) { return false; }
         var cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden' || cs.pointerEvents === 'none') {
@@ -142,13 +143,7 @@
         var r = el.getBoundingClientRect();
         if (r.width < 4 || r.height < 4) { return false; }
         var vw = window.innerWidth, vh = window.innerHeight;
-        return r.right > 0 && r.bottom > 0 && r.left < vw && r.top < vh;
-    }
-
-    function isDrawable(el) {
-        if (!isGeometryVisible(el)) { return false; }
-        var r = el.getBoundingClientRect();
-        var vw = window.innerWidth, vh = window.innerHeight;
+        if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) { return false; }
         // 顶层采样：被弹窗/面板遮住时不能抢笔
         var samples = [
             [r.left + r.width / 2, r.top + r.height / 2],
@@ -181,7 +176,6 @@
 
     function setNative(payload) {
         var key = payload ? JSON.stringify(payload) : 'off';
-        nativeDrawingEnabled = !!(payload && payload.enabled !== false);
         if (key === lastKey) { return; }
         lastKey = key;
         try {
@@ -200,15 +194,13 @@
             var els = cfg.selector
                 ? Array.prototype.slice.call(document.querySelectorAll(cfg.selector))
                 : [document.getElementById(cfg.id)];
-            // 面板/弹窗覆盖画布时仍保留边界，但把原生直写关闭。
-            // 这样关闭 UI 的同一次手势不会在中途重新抢回书写。
-            var suspended = cfg.suspendFlag && window[cfg.suspendFlag];
-            els = els.filter(suspended ? isGeometryVisible : isDrawable);
+            els = els.filter(isDrawable);
             if (els.length) { found = { cfg: cfg, els: els }; }
         }
-        if (!found) {
-            activeCfg = null;
-            activeEls = [];
+        if (!found || eraserActive(found.cfg)) {
+            activeCfg = found ? found.cfg : null;
+            activeEls = found ? found.els : [];
+            for (var g = 0; g < activeEls.length; g++) { installFingerGuard(activeEls[g]); }
             setNative(null);
             return;
         }
@@ -216,30 +208,20 @@
         activeEls = found.els;
         for (var g = 0; g < activeEls.length; g++) { installFingerGuard(activeEls[g]); }
         var vw = window.innerWidth, vh = window.innerHeight;
-        // WebView 的 MotionEvent 使用视图本地物理像素；DPR 可随缩放/窗口变化，
-        // 每次同步都重新读取，避免旧书写矩形压到工具栏。
-        var dpr = window.devicePixelRatio || 1;
-        function physicalRect(el) {
-            if (!el || !el.isConnected) { return null; }
-            var cs = getComputedStyle(el);
-            if (cs.display === 'none' || cs.visibility === 'hidden') { return null; }
-            var r = el.getBoundingClientRect();
-            if (r.width < 1 || r.height < 1) { return null; }
-            return [
-                Math.round(Math.max(r.left, 0) * dpr),
-                Math.round(Math.max(r.top, 0) * dpr),
-                Math.round(Math.min(r.right, vw) * dpr),
-                Math.round(Math.min(r.bottom, vh) * dpr)
-            ];
-        }
         var rects = found.els.map(function (el) {
-            return physicalRect(el);
-        }).filter(Boolean);
+            var r = el.getBoundingClientRect();
+            return [
+                Math.round(Math.max(r.left, 0) * DPR),
+                Math.round(Math.max(r.top, 0) * DPR),
+                Math.round(Math.min(r.right, vw) * DPR),
+                Math.round(Math.min(r.bottom, vh) * DPR)
+            ];
+        });
         var cssW = found.cfg.cssWidth || 2;
         if (found.cfg.widthFlag && Number(window[found.cfg.widthFlag]) > 0) {
             cssW = Number(window[found.cfg.widthFlag]);
         }
-        setNative({ rects: rects, width: cssW * dpr, enabled: !eraserActive(found.cfg) });
+        setNative({ rects: rects, width: cssW * DPR });
     }
 
     // 模式按钮切换后立即重算原生区域，避免等待轮询期间首笔仍落到旧画布。
@@ -261,7 +243,7 @@
     function installFingerGuard(el) {
         if (el._booxFingerGuard) { return; }
         var block = function (e) {
-            if (!nativeDrawingEnabled) { return; }
+            if (lastKey === 'off') { return; }
             if (e.pointerType === 'pen') { return; }
             e.stopPropagation();
             e.preventDefault();
@@ -322,9 +304,8 @@
     // points: [[viewPxX, viewPxY, pressure], ...]，erase: 笔侧橡皮
     window.__booxPen.onStroke = function (points, erase) {
         if (!activeEls.length || !points || !points.length) { return; }
-        var dpr = window.devicePixelRatio || 1;
         var pts = points.map(function (p) {
-            return [p[0] / dpr, p[1] / dpr, p[2] || 0.5];
+            return [p[0] / DPR, p[1] / DPR, p[2] || 0.5];
         });
         var x0 = pts[0][0], y0 = pts[0][1];
         var target = null;

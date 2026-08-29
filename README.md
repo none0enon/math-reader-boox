@@ -97,6 +97,10 @@ API Key 保存在本机设置中，不会随 R2 元数据同步到云端；完�
 
 录音写入应用私有的持久化存储，覆盖升级和 WebView 重建不会主动删除，但卸载应用仍会清除录音。创建完整 ZIP 前应先停止正在进行的录音；若导出提示录音缺失，请检查 ZIP 中的 `recordings/missing.json`。
 
+长录音（80~90 分钟及以上）的转写纪要按 5 分钟一段依次提交给 AI。iOS/iPadOS 上添加到主屏幕的 PWA 录制的是分片 MP4，分段时只复制字节区间、不做解码，内存占用与录音长度无关。安装版 APK 交给原生分段，分段期间会显示“正在准备录音分段”的进度提示，界面保持可用。若个别分段没能转写，纪要仍会保存，并在对应位置标注该段转写失败。
+
+只有 WebM/Ogg 录音（桌面版 Chrome/Firefox 且未安装 APK 时）仍需在浏览器内解码后切分，受内存上限约束；超出上限会给出提示而不是让页面崩溃。
+
 ### 6. 讲义与论文摘要
 
 **生成书籍讲义**：
@@ -272,6 +276,10 @@ Normal text search on a text PDF does not need AI. OCR, lasso questions, and scr
 6. Long-press source material to regenerate its note or delete it. Long-press an AI note to download Markdown or delete it. Folders and sessions can be renamed.
 
 Recordings use durable app-private storage and survive WebView recreation and in-place updates, but not app uninstall. Stop active recording before a full export. If the export reports missing audio, inspect `recordings/missing.json` inside the ZIP.
+
+Minutes for a long recording (80-90 minutes and beyond) are transcribed five minutes at a time. An iOS/iPadOS home-screen PWA records fragmented MP4, which is split by copying byte ranges rather than decoding, so memory does not grow with the length of the lecture. The installed APK hands splitting to the native layer and shows preparation progress while it runs, keeping the page responsive. If a segment cannot be transcribed the minutes are still saved, with that segment marked as a gap.
+
+Only WebM/Ogg recordings - desktop Chrome or Firefox without the APK - still have to be decoded in the browser before they can be split, which is bounded by memory; past that bound the app reports it instead of letting the page die.
 
 ### 6. Lectures and abstracts
 

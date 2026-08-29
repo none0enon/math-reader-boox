@@ -67,7 +67,19 @@ public class MainActivity extends AppCompatActivity {
                 if (penBridge != null) {
                     penBridge.onWebViewTouchEvent(event);
                 }
-                return super.dispatchTouchEvent(event);
+                boolean handled = super.dispatchTouchEvent(event);
+                if (penBridge != null) {
+                    penBridge.onWebViewTouchEventDispatched(event);
+                }
+                return handled;
+            }
+
+            @Override
+            protected void onDraw(android.graphics.Canvas canvas) {
+                super.onDraw(canvas);
+                if (penBridge != null) {
+                    penBridge.onWebViewDrawn();
+                }
             }
         };
         setContentView(webView);

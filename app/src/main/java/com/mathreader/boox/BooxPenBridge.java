@@ -41,6 +41,18 @@ public class BooxPenBridge {
     private boolean rawOpened;
     // JS 侧期望的开关状态，onPause/onResume 时据此恢复
     private volatile boolean wantEnabled;
+    // TouchHelper 的物理书写区。区域内专属书写，区域外专属 WebView UI。
+    private final List<Rect> activeDrawingRects = new ArrayList<>();
+    private volatile boolean rawStrokeActive;
+    private String pendingRectsJson;
+    private boolean refreshDeferred;
+    private boolean activityResumed;
+    private boolean uiGesturePaused;
+    private boolean refreshPaused;
+    private int uiPointerId = -1;
+    // 用于丢弃快速连点期间过期的 WebView 视觉提交回调。
+    private long visualCommitToken;
+    private boolean resumeAfterNextDraw;
     // 最近一次按下的输入工具类型（手指 / 触控笔），供阅读界面区分翻页与套索。
     // 默认手指：检测失败时退化为"点触翻页"，不会误吞翻页操作。
     private volatile int lastToolType = MotionEvent.TOOL_TYPE_FINGER;
@@ -48,10 +60,12 @@ public class BooxPenBridge {
     private final RawInputCallback rawInputCallback = new RawInputCallback() {
         @Override
         public void onBeginRawDrawing(boolean b, TouchPoint touchPoint) {
+            rawStrokeActive = true;
         }
 
         @Override
         public void onEndRawDrawing(boolean b, TouchPoint touchPoint) {
+            finishRawStroke();
         }
 
         @Override
@@ -65,10 +79,12 @@ public class BooxPenBridge {
 
         @Override
         public void onBeginRawErasing(boolean b, TouchPoint touchPoint) {
+            rawStrokeActive = true;
         }
 
         @Override
         public void onEndRawErasing(boolean b, TouchPoint touchPoint) {
+            finishRawStroke();
         }
 
         @Override
@@ -116,6 +132,169 @@ public class BooxPenBridge {
                 lastToolType = MotionEvent.TOOL_TYPE_FINGER;
             }
         }
+        if ((action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE)
+                && uiPointerId == -1 && wantEnabled && !activeDrawingRects.isEmpty()) {
+            int index = event.getActionIndex();
+            int toolType = event.getToolType(index);
+            if (isStylusTool(toolType)
+                    && isInsideActiveDrawingRect(event.getX(index), event.getY(index))) {
+                resumeForDrawingGesture();
+            }
+            return;
+        }
+        if (action == MotionEvent.ACTION_DOWN && wantEnabled && !activeDrawingRects.isEmpty()) {
+            boolean inside = isInsideActiveDrawingRect(event.getX(), event.getY());
+            int toolType = event.getToolType(0);
+            if (inside) {
+                // 画布内的手指/手掌不切换 TouchHelper；笔则可抢先恢复直写。
+                if (isStylusTool(toolType)) {
+                    resumeForDrawingGesture();
+                }
+            } else if (!rawStrokeActive) {
+                pauseForUiGesture(event.getPointerId(0));
+            }
+        } else if (action == MotionEvent.ACTION_POINTER_DOWN && uiPointerId == -1
+                && wantEnabled && !activeDrawingRects.isEmpty()) {
+            int index = event.getActionIndex();
+            if (isStylusTool(event.getToolType(index))
+                    && isInsideActiveDrawingRect(event.getX(index), event.getY(index))) {
+                resumeForDrawingGesture();
+            }
+        }
+    }
+
+    /** 在 WebView 已完成本次输入分发后调用，确保 click/onclick 先于视觉提交。 */
+    public void onWebViewTouchEventDispatched(MotionEvent event) {
+        if (event == null || uiPointerId == -1) {
+            return;
+        }
+        int action = event.getActionMasked();
+        boolean finished = action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_UP;
+        if (action == MotionEvent.ACTION_POINTER_UP) {
+            finished = event.getPointerId(event.getActionIndex()) == uiPointerId;
+        }
+        if (!finished) {
+            return;
+        }
+        uiPointerId = -1;
+        if (uiGesturePaused) {
+            requestVisualCommit();
+        }
+    }
+
+    /** WebView 已经真正执行完一次 draw；下一个主线程任务再恢复 Onyx 直写。 */
+    public void onWebViewDrawn() {
+        if (!resumeAfterNextDraw) {
+            return;
+        }
+        final long token = visualCommitToken;
+        resumeAfterNextDraw = false;
+        mainHandler.post(() -> {
+            if (token != visualCommitToken) {
+                return;
+            }
+            uiGesturePaused = false;
+            refreshPaused = false;
+            enableRawDrawingIfAllowed("resume after WebView draw failed");
+        });
+    }
+
+    private static boolean isStylusTool(int toolType) {
+        return toolType == MotionEvent.TOOL_TYPE_STYLUS
+                || toolType == MotionEvent.TOOL_TYPE_ERASER;
+    }
+
+    private boolean isInsideActiveDrawingRect(float x, float y) {
+        int px = Math.round(x);
+        int py = Math.round(y);
+        for (Rect rect : activeDrawingRects) {
+            if (rect.contains(px, py)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void pauseForUiGesture(int pointerId) {
+        invalidateVisualCommit();
+        uiPointerId = pointerId;
+        uiGesturePaused = true;
+        try {
+            // Onyx raw mode 会冻结 WebView 刷新；UI 手势必须完整退出 raw mode。
+            touchHelper.setRawDrawingEnabled(false);
+        } catch (Throwable t) {
+            Log.w(TAG, "pause for UI gesture failed", t);
+        }
+        webView.invalidate();
+    }
+
+    private void resumeForDrawingGesture() {
+        if (uiPointerId != -1 || !wantEnabled || !activityResumed) {
+            return;
+        }
+        if (!uiGesturePaused && !refreshPaused && !resumeAfterNextDraw) {
+            return;
+        }
+        invalidateVisualCommit();
+        uiGesturePaused = false;
+        refreshPaused = false;
+        enableRawDrawingIfAllowed("resume for drawing gesture failed");
+    }
+
+    private void enableRawDrawingIfAllowed(String failureMessage) {
+        if (!sdkAvailable || !wantEnabled || !activityResumed
+                || uiGesturePaused || refreshPaused || uiPointerId != -1) {
+            return;
+        }
+        try {
+            // 明确同时恢复 render 和 RawInputReader，不依赖 SDK 内部旧标志。
+            touchHelper.setRawDrawingRenderEnabled(true);
+            touchHelper.setRawDrawingEnabled(true);
+        } catch (Throwable t) {
+            Log.w(TAG, failureMessage, t);
+        }
+    }
+
+    private void invalidateVisualCommit() {
+        visualCommitToken++;
+        resumeAfterNextDraw = false;
+    }
+
+    private void requestVisualCommit() {
+        final long token = ++visualCommitToken;
+        resumeAfterNextDraw = false;
+        try {
+            webView.postVisualStateCallback(token, new WebView.VisualStateCallback() {
+                @Override
+                public void onComplete(long requestId) {
+                    if (requestId != visualCommitToken) {
+                        return;
+                    }
+                    resumeAfterNextDraw = true;
+                    webView.invalidate();
+                }
+            });
+        } catch (Throwable t) {
+            Log.w(TAG, "visual state callback failed", t);
+            // 不用固定延时兜底；至少等待一次真实 onDraw。
+            resumeAfterNextDraw = true;
+            webView.invalidate();
+        }
+    }
+
+    private void finishRawStroke() {
+        rawStrokeActive = false;
+        mainHandler.post(() -> {
+            if (pendingRectsJson != null) {
+                String json = pendingRectsJson;
+                pendingRectsJson = null;
+                applyRects(json);
+            }
+            if (refreshDeferred) {
+                refreshDeferred = false;
+                beginVisualRefresh();
+            }
+        });
     }
 
     /** 最近一次按下是否为触控笔（手写笔）。pointerType 缺失时 JS 侧据此判定。 */
@@ -149,6 +328,19 @@ public class BooxPenBridge {
         mainHandler.post(this::disableInternal);
     }
 
+    /** JS 在同步完工具状态/DOM 后调用，补充异步 UI 的精确提交点。 */
+    @JavascriptInterface
+    public void commitUi() {
+        if (!sdkAvailable) {
+            return;
+        }
+        mainHandler.post(() -> {
+            if (uiGesturePaused || refreshPaused) {
+                requestVisualCommit();
+            }
+        });
+    }
+
     /**
      * 短暂退出直渲染并强制重绘，让 WebView 中已提交的笔迹内容刷新上屏
      * （撤销/清空/橡皮擦除后调用）。
@@ -162,25 +354,33 @@ public class BooxPenBridge {
             if (!wantEnabled) {
                 return;
             }
-            try {
-                touchHelper.setRawDrawingEnabled(false);
-            } catch (Throwable t) {
-                Log.w(TAG, "refresh disable failed", t);
+            if (rawStrokeActive) {
+                refreshDeferred = true;
+                return;
             }
-            webView.invalidate();
-            mainHandler.postDelayed(() -> {
-                if (wantEnabled) {
-                    try {
-                        touchHelper.setRawDrawingEnabled(true);
-                    } catch (Throwable t) {
-                        Log.w(TAG, "refresh enable failed", t);
-                    }
-                }
-            }, 260);
+            beginVisualRefresh();
         });
     }
 
+    private void beginVisualRefresh() {
+        if (!wantEnabled) {
+            return;
+        }
+        try {
+            touchHelper.setRawDrawingEnabled(false);
+        } catch (Throwable t) {
+            Log.w(TAG, "refresh disable failed", t);
+        }
+        refreshPaused = true;
+        requestVisualCommit();
+        webView.invalidate();
+    }
+
     private void applyRects(String json) {
+        if (rawStrokeActive) {
+            pendingRectsJson = json;
+            return;
+        }
         try {
             JSONObject obj = new JSONObject(json);
             JSONArray arr = obj.getJSONArray("rects");
@@ -197,6 +397,8 @@ public class BooxPenBridge {
                 disableInternal();
                 return;
             }
+            activeDrawingRects.clear();
+            activeDrawingRects.addAll(rects);
             touchHelper.setRawDrawingEnabled(false);
             touchHelper.setStrokeWidth(width).setLimitRect(rects, new ArrayList<>());
             if (!rawOpened) {
@@ -209,8 +411,10 @@ public class BooxPenBridge {
             } else {
                 touchHelper.setSingleRegionMode();
             }
-            touchHelper.setRawDrawingEnabled(true);
             wantEnabled = true;
+            refreshPaused = true;
+            requestVisualCommit();
+            webView.invalidate();
         } catch (Throwable t) {
             Log.w(TAG, "setRects failed: " + json, t);
         }
@@ -218,6 +422,10 @@ public class BooxPenBridge {
 
     private void disableInternal() {
         wantEnabled = false;
+        refreshPaused = false;
+        refreshDeferred = false;
+        pendingRectsJson = null;
+        activeDrawingRects.clear();
         try {
             touchHelper.setRawDrawingEnabled(false);
         } catch (Throwable t) {
@@ -261,16 +469,23 @@ public class BooxPenBridge {
     }
 
     public void onResume() {
-        if (sdkAvailable && wantEnabled) {
-            try {
-                touchHelper.setRawDrawingEnabled(true);
-            } catch (Throwable t) {
-                Log.w(TAG, "onResume enable failed", t);
-            }
+        activityResumed = true;
+        if (resumeAfterNextDraw || uiGesturePaused || refreshPaused) {
+            webView.invalidate();
+        } else {
+            enableRawDrawingIfAllowed("onResume enable failed");
         }
     }
 
     public void onPause() {
+        activityResumed = false;
+        uiPointerId = -1;
+        uiGesturePaused = false;
+        refreshPaused = false;
+        refreshDeferred = false;
+        rawStrokeActive = false;
+        pendingRectsJson = null;
+        invalidateVisualCommit();
         if (sdkAvailable) {
             try {
                 touchHelper.setRawDrawingEnabled(false);
@@ -281,6 +496,7 @@ public class BooxPenBridge {
     }
 
     public void onDestroy() {
+        invalidateVisualCommit();
         if (sdkAvailable && rawOpened) {
             try {
                 touchHelper.closeRawDrawing();

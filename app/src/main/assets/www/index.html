@@ -28317,7 +28317,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         window.__nbNativeWidth = 2;
         let _nbOpenRequestToken = 0;
         let _nbPageLoadToken = 0;
-        let _nbPageMutationPending = false;
 
         function nbCurrentNotebook() { return nbGetNotebook(nbState.notebookId); }
         function nbCurrentPage() {
@@ -28395,7 +28394,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbState.redoStack = [];
             Object.keys(nbThumbCache).forEach(k => { delete nbThumbCache[k]; });
             window.__nbNativeSuspend = false;
-            nbSyncNativeRegions();
             renderNotebooksPage();
             // 关闭笔记本时做一次可见同步
             nbSyncNotebookEvent('notebook_close', closingPageId);
@@ -28478,27 +28476,22 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function nbPrevPage() { if (nbState.pageIndex > 0) nbLoadPage(nbState.pageIndex - 1); }
         async function nbNextPage() {
             const nb = nbCurrentNotebook();
-            if (!nb || _nbPageMutationPending) return;
+            if (!nb) return;
             if (nbState.pageIndex < nb.pages.length - 1) {
                 nbLoadPage(nbState.pageIndex + 1);
                 return;
             }
             // 已是最后一页 → 自动以当前页模板追加新页
-            _nbPageMutationPending = true;
-            try {
-                await nbSavePageNow();
-                const cur = nbCurrentPage();
-                const now = new Date().toISOString();
-                const page = { id: nbUid('nbp'), template: (cur && cur.template) || nb.template || 'blank', createdAt: now, updatedAt: now };
-                nb.pages.push(page);
-                nbTouch(nb);
-                saveData();
-                nbSyncNotebookEvent('notebook_page_add', page.id);
-                await nbLoadPage(nb.pages.length - 1);
-                showToast(i18n('page_created'));
-            } finally {
-                _nbPageMutationPending = false;
-            }
+            await nbSavePageNow();
+            const cur = nbCurrentPage();
+            const now = new Date().toISOString();
+            const page = { id: nbUid('nbp'), template: (cur && cur.template) || nb.template || 'blank', createdAt: now, updatedAt: now };
+            nb.pages.push(page);
+            nbTouch(nb);
+            saveData();
+            nbSyncNotebookEvent('notebook_page_add', page.id);
+            nbLoadPage(nb.pages.length - 1);
+            showToast(i18n('page_created'));
         }
 
         // ==================== 布局与渲染 ====================
@@ -28531,7 +28524,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             window.__nbNativeWidth = Math.max(1, Math.min(14, brush.mm * NB_MM * s));
             nbDrawBg();
             nbRedraw();
-            nbSyncNativeRegions();
         }
 
         function nbCtx(id) {
@@ -28760,11 +28752,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 非书写工具（含套索）、或有弹窗/抽屉盖在画布上时，挂起 Boox 原生直渲染，
         // 走标准指针事件（否则原生层按矩形抢笔，会穿透弹窗直接书写）。
         // 选中文本框/媒体期间挂起，保证拖动、四角缩放的指针事件实时到达 DOM。
-        function nbSyncNativeRegions() {
-            try {
-                window.__booxPen?.syncRegions?.();
-            } catch (e) {}
-        }
         function nbUpdateNativeSuspend() {
             const overlayOpen =
                 document.getElementById('nbPanel')?.classList.contains('show') ||
@@ -28773,7 +28760,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 document.getElementById('nbQuizModal')?.classList.contains('show') ||
                 document.getElementById('nbQuizFullscreen')?.classList.contains('show');
             window.__nbNativeSuspend = (nbState.tool !== 'pen') || !!overlayOpen || !!nbState.selectedTextId;
-            nbSyncNativeRegions();
         }
         function nbNativeRefresh() {
             try { window.__booxPen && window.__booxPen.refresh && window.__booxPen.refresh(); } catch (e) {}
@@ -28783,6 +28769,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (nbState.tool !== 'eraser') nbState.prevTool = nbState.tool;
             nbState.tool = tool;
             if (tool !== 'lasso') nbClearSelection();
+            nbUpdateNativeSuspend();
             document.getElementById('nbEraserBtn').classList.toggle('active', tool === 'eraser');
             document.getElementById('nbLassoBtn').classList.toggle('active', tool === 'lasso');
             document.getElementById('nbTextBtn').classList.toggle('active', tool === 'text');
@@ -28790,7 +28777,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             document.querySelectorAll('.nb-brush-btn').forEach((b, i) =>
                 b.classList.toggle('active', tool === 'pen' && i === nbState.brushIndex));
             document.body.classList.toggle('nb-text-mode', tool === 'text');
-            nbUpdateNativeSuspend();
         }
         function toggleNbEraser() {
             nbSetTool(nbState.tool === 'eraser' ? (nbState.prevTool || 'pen') : 'eraser');
@@ -28812,9 +28798,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
         function nbSelectBrush(i) {
             nbState.brushIndex = i;
+            nbSetTool('pen');
             const brush = nbState.brushes[i];
             window.__nbNativeWidth = Math.max(1, Math.min(14, brush.mm * NB_MM * nbDisplayScale()));
-            nbSetTool('pen');
             nbRenderBrushBtns();
             // Boox 原生直渲染激活期间屏幕冻结、不展示底层 UI 更新——
             // 书写开始后点笔刷其实切换成功了但看不见。这里主动刷新一次让高亮立即上屏。
@@ -29755,36 +29741,30 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 </div>`;
         }
         async function nbInsertPage(after) {
-            if (_nbPageMutationPending) return;
-            _nbPageMutationPending = true;
-            try {
-                const notebookId = nbState.notebookId;
-                const anchorPageId = nbCurrentPage()?.id;
-                if (!notebookId || !anchorPageId) return;
-                await nbSavePageNow();
-                const nb = nbGetNotebook(notebookId);
-                if (!nb || nbState.notebookId !== notebookId) return;
-                const anchorIndex = (nb.pages || []).findIndex(page => page?.id === anchorPageId);
-                if (anchorIndex < 0) {
-                    showToast(i18n('page_deleted'));
-                    return;
-                }
-                const sel = document.getElementById('nbNewPageTpl');
-                const anchorPage = nb.pages[anchorIndex];
-                const tpl = (!sel || sel.value === '__cur__') ? (anchorPage.template || 'blank') : sel.value;
-                const now = new Date().toISOString();
-                const page = { id: nbUid('nbp'), template: tpl, createdAt: now, updatedAt: now };
-                const at = anchorIndex + (after ? 1 : 0);
-                nb.pages.splice(at, 0, page);
-                nbTouch(nb);
-                saveData();
-                nbHidePanel();
-                nbSyncNotebookEvent('notebook_page_add', page.id);
-                await nbLoadPage(at);
-                showToast(i18n('page_inserted'));
-            } finally {
-                _nbPageMutationPending = false;
+            const notebookId = nbState.notebookId;
+            const anchorPageId = nbCurrentPage()?.id;
+            if (!notebookId || !anchorPageId) return;
+            await nbSavePageNow();
+            const nb = nbGetNotebook(notebookId);
+            if (!nb || nbState.notebookId !== notebookId) return;
+            const anchorIndex = (nb.pages || []).findIndex(page => page?.id === anchorPageId);
+            if (anchorIndex < 0) {
+                showToast(i18n('page_deleted'));
+                return;
             }
+            const sel = document.getElementById('nbNewPageTpl');
+            const anchorPage = nb.pages[anchorIndex];
+            const tpl = (!sel || sel.value === '__cur__') ? (anchorPage.template || 'blank') : sel.value;
+            const now = new Date().toISOString();
+            const page = { id: nbUid('nbp'), template: tpl, createdAt: now, updatedAt: now };
+            const at = anchorIndex + (after ? 1 : 0);
+            nb.pages.splice(at, 0, page);
+            nbTouch(nb);
+            saveData();
+            nbHidePanel();
+            nbSyncNotebookEvent('notebook_page_add', page.id);
+            nbLoadPage(at);
+            showToast(i18n('page_inserted'));
         }
         async function nbDeleteCurrentPage() {
             nbHidePanel();

@@ -24,6 +24,7 @@ jobs:
           cp app/src/main/assets/www/recording-storage.js docs/
           cp app/src/main/assets/www/classroom-storage.js docs/
           cp app/src/main/assets/www/recording-ai.js docs/
+          cp app/src/main/assets/www/ai-response.js docs/
           cp app/src/main/assets/www/pdf.min.js docs/
           cp app/src/main/assets/www/pdf.worker.min.js docs/
 

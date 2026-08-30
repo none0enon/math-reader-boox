@@ -32,6 +32,7 @@ jobs:
           cmp app/src/main/assets/www/recording-storage.js docs/recording-storage.js
           cmp app/src/main/assets/www/classroom-storage.js docs/classroom-storage.js
           cmp app/src/main/assets/www/recording-ai.js docs/recording-ai.js
+          cmp app/src/main/assets/www/ai-response.js docs/ai-response.js
 
       - name: Calculate APK version
         id: version

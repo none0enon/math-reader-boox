@@ -518,7 +518,8 @@
             background: rgba(0,0,0,0.5);
             border-radius: 10px;
             padding: 2px 4px;
-            z-index: 15;
+            /* Keep explicit navigation above E-Ink tap/select layers (35-38). */
+            z-index: 39;
         }
 
         .page-nav-btn {

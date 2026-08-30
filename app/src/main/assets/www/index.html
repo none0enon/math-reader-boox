@@ -18690,6 +18690,65 @@
             return null;
         }
 
+        function isClaudeOpus5Model(model) {
+            return /claude[-_/\s]*opus[-_/\s]*5(?:$|[-_/\s])/i.test(String(model || ''));
+        }
+
+        function openAIOutputTokenLimit(model, requested) {
+            const parsed = Number(requested);
+            const base = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 8192;
+            // maxthinking may use roughly 32K tokens for reasoning. This ceiling
+            // leaves room for the lecture body without changing the lecture prompt.
+            return /max[-_\s]?thinking/i.test(String(model || '')) ? Math.max(base, 49152) : base;
+        }
+
+        const booxAiRequests = new Map();
+        let booxAiRequestSequence = 0;
+
+        window.__completeBooxAiRequest = function(requestId, status, body, error) {
+            const pending = booxAiRequests.get(requestId);
+            if (!pending) return;
+            booxAiRequests.delete(requestId);
+            clearTimeout(pending.timeoutId);
+            if (error) {
+                pending.reject(new Error(error));
+                return;
+            }
+            pending.resolve({
+                ok: status >= 200 && status < 300,
+                status,
+                text: async () => String(body || ''),
+                json: async () => JSON.parse(String(body || ''))
+            });
+        };
+
+        function postOpenAICompatibleRequest(url, init) {
+            if (!window.BooxAiHttpNative ||
+                typeof window.BooxAiHttpNative.postJson !== 'function') {
+                return fetch(url, init);
+            }
+            return new Promise((resolve, reject) => {
+                const requestId = `ai_${Date.now()}_${++booxAiRequestSequence}`;
+                const timeoutId = setTimeout(() => {
+                    booxAiRequests.delete(requestId);
+                    reject(new Error('AI request timed out'));
+                }, 11 * 60 * 1000);
+                booxAiRequests.set(requestId, { resolve, reject, timeoutId });
+                try {
+                    window.BooxAiHttpNative.postJson(
+                        requestId,
+                        url,
+                        JSON.stringify(init.headers || {}),
+                        String(init.body || '')
+                    );
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    booxAiRequests.delete(requestId);
+                    reject(error);
+                }
+            });
+        }
+
         async function doAIRequest(config, systemPrompt, messages, options = {}) {
             // 协议只由明确端点决定。自定义 OpenAI 兼容 Claude 不能因为模型或
             // 下拉框名称而切换成原生 Anthropic 请求头。
@@ -18744,12 +18803,16 @@
                     { role: 'system', content: systemPrompt },
                     ...finalMessages
                 ],
-                max_tokens: options.maxTokens || 8192,
-                temperature: options.temperature || 0.7,
+                max_tokens: openAIOutputTokenLimit(config.model, options.maxTokens),
                 stream: options.stream || false
             };
+            // Opus 5 rejects non-default sampling parameters; its maxthinking
+            // behavior is already selected by the gateway model alias.
+            if (!isClaudeOpus5Model(config.model)) {
+                requestBody.temperature = options.temperature || 0.7;
+            }
             
-            const response = await fetch(config.url, {
+            const response = await postOpenAICompatibleRequest(config.url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

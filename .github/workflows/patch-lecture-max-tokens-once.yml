@@ -1,0 +1,41 @@
+name: Patch lecture max tokens once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-lecture-max-tokens-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Raise lecture max token default
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/assets/www/index.html')
+          text = path.read_text(encoding='utf-8')
+          old = 'options.maxTokens || 8192'
+          new = 'options.maxTokens || 20000'
+          updated = text.replace(old, new)
+          if updated == text:
+              raise SystemExit('target max-token default not found')
+          path.write_text(updated, encoding='utf-8')
+          PY
+          rm .github/workflows/patch-lecture-max-tokens-once.yml
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/assets/www/index.html .github/workflows/patch-lecture-max-tokens-once.yml
+          git commit -m "fix: raise lecture max tokens to 20000"
+          git push origin HEAD:main

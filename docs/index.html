@@ -6468,7 +6468,7 @@
                 toast_recovered_from_cloud:'已从云端恢复文件',
                 toast_file_data_lost:'文件数据丢失，请重新导入或从云端同步',
                 toast_recovering_abstract:'从云端恢复摘要...',toast_no_abstract_paper:'该论文暂无摘要',
-                toast_lecture_synced:'讲义已同步到云端',toast_abstract_synced:'摘要已同步到云端',
+                toast_lecture_generated:'讲义已生成',toast_lecture_synced:'讲义已同步到云端',toast_abstract_synced:'摘要已同步到云端',
                 toast_exercise_synced:'习题文件已同步到云端',toast_exercise_deleted_cloud:'习题文件已从云端删除',
                 toast_auto_synced:'已自动同步到云端',toast_save_config_first:'请先保存配置',
                 toast_endpoint_https:'Endpoint必须以https://开头',
@@ -6655,7 +6655,7 @@
                 toast_recovered_from_cloud:'File recovered from cloud',
                 toast_file_data_lost:'File data lost, re-import or sync from cloud',
                 toast_recovering_abstract:'Recovering abstract from cloud...',toast_no_abstract_paper:'No abstract for this paper',
-                toast_lecture_synced:'Lecture synced to cloud',toast_abstract_synced:'Abstract synced to cloud',
+                toast_lecture_generated:'Lecture generated',toast_lecture_synced:'Lecture synced to cloud',toast_abstract_synced:'Abstract synced to cloud',
                 toast_exercise_synced:'Exercise files synced to cloud',toast_exercise_deleted_cloud:'Exercise files deleted from cloud',
                 toast_auto_synced:'Auto-synced to cloud',toast_save_config_first:'Please save config first',
                 toast_endpoint_https:'Endpoint must start with https://',
@@ -6842,7 +6842,7 @@
                 toast_recovered_from_cloud:'Fichier récupéré',
                 toast_file_data_lost:'Données perdues, réimportez ou synchronisez',
                 toast_recovering_abstract:'Récupération résumé...',toast_no_abstract_paper:'Pas de résumé',
-                toast_lecture_synced:'Cours synchronisé',toast_abstract_synced:'Résumé synchronisé',
+                toast_lecture_generated:'Cours généré',toast_lecture_synced:'Cours synchronisé',toast_abstract_synced:'Résumé synchronisé',
                 toast_exercise_synced:'Exercices synchronisés',toast_exercise_deleted_cloud:'Exercices supprimés du cloud',
                 toast_auto_synced:'Synchronisé automatiquement',toast_save_config_first:'Enregistrez d\'abord la config',
                 toast_endpoint_https:'Endpoint doit commencer par https://',
@@ -13377,6 +13377,7 @@
             einkUpdateLecturePages();
             if (einkLectureCurrentPage < einkLectureTotalPages - 1) {
                 einkLectureCurrentPage++;
+                markLectureUserScrollIntent();
                 content.scrollTo({ top: einkLectureCurrentPage * content.clientHeight, behavior: 'auto' });
                 einkShowLecturePageIndicator();
             }
@@ -13388,6 +13389,7 @@
             einkUpdateLecturePages();
             if (einkLectureCurrentPage > 0) {
                 einkLectureCurrentPage--;
+                markLectureUserScrollIntent();
                 content.scrollTo({ top: einkLectureCurrentPage * content.clientHeight, behavior: 'auto' });
                 einkShowLecturePageIndicator();
             }
@@ -14269,6 +14271,23 @@
                     const maxProgress = Math.max(Number(localChapter.maxProgress) || 0,
                         Number(cloudChapter.maxProgress) || 0);
                     if (maxProgress > 0) result.maxProgress = maxProgress;
+
+                    // 手写批注与正文、阅读进度分别合并。打开或滚动讲义不能把旧手写
+                    // 覆盖掉另一台设备更新的笔画。
+                    const cloudDrawingTs = Number(cloudChapter.drawingUpdatedAt) || 0;
+                    const localDrawingTs = Number(localChapter.drawingUpdatedAt) || 0;
+                    const drawingSource = localDrawingTs > cloudDrawingTs ? localChapter
+                        : cloudDrawingTs > localDrawingTs ? cloudChapter : base;
+                    if (drawingSource !== base) {
+                        for (const field of ['drawingStrokes', 'drawingCanvasWidth',
+                            'drawingCanvasHeight', 'drawingUpdatedAt']) {
+                            if (Object.prototype.hasOwnProperty.call(drawingSource, field)) {
+                                result[field] = drawingSource[field];
+                            } else {
+                                delete result[field];
+                            }
+                        }
+                    }
                     return result;
                 });
                 for (const localChapter of (localChapters || [])) {
@@ -15145,7 +15164,7 @@
                 saveData();
                 
                 // 显示具体的同步通知
-                if (action === 'lecture_upload') {
+                if (action === 'lecture_upload' || action === 'lecture_drawing_update') {
                     showToast(i18n('toast_lecture_synced'));
                     sendNotification(i18n('notification_lecture_sync_title'), i18n('notification_lecture_sync_body'));
                 } else if (action === 'abstract_upload') {
@@ -15169,7 +15188,7 @@
                 const retryableClassroomAction = ['recording_upload', 'classroom_upload',
                     'classroom_note_upload', 'classroom_delete', 'classroom_note_delete',
                     'recording_delete', 'classroom_folder_delete',
-                    'lecture_upload', 'abstract_upload'].includes(action);
+                    'lecture_upload', 'lecture_drawing_update', 'abstract_upload'].includes(action);
                 if (retryableClassroomAction &&
                     (config.autoSyncEnabled || config.autoSyncOnChange) && Number(attempt || 0) < 8) {
                     const key = action + ':' + fileId;
@@ -19513,6 +19532,12 @@ ${i18n('prompt_outline_gen')}`;
                     startPage: ch.startPage,
                     endPage: ch.endPage,
                     progress: prev ? prev.progress : 0,
+                    ...(prev && Object.prototype.hasOwnProperty.call(prev, 'drawingStrokes') ? {
+                        drawingStrokes: prev.drawingStrokes,
+                        drawingCanvasWidth: prev.drawingCanvasWidth,
+                        drawingCanvasHeight: prev.drawingCanvasHeight,
+                        drawingUpdatedAt: prev.drawingUpdatedAt
+                    } : {}),
                     status: prev && prev.status === 'ready' ? 'ready' : 'pending',
                     createdAt: (prev && prev.createdAt) || lectureUpdatedAt,
                     updatedAt: (prev && prev.updatedAt) || lectureUpdatedAt
@@ -19530,7 +19555,6 @@ ${i18n('prompt_outline_gen')}`;
             book.bookmarksUpdatedAt = Date.now();
             lectureData.status = 'ready';
             saveData();
-            debouncedChatSync();
             showToast(i18n('toast_outline_loaded', lectureData.chapters.length));
             renderNotesPage();
 
@@ -19594,11 +19618,10 @@ ${i18n('prompt_lecture_gen')}`;
                 // 同时在内存中缓存，供当前会话直接使用
                 chapter._contentCache = contentText;
                 saveData();
-                showToast(i18n('toast_lecture_synced'));
+                showToast(i18n('toast_lecture_generated'));
                 // 讲义正文单独同步到云端；lecture_upload 提交正文后自己会发布 metadata，
                 // 这里不再另外触发一次 metadata 同步。
                 triggerSyncOnFileChange(lecContentKey(bookId, chapter.id), 'lecture_upload');
-                sendNotification(i18n('toast_lecture_synced'), chapter.title);
 
                 // 如果正在查看这个讲义，刷新显示
                 if (currentLecture && currentLecture.bookId === bookId && currentLecture.chapterIndex === chapterIndex) {
@@ -19652,6 +19675,8 @@ ${i18n('prompt_lecture_gen')}`;
             const chapter = lectureData.chapters[chapterIndex];
             
             currentLecture = { bookId, chapterIndex, book, chapter };
+            _lectureUserScrollIntentUntil = 0;
+            bindLectureProgressInputTracking();
             
             // 保存上次打开的讲义
             appData.settings.lastLectureBookId = bookId;
@@ -19950,6 +19975,21 @@ ${i18n('prompt_lecture_gen')}`;
         // 这段窗口期内不记进度，否则打开讲义就会写一次时间戳并触发一次云同步，
         // 墨水屏归零还会把另一台设备存的阅读位置抹成 0。
         let _lectureProgrammaticScrollUntil = 0;
+        let _lectureUserScrollIntentUntil = 0;
+
+        function markLectureUserScrollIntent() {
+            _lectureUserScrollIntentUntil = Date.now() + 1500;
+        }
+
+        function bindLectureProgressInputTracking() {
+            const container = document.getElementById('lectureViewerContent');
+            if (!container || container._lectureProgressInputBound) return;
+            ['wheel', 'touchstart', 'touchmove', 'pointerdown'].forEach(type => {
+                container.addEventListener(type, markLectureUserScrollIntent, { passive: true });
+            });
+            container._lectureProgressInputBound = true;
+        }
+
         function setLectureScrollTop(container, top) {
             if (!container) return;
             _lectureProgrammaticScrollUntil = Date.now() + 400;
@@ -19959,6 +19999,8 @@ ${i18n('prompt_lecture_gen')}`;
         // 讲义阅读进度只保存在本地；打开、滚动、关闭或切后台都不得触发云同步。
         function flushLectureProgressSync() {
             flushLectureProgressSave();
+            // 若本次查看有手写修改，则在退出或切后台时统一发布一次讲义 metadata。
+            flushLectureDrawingSync();
         }
 
         // 立刻把防抖中的进度写回本地（退出讲义 / app 切后台）
@@ -19982,7 +20024,8 @@ ${i18n('prompt_lecture_gen')}`;
             // 右上角显示当前进度
             document.getElementById('lectureProgressBadge').textContent = progress + '%';
 
-            if (Date.now() < _lectureProgrammaticScrollUntil) return;
+            if (Date.now() < _lectureProgrammaticScrollUntil ||
+                Date.now() > _lectureUserScrollIntentUntil) return;
 
             const chapter = appData.lectures[currentLecture.bookId].chapters[currentLecture.chapterIndex];
             if (!chapter) return;
@@ -20002,7 +20045,7 @@ ${i18n('prompt_lecture_gen')}`;
             chapter.scrollPosition = scrollPosition;
             chapter.progressUpdatedAt = Date.now();
 
-            // 延迟保存，避免频繁写入。阅读进度只落本地，退出讲义时再统一推送云端。
+            // 延迟保存，避免频繁写入。阅读进度只落本地。
             clearTimeout(window.lectureProgressSaveTimeout);
             window.lectureProgressSaveTimeout = setTimeout(() => {
                 window.lectureProgressSaveTimeout = null;
@@ -20045,7 +20088,6 @@ ${i18n('prompt_lecture_gen')}`;
                 chapter.updatedAt = new Date().toISOString();
                 appData.lectures[currentLecture.bookId].updatedAt = chapter.updatedAt;
                 saveData();
-                debouncedChatSync();
                 generateChapterContent(currentLecture.bookId, currentLecture.chapterIndex);
                 displayLectureContent();
             }
@@ -20165,6 +20207,13 @@ ${i18n('prompt_lecture_gen')}`;
         // 笔画数据（用于整笔擦除）
         let lectureStrokes = []; // [{color, size, points:[{x,y},...]}]
         let lectureCurrentStroke = null;
+        let _lectureDrawingSyncPending = false;
+
+        function flushLectureDrawingSync() {
+            if (!_lectureDrawingSyncPending) return;
+            _lectureDrawingSyncPending = false;
+            triggerSyncOnFileChange(null, 'lecture_drawing_update');
+        }
         // Apple Pencil 模式（仅本地存储，不云同步）
         let applePencilMode = false;
         // 墨水屏模式（仅本地存储，不云同步）
@@ -20318,7 +20367,7 @@ ${i18n('prompt_lecture_gen')}`;
             lectureStrokes = lectureStrokeHistory.pop();
             redrawLectureStrokes();
             updateLectureUndoRedoButtons();
-            saveLectureDrawing();
+            saveLectureDrawing(true);
         }
 
         function redoLectureStroke() {
@@ -20329,7 +20378,7 @@ ${i18n('prompt_lecture_gen')}`;
             lectureStrokes = lectureRedoHistory.pop();
             redrawLectureStrokes();
             updateLectureUndoRedoButtons();
-            saveLectureDrawing();
+            saveLectureDrawing(true);
         }
 
         // 根据 lectureStrokes 重绘整个画布
@@ -20423,7 +20472,10 @@ ${i18n('prompt_lecture_gen')}`;
                     const deltaY = cy - _lecturePinchLastY;
                     _lecturePinchLastY = cy;
                     const scrollContainer = document.getElementById('lectureViewerContent');
-                    if (scrollContainer) scrollContainer.scrollTop -= deltaY;
+                    if (scrollContainer) {
+                        markLectureUserScrollIntent();
+                        scrollContainer.scrollTop -= deltaY;
+                    }
                 }
                 e.preventDefault();
                 return;
@@ -20435,7 +20487,10 @@ ${i18n('prompt_lecture_gen')}`;
                     const deltaY = t.clientY - _lectureScrollLastY;
                     _lectureScrollLastY = t.clientY;
                     const scrollContainer = document.getElementById('lectureViewerContent');
-                    if (scrollContainer) scrollContainer.scrollTop -= deltaY;
+                    if (scrollContainer) {
+                        markLectureUserScrollIntent();
+                        scrollContainer.scrollTop -= deltaY;
+                    }
                     e.preventDefault();
                     return;
                 }
@@ -20565,17 +20620,20 @@ ${i18n('prompt_lecture_gen')}`;
             lecturePenDrawing = false;
             _lectureActivePointerId = -1;
 
+            let drawingChanged = false;
             if (lecturePenEraser) {
                 // 橡皮擦模式结束
                 if (!_lectureEraserErased) {
                     // 没有擦除任何笔画，回退undo状态
                     if (lectureStrokeHistory.length > 0) lectureStrokeHistory.pop();
                 }
+                drawingChanged = _lectureEraserErased;
                 _lecturePenStrokeSnapshot = null;
             } else {
                 // 画笔模式：将当前笔画加入 strokes
                 if (lectureCurrentStroke && lectureCurrentStroke.points.length > 0) {
                     lectureStrokes.push(lectureCurrentStroke);
+                    drawingChanged = true;
                 }
                 lectureCurrentStroke = null;
                 _lecturePenStrokeSnapshot = null;
@@ -20583,7 +20641,7 @@ ${i18n('prompt_lecture_gen')}`;
 
             lectureRedoHistory = [];
             updateLectureUndoRedoButtons();
-            saveLectureDrawing();
+            saveLectureDrawing(drawingChanged);
         }
 
         function resizeLectureDrawCanvas() {
@@ -20627,12 +20685,18 @@ ${i18n('prompt_lecture_gen')}`;
         function clearLectureDrawing() {
             const canvas = document.getElementById('lectureDrawCanvas');
             if (!canvas || !lecturePenCtx) return;
+            const key = getLectureDrawingKey();
+            const chapter = currentLecture && currentLecture.bookId &&
+                appData.lectures?.[currentLecture.bookId]?.chapters?.[currentLecture.chapterIndex];
+            const hadDrawing = lectureStrokes.length > 0 ||
+                !!(key && appData.lectureDrawings?.[key]) ||
+                !!(chapter && Array.isArray(chapter.drawingStrokes) && chapter.drawingStrokes.length > 0);
             saveLectureStrokeState();
             lectureRedoHistory = [];
             lectureStrokes = [];
             lecturePenCtx.clearRect(0, 0, canvas.width, canvas.height);
             updateLectureUndoRedoButtons();
-            saveLectureDrawing();
+            saveLectureDrawing(hadDrawing);
             showToast(i18n('toast_deleted'));
         }
 
@@ -20643,7 +20707,7 @@ ${i18n('prompt_lecture_gen')}`;
             return `lectureDrawing_${currentLecture.bookId}_${currentLecture.chapterIndex}`;
         }
 
-        function saveLectureDrawing() {
+        function saveLectureDrawing(changed = false) {
             const key = getLectureDrawingKey();
             if (!key) return;
             const canvas = document.getElementById('lectureDrawCanvas');
@@ -20654,6 +20718,21 @@ ${i18n('prompt_lecture_gen')}`;
             // 保存笔画数据到本地（用于整笔擦除）
             if (!appData.lectureStrokesData) appData.lectureStrokesData = {};
             appData.lectureStrokesData[key] = lectureStrokes;
+
+            // 书籍讲义的手写作为章节 metadata 的独立版本保存。只有真实增删笔画
+            // 才标记待同步；打开讲义、加载旧笔画、切换画笔都不会触发云端写入。
+            if (changed && currentLecture && currentLecture.bookId &&
+                !currentLecture.isClassroomNote && !currentLecture.isPaperAbstract) {
+                const chapter = appData.lectures?.[currentLecture.bookId]
+                    ?.chapters?.[currentLecture.chapterIndex];
+                if (chapter) {
+                    chapter.drawingStrokes = JSON.parse(JSON.stringify(lectureStrokes));
+                    chapter.drawingCanvasWidth = canvas.width;
+                    chapter.drawingCanvasHeight = canvas.height;
+                    chapter.drawingUpdatedAt = Date.now();
+                    _lectureDrawingSyncPending = true;
+                }
+            }
             saveData();
         }
 
@@ -20668,6 +20747,26 @@ ${i18n('prompt_lecture_gen')}`;
             lectureStrokes = [];
             lectureCurrentStroke = null;
             updateLectureUndoRedoButtons();
+
+            // 云端/本地章节 metadata 中的版本优先；空数组也是一次有效的“清空”。
+            const chapter = currentLecture && currentLecture.bookId &&
+                appData.lectures?.[currentLecture.bookId]?.chapters?.[currentLecture.chapterIndex];
+            if (chapter && Array.isArray(chapter.drawingStrokes)) {
+                lectureStrokes = JSON.parse(JSON.stringify(chapter.drawingStrokes));
+                const sourceWidth = Number(chapter.drawingCanvasWidth) || canvas.width;
+                const sourceHeight = Number(chapter.drawingCanvasHeight) || canvas.height;
+                if (sourceWidth > 0 && sourceHeight > 0 &&
+                    (sourceWidth !== canvas.width || sourceHeight !== canvas.height)) {
+                    const sx = canvas.width / sourceWidth;
+                    const sy = canvas.height / sourceHeight;
+                    lectureStrokes.forEach(stroke => {
+                        stroke.points.forEach(point => { point.x *= sx; point.y *= sy; });
+                        stroke.size *= Math.min(sx, sy);
+                    });
+                }
+                redrawLectureStrokes();
+                return;
+            }
             
             // 优先加载笔画数据
             if (appData.lectureStrokesData && appData.lectureStrokesData[key] && appData.lectureStrokesData[key].length > 0) {

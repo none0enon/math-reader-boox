@@ -13491,9 +13491,6 @@
         let activeLectureGenerationCount = 0;
         // 本次会话真正在途的章节生成（bookId/chapterId）。只存内存，不落盘
         const _lectureInflight = new Set();
-        // 本次会话已经自动补生成过的章节：每章只自动补一次，失败后改走手动按钮，
-        // 防止存储坏掉的设备反复自动重生成、白烧 API 额度
-        const _lectureAutoRegen = new Set();
         const r2ClassroomRetryTimers = new Map();
         let r2StartupMetadataReady = Promise.resolve();
         let _resolveR2StartupMetadataReady = null;
@@ -19650,7 +19647,6 @@ ${i18n('prompt_lecture_gen')}`;
                 if (!result) throw new Error(i18n('toast_content_gen_failed'));
                 const contentText = result;
                 chapter.status = 'ready';
-                delete chapter.lastError;
                 chapter.generatedAt = new Date().toISOString();
                 chapter.updatedAt = chapter.generatedAt;
                 chapter.contentUpdatedAt = chapter.generatedAt;
@@ -19676,8 +19672,6 @@ ${i18n('prompt_lecture_gen')}`;
             } catch (err) {
                 console.error('生成章节内容失败:', err);
                 chapter.status = 'error';
-                // 把真实报错留在章节上，错误界面直接显示，省得只在 toast 里一闪而过
-                chapter.lastError = String(err && err.message || err).slice(0, 300);
                 chapter.updatedAt = new Date().toISOString();
                 lectureData.updatedAt = chapter.updatedAt;
                 saveData();
@@ -19780,12 +19774,10 @@ ${i18n('prompt_lecture_gen')}`;
             }
 
             if (chapter.status === 'error') {
-                const lastError = chapter.lastError ? escapeHtml(chapter.lastError) : '';
                 container.innerHTML = `
                     <div style="text-align:center;padding:60px 20px;color:var(--text-muted);">
                         <p style="font-size:16px;margin-bottom:12px;">${i18n('generation_failed')}</p>
                         <p style="font-size:13px;margin-bottom:20px;">${i18n('network_api_retry')}</p>
-                        ${lastError ? `<p style="font-size:12px;margin-bottom:20px;word-break:break-all;">${lastError}</p>` : ''}
                         <button onclick="retryGenerateChapter()" style="padding:10px 24px;border-radius:10px;background:var(--accent);color:white;border:none;font-size:14px;font-weight:600;cursor:pointer;">${i18n('regenerate')}</button>
                     </div>`;
                 return;
@@ -19828,16 +19820,6 @@ ${i18n('prompt_lecture_gen')}`;
             }
             
             if (!contentText) {
-                // 状态是 ready 但正文在本地和云端都找不到（历史坏数据或存储被清），
-                // 这不是等用户点按钮的场景：直接按重新生成处理，别停在死界面
-                const bookExists = appData.books.some(b => b.id === currentLecture.bookId);
-                if (chapter.status === 'ready' && chapter.id && bookExists &&
-                    !_lectureAutoRegen.has(chapter.id)) {
-                    _lectureAutoRegen.add(chapter.id);
-                    console.warn('[lecture] 状态 ready 但无正文，自动重新生成:', chapter.id);
-                    retryGenerateChapter();
-                    return;
-                }
                 container.innerHTML = `
                     <div style="text-align:center;padding:60px 20px;color:var(--text-muted);">
                         <p style="font-size:16px;margin-bottom:12px;">${i18n('content_load_failed')}</p>

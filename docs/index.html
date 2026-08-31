@@ -6508,7 +6508,7 @@
                 prompt_outline_pages:'书籍总页数：',
                 prompt_outline_gen:'请基于附件 PDF 实际内容生成大纲 JSON。',
                 prompt_pdf_only:'当前仅支持 PDF 书籍生成大纲',
-                prompt_lecture_sys:'你是一个专业的数学讲师。附件是这一节对应的 PDF 页，请基于附件实际内容，为数学基础一般（仅学过基础数学分析和线性代数）的学生准备讲义。讲义应当与附件 PDF 内容一致，不要凭空发挥。\n\n请严格按以下三个部分组织，每节按 1 小时学习效率把握总量：\n\n## 一、预习\n\n前置概念讲解。假设读者只有基础数学分析和线性代数水平，所有涉及的非初等概念（如线性泛函、流形、测度、分布等）都需要：\n1. 给出严格的数学定义\n2. 简明解释其数学含义\n3. 给出具体例子\n4. 介绍所有需要的数学记号\n\n## 二、大纲\n\n本节主要内容：\n1. 核心定理的完整陈述\n2. 重要引理\n3. 完整的证明过程（不省略任何关键步骤）\n4. 定理之间的逻辑关系\n\n## 三、习题\n\n5道涉及核心概念的习题，难度递进：\n- 第1-2题：基础概念理解\n- 第3-4题：定理应用\n- 第5题：综合应用或证明\n\n在文末给出所有习题的详细解答。\n\n要求：\n- 使用严谨的数学语言，不要口语化表达\n- 不要使用"大家好"、"我们将"、"让我们"等口语\n- 直接陈述数学内容\n- 使用LaTeX格式：行内公式用 $...$ ，独立公式用 $$...$$',
+                prompt_lecture_sys:'你是一个专业的数学讲师。附件是这一节对应的 PDF 页，请基于附件实际内容，为数学基础一般（仅学过基础数学分析和线性代数）的学生准备讲义。讲义应当与附件 PDF 内容一致，不要凭空发挥。\n\n请严格按以下三个部分组织，每节按 1 小时学习效率把握总量：\n\n## 一、预习\n\n前置概念讲解。假设读者只有基础数学分析和线性代数水平，所有涉及的非初等概念（如线性泛函、流形、测度、分布等）都需要：\n1. 给出严格的数学定义\n2. 简明解释其数学含义\n3. 给出具体例子\n4. 介绍所有需要的数学记号\n\n## 二、大纲\n\n本节主要内容：\n1. 核心定理的完整陈述\n2. 重要引理\n3. 完整的证明过程（强调关键步骤的同时禁止省略任何步骤）\n4. 定理之间的逻辑关系\n\n## 三、习题\n\n5道涉及核心概念的习题，难度递进：\n- 第1-2题：基础概念理解\n- 第3-4题：定理应用\n- 第5题：综合应用或证明\n\n在文末给出所有习题的详细解答。\n\n要求：\n- 使用严谨的数学语言，不要口语化表达\n- 不要使用"大家好"、"我们将"、"让我们"等口语\n- 直接陈述数学内容\n- 使用LaTeX格式：行内公式用 $...$ ，独立公式用 $$...$$',
                 prompt_lecture_book:'书籍：',
                 prompt_lecture_chapter:'章节：',
                 prompt_lecture_pages:'对应页码：第 {0} - {1} 页',
@@ -6695,7 +6695,7 @@
                 prompt_outline_pages:'Total pages: ',
                 prompt_outline_gen:'Generate outline JSON based on the attached PDF.',
                 prompt_pdf_only:'Only PDF books are supported for outline generation',
-                prompt_lecture_sys:'You are a professional math lecturer. The attachment contains PDF pages for this section. Based on actual content, prepare lecture notes for students with basic math background (calculus and linear algebra only). Notes must match the PDF.\n\nOrganize into three parts, ~1 hour each:\n\n## I. Prerequisites\n\nExplain prerequisite concepts. For every non-elementary concept:\n1. Rigorous definition\n2. Brief explanation\n3. Concrete examples\n4. Necessary notation\n\n## II. Outline\n\n1. Complete theorem statements\n2. Important lemmas\n3. Complete proofs\n4. Logical relationships\n\n## III. Exercises\n\n5 progressive exercises:\n- Q1-2: Basic understanding\n- Q3-4: Theorem application\n- Q5: Comprehensive\n\nDetailed solutions at the end.\n\nRequirements:\n- Rigorous mathematical language\n- Direct statements\n- LaTeX: $...$ inline, $$...$$ display',
+                prompt_lecture_sys:'You are a professional math lecturer. The attachment contains PDF pages for this section. Based on actual content, prepare lecture notes for students with basic math background (calculus and linear algebra only). Notes must match the PDF.\n\nOrganize into three parts, ~1 hour each:\n\n## I. Prerequisites\n\nExplain prerequisite concepts. For every non-elementary concept:\n1. Rigorous definition\n2. Brief explanation\n3. Concrete examples\n4. Necessary notation\n\n## II. Outline\n\n1. Complete theorem statements\n2. Important lemmas\n3. Complete proofs (emphasize key steps while omitting no steps)\n4. Logical relationships\n\n## III. Exercises\n\n5 progressive exercises:\n- Q1-2: Basic understanding\n- Q3-4: Theorem application\n- Q5: Comprehensive\n\nDetailed solutions at the end.\n\nRequirements:\n- Rigorous mathematical language\n- Direct statements\n- LaTeX: $...$ inline, $$...$$ display',
                 prompt_lecture_book:'Book: ',
                 prompt_lecture_chapter:'Chapter: ',
                 prompt_lecture_pages:'Pages: {0} - {1}',
@@ -6882,7 +6882,7 @@
                 prompt_outline_pages:'Pages totales : ',
                 prompt_outline_gen:'Génère le plan JSON à partir du PDF joint.',
                 prompt_pdf_only:'Seuls les livres PDF sont pris en charge',
-                prompt_lecture_sys:'Tu es un professeur de mathématiques. La pièce jointe contient les pages PDF de cette section. Prépare des notes de cours pour des étudiants avec des bases en analyse et algèbre linéaire.\n\nOrganise en trois parties, ~1h chacune :\n\n## I. Prérequis\n\nPour tout concept non élémentaire :\n1. Définition rigoureuse\n2. Explication brève\n3. Exemples concrets\n4. Notations nécessaires\n\n## II. Plan\n\n1. Énoncés des théorèmes\n2. Lemmes importants\n3. Preuves complètes\n4. Relations logiques\n\n## III. Exercices\n\n5 exercices progressifs :\n- Q1-2 : Compréhension de base\n- Q3-4 : Application\n- Q5 : Synthèse\n\nSolutions détaillées à la fin.\n\nExigences :\n- Langage mathématique rigoureux\n- LaTeX : $...$ en ligne, $$...$$ en bloc',
+                prompt_lecture_sys:'Tu es un professeur de mathématiques. La pièce jointe contient les pages PDF de cette section. Prépare des notes de cours pour des étudiants avec des bases en analyse et algèbre linéaire.\n\nOrganise en trois parties, ~1h chacune :\n\n## I. Prérequis\n\nPour tout concept non élémentaire :\n1. Définition rigoureuse\n2. Explication brève\n3. Exemples concrets\n4. Notations nécessaires\n\n## II. Plan\n\n1. Énoncés des théorèmes\n2. Lemmes importants\n3. Preuves complètes (mettre en évidence les étapes clés sans omettre aucune étape)\n4. Relations logiques\n\n## III. Exercices\n\n5 exercices progressifs :\n- Q1-2 : Compréhension de base\n- Q3-4 : Application\n- Q5 : Synthèse\n\nSolutions détaillées à la fin.\n\nExigences :\n- Langage mathématique rigoureux\n- LaTeX : $...$ en ligne, $$...$$ en bloc',
                 prompt_lecture_book:'Livre : ',
                 prompt_lecture_chapter:'Chapitre : ',
                 prompt_lecture_pages:'Pages : {0} - {1}',
@@ -19579,7 +19579,7 @@ ${i18n('prompt_lecture_gen')}`;
                 }
 
                 const result = await callAI(systemPrompt, [{ role: 'user', content: userMessage }], {
-                    maxTokens: 8192,
+                    maxTokens: 20000,
                     pdfAttachment
                 });
 

@@ -13316,20 +13316,28 @@
             if (e.cancelable !== false) e.preventDefault();
         }
 
+        // 直接沿用「选中问 AI」里已经在 iPad 上跑通的写法（讲义 handleLectureSelection、
+        // 习题 handleExerciseSelection、聊天 handleReaderChatSelection 三处同款）：
+        // mouseup / touchend 后延时 50ms —— 足够让 iPad 完成选区，又赶在原生菜单
+        // 弹出之前 removeAllRanges()，把选区连同原生菜单一起干掉。
         function clearStrayNativeSelection() {
-            const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
-            // 塌缩选区就是光标本身，清掉会顶掉输入框/文本框的插入点，只处理真实选区。
-            if (!sel || !sel.rangeCount || sel.isCollapsed) return;
-            const active = document.activeElement;
-            if (active && typeof active.closest === 'function' && active.closest(NATIVE_SELECT_ALLOWED)) return;
-            if (nativeSelectionAllowedAt(sel.anchorNode) || nativeSelectionAllowedAt(sel.focusNode)) return;
-            try { sel.removeAllRanges(); } catch (err) {}
+            setTimeout(() => {
+                const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+                // 塌缩选区就是光标本身，清掉会顶掉输入框/文本框的插入点，只处理真实选区。
+                if (!selection || !selection.rangeCount || selection.isCollapsed) return;
+                // 白名单判断与聊天气泡那段同款：选区落在允许的容器里就放过。
+                const active = document.activeElement;
+                if (active && typeof active.closest === 'function' && active.closest(NATIVE_SELECT_ALLOWED)) return;
+                if (nativeSelectionAllowedAt(selection.anchorNode) || nativeSelectionAllowedAt(selection.focusNode)) return;
+                try { selection.removeAllRanges(); } catch (err) {}
+            }, 50);
         }
 
         ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
             document.addEventListener(type, blockPageNativeSelection, true);
         });
-        document.addEventListener('selectionchange', clearStrayNativeSelection, true);
+        document.addEventListener('mouseup', clearStrayNativeSelection, true);
+        document.addEventListener('touchend', clearStrayNativeSelection, true);
 
         function readerPenModeOwnsEventTarget(target) {
             const container = document.getElementById('readerContainer');

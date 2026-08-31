@@ -19956,13 +19956,9 @@ ${i18n('prompt_lecture_gen')}`;
             container.scrollTop = top;
         }
 
-        // 有尚未推送到云端的讲义阅读进度
-        let _lectureProgressSyncPending = false;
+        // 讲义阅读进度只保存在本地；打开、滚动、关闭或切后台都不得触发云同步。
         function flushLectureProgressSync() {
             flushLectureProgressSave();
-            if (!_lectureProgressSyncPending) return;
-            _lectureProgressSyncPending = false;
-            triggerSyncOnFileChange(null, 'metadata_update');
         }
 
         // 立刻把防抖中的进度写回本地（退出讲义 / app 切后台）
@@ -20005,7 +20001,6 @@ ${i18n('prompt_lecture_gen')}`;
             chapter.maxProgress = maxProgress;
             chapter.scrollPosition = scrollPosition;
             chapter.progressUpdatedAt = Date.now();
-            _lectureProgressSyncPending = true;
 
             // 延迟保存，避免频繁写入。阅读进度只落本地，退出讲义时再统一推送云端。
             clearTimeout(window.lectureProgressSaveTimeout);
@@ -21160,8 +21155,7 @@ ${i18n('prompt_lecture_gen')}`;
             saveLectureDraft();
             collapseLectureDraftPanel();
             hideLectureSelectionMenu();
-            // 阅读期间的进度只写本地，退出时统一推一次，多设备仍能接上进度，
-            // 但一次阅读最多产生一次同步而不是每滚动一下一次。
+            // 阅读进度只写本地；退出讲义不触发云同步。
             flushLectureProgressSync();
 
             // Restore book link button visibility

@@ -28,6 +28,39 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
+        /* ==================== 全页禁止浏览器原生选择 ====================
+           iOS Safari / iPadOS PWA 下，长按或 Apple Pencil 落笔时的轻微抖动会
+           唤起原生选区（蓝色高亮 + 放大镜 + 「拷贝/查询」浮条），笔记书写界面
+           尤其容易误触。逐个界面补 user-select:none 总有漏网元素（工具栏文字、
+           页面容器、画布之外的空白区），所以这里整页默认关闭原生选择，再用
+           白名单把真正需要输入/复制的元素单独打开。
+           新界面若确实需要原生选区，给元素加 class="allow-native-select"。 */
+        html, body {
+            -webkit-tap-highlight-color: transparent;
+        }
+        *, *::before, *::after {
+            -webkit-user-select: none !important;
+            user-select: none !important;
+            -webkit-touch-callout: none !important;
+        }
+        /* 白名单：只有这些元素保留原生选区。注意仅放开 user-select，不放开
+           touch-callout —— 讲义/聊天靠自定义菜单接管选区，原生「拷贝/查询」
+           浮条一旦回来就会把自定义菜单挡住。 */
+        input, textarea, select,
+        [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"],
+        [contenteditable="true"] *, [contenteditable=""] *, [contenteditable="plaintext-only"] *,
+        .allow-native-select, .allow-native-select *,
+        .chat-bubble.selectable, .chat-bubble.selectable *,
+        .lecture-content, .lecture-content * {
+            -webkit-user-select: text !important;
+            user-select: text !important;
+        }
+        /* 输入控件与可编辑区需要原生「粘贴/全选」浮条，单独恢复 callout */
+        input, textarea,
+        [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"] {
+            -webkit-touch-callout: default !important;
+        }
+
         :root {
             --bg-primary: #ffffff;
             --bg-secondary: #f5f5f5;
@@ -13257,6 +13290,54 @@
             layer.addEventListener('touchend', stopPencilModeFingerScroll, { passive: true });
             layer.addEventListener('touchcancel', stopPencilModeFingerScroll, { passive: true });
         }
+
+        // ==================== 全页原生选择拦截（CSS 之外的第二道保险） ====================
+        // 部分 iOS 版本在触摸拖选时不发可取消的 selectstart，光靠 CSS 仍会出现
+        // 选区和放大镜；这里在捕获阶段拦下选择/拖拽/长按菜单，并用
+        // selectionchange 兜底清掉落在白名单之外的选区。
+        // 白名单与上方 CSS 白名单保持一致，改一处记得同步另一处。
+        const NATIVE_SELECT_ALLOWED = [
+            'input', 'textarea', 'select',
+            '[contenteditable="true"]', '[contenteditable=""]', '[contenteditable="plaintext-only"]',
+            '.allow-native-select',
+            '.chat-bubble.selectable',   // 聊天气泡长按「引用」
+            '.lecture-content'           // 讲义「选中问 AI」
+        ].join(',');
+
+        function nativeSelectionAllowedAt(node) {
+            const el = node && (node.nodeType === 1 ? node : node.parentElement);
+            return !!(el && typeof el.closest === 'function' && el.closest(NATIVE_SELECT_ALLOWED));
+        }
+
+        function blockPageNativeSelection(e) {
+            if (!e || nativeSelectionAllowedAt(e.target)) return;
+            // 只 preventDefault、不 stopPropagation：页面自定义的 contextmenu
+            // 长按菜单（各种卡片菜单）仍然照常触发。
+            if (e.cancelable !== false) e.preventDefault();
+        }
+
+        // 直接沿用「选中问 AI」里已经在 iPad 上跑通的写法（讲义 handleLectureSelection、
+        // 习题 handleExerciseSelection、聊天 handleReaderChatSelection 三处同款）：
+        // mouseup / touchend 后延时 50ms —— 足够让 iPad 完成选区，又赶在原生菜单
+        // 弹出之前 removeAllRanges()，把选区连同原生菜单一起干掉。
+        function clearStrayNativeSelection() {
+            setTimeout(() => {
+                const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+                // 塌缩选区就是光标本身，清掉会顶掉输入框/文本框的插入点，只处理真实选区。
+                if (!selection || !selection.rangeCount || selection.isCollapsed) return;
+                // 白名单判断与聊天气泡那段同款：选区落在允许的容器里就放过。
+                const active = document.activeElement;
+                if (active && typeof active.closest === 'function' && active.closest(NATIVE_SELECT_ALLOWED)) return;
+                if (nativeSelectionAllowedAt(selection.anchorNode) || nativeSelectionAllowedAt(selection.focusNode)) return;
+                try { selection.removeAllRanges(); } catch (err) {}
+            }, 50);
+        }
+
+        ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
+            document.addEventListener(type, blockPageNativeSelection, true);
+        });
+        document.addEventListener('mouseup', clearStrayNativeSelection, true);
+        document.addEventListener('touchend', clearStrayNativeSelection, true);
 
         function readerPenModeOwnsEventTarget(target) {
             const container = document.getElementById('readerContainer');

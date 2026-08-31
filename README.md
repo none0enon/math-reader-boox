@@ -50,6 +50,8 @@ This repository ships the current Math Reader web app as an Android APK. BOOX/E 
 - 套索问 AI、手写识别、习题识别和批改需要支持图片输入的视觉模型。
 - 课堂录音转写需要所选接口能够接收应用发送的音频内容；服务商的文件大小、格式和速率限制仍然适用。
 - 生成大纲/讲义会发送 PDF 或切分后的 PDF 页面，模型接口需要支持该调用方式。
+- 请求协议按服务地址判断：只有 Google 官方端点走 Gemini 原生协议并直接上传 PDF，Claude 用 document 块，DeepSeek/OpenAI/自定义渠道一律走 OpenAI 兼容的 chat/completions，PDF 会先在本地提取文本再随提示词发送。
+- 推理模型只取正文：thought 分段、reasoning_content 以及 `<think>` 标签内的内容都会被丢弃；若模型把输出预算全部用在思考上，应用会自动提高一次输出上限重试，仍无正文则报错而不会把思考过程存成讲义。
 
 API Key 保存在本机设置中，不会随 R2 元数据同步到云端；完整 ZIP 备份会包含本机设置，因此仍须把 ZIP 当作敏感文件保管。
 
@@ -97,7 +99,7 @@ API Key 保存在本机设置中，不会随 R2 元数据同步到云端；完�
 
 录音写入应用私有的持久化存储，覆盖升级和 WebView 重建不会主动删除，但卸载应用仍会清除录音。创建完整 ZIP 前应先停止正在进行的录音；若导出提示录音缺失，请检查 ZIP 中的 `recordings/missing.json`。
 
-iPhone/iPad PWA 中超过 5 分钟或 10 MB 的 AAC/M4A 长录音需要配置 Gemini 模型。应用会通过 Gemini Files API 直接处理压缩录音，避免在 iOS 页面内把 80～90 分钟音频整体解码为 PCM；纪要生成结束后会删除 Gemini 中的临时文件。
+iPhone/iPad PWA 中超过 5 分钟或 10 MB 的 AAC/M4A 长录音需要在主/备用 API 里配置 Google 官方 Gemini 端点（自定义渠道不能替代）。应用会通过 Gemini Files API 直接处理压缩录音，避免在 iOS 页面内把 80～90 分钟音频整体解码为 PCM；纪要生成结束后会删除 Gemini 中的临时文件。
 
 ### 6. 讲义与论文摘要
 
@@ -233,6 +235,8 @@ Open **Settings → API Setting**:
 5. Save the settings, test a text chat, and then test any image, audio, or PDF workflow you plan to use.
 
 Use a strong text/LaTeX model for chat, outlines, lectures, and abstracts. Lasso questions, handwriting indexing, exercise extraction, and grading require vision input. Classroom transcription requires an API that accepts the audio sent by the app. PDF outline and lecture generation require a provider compatible with the app's PDF attachment calls.
+
+The request protocol follows the endpoint, not the dropdown: only Google's own endpoint uses the native Gemini protocol and uploads the PDF directly; Claude uses document blocks; DeepSeek, OpenAI, and custom channels all use OpenAI-compatible chat/completions, where the PDF is converted to text locally before it is sent. Only the answer is kept from reasoning models — Gemini thought parts, `reasoning_content`, and `<think>` sections are discarded. If a model spends its whole output budget thinking, the app retries once with a larger limit and then reports an error instead of storing the monologue as lecture notes.
 
 API credentials stay local and are excluded from R2 metadata sync. A full ZIP contains local settings, so protect the ZIP as a sensitive file.
 

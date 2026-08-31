@@ -6343,6 +6343,7 @@
     <script src="recording-storage.js"></script>
     <script src="classroom-storage.js"></script>
     <script src="recording-ai.js"></script>
+    <script src="ai-response.js"></script>
     <script>
         // ==================== Data Store ====================
         let appData = {
@@ -6461,7 +6462,7 @@
                 toast_outline_loaded:'已加载 {0} 节大纲',toast_gen_outline_first:'请先点击"生成大纲"',
                 toast_ai_generating_outline:'AI 正在生成大纲...',toast_ai_generating_outline_chunk:'AI 正在生成大纲（第 {0}/{1} 段，第 {2}-{3} 页）...',toast_ai_return_parse_fail:'AI 返回格式解析失败',
                 toast_ai_no_valid_outline:'AI 未返回有效大纲',toast_gen_failed:'生成失败: ',
-                toast_content_gen_failed:'内容生成失败',toast_generating_abstract:'正在生成摘要...',
+                toast_generating_abstract:'正在生成摘要...',
                 toast_abstract_generated:'摘要已生成，正在同步到云端...',toast_asking_ai:'正在询问AI...',
                 toast_note_added:'已添加笔记',toast_ai_request_failed:'AI请求失败: ',
                 toast_select_wrong:'请先选择错题',toast_local_file_lost:'本地文件丢失，正在从云端恢复…',
@@ -6487,7 +6488,6 @@
                 prompt_photo_or_file:'照片/截图',prompt_file:'文件',
                 prompt_seminar_extra:'\n\n注意：这是一个讲座的内容。请额外补充介绍该领域的相关基础知识，帮助读者理解讲座涉及的专业概念和背景。在笔记开头增加一个"背景知识"部分。',
                 edit_hint:'点击编辑',your_name:'你的名字',me:'我',
-                abstract_gen_failed:'摘要生成失败',
                 notification_abstract_done:'摘要生成完成',abstract_added:' 的摘要已添加',
                 exercise_task:'任务',exercise_click_redo:'点击重做',exercise_restore:'恢复',
                 wrong_archive:'归档此错题',wrong_delete:'删除此错题',wrong_restore:'恢复错题',
@@ -6648,7 +6648,7 @@
                 toast_outline_loaded:'Loaded {0} section outline',toast_gen_outline_first:'Please click "Generate Outline" first',
                 toast_ai_generating_outline:'AI is generating outline...',toast_ai_generating_outline_chunk:'AI is generating outline (part {0}/{1}, pages {2}-{3})...',toast_ai_return_parse_fail:'AI response parse failed',
                 toast_ai_no_valid_outline:'AI returned no valid outline',toast_gen_failed:'Generation failed: ',
-                toast_content_gen_failed:'Content generation failed',toast_generating_abstract:'Generating abstract...',
+                toast_generating_abstract:'Generating abstract...',
                 toast_abstract_generated:'Abstract generated, syncing to cloud...',toast_asking_ai:'Asking AI...',
                 toast_note_added:'Note added',toast_ai_request_failed:'AI request failed: ',
                 toast_select_wrong:'Please select wrong answers first',toast_local_file_lost:'Local file lost, recovering from cloud...',
@@ -6674,7 +6674,6 @@
                 prompt_photo_or_file:'photo/screenshot',prompt_file:'file',
                 prompt_seminar_extra:'\n\nNote: This is seminar content. Add a "Background Knowledge" section at the beginning.',
                 edit_hint:'Click to edit',your_name:'Your name',me:'Me',
-                abstract_gen_failed:'Abstract generation failed',
                 notification_abstract_done:'Abstract generated',abstract_added:' abstract added',
                 exercise_task:'Tasks',exercise_click_redo:'Click to redo',exercise_restore:'Restore',
                 wrong_archive:'Archive this question',wrong_delete:'Delete this question',wrong_restore:'Restore',
@@ -6835,7 +6834,7 @@
                 toast_outline_loaded:'{0} sections chargées',toast_gen_outline_first:'Cliquez d\'abord sur "Générer un plan"',
                 toast_ai_generating_outline:'L\'IA génère le plan...',toast_ai_generating_outline_chunk:'L\'IA génère le plan (partie {0}/{1}, pages {2}-{3})...',toast_ai_return_parse_fail:'Échec analyse réponse IA',
                 toast_ai_no_valid_outline:'Aucun plan valide',toast_gen_failed:'Échec : ',
-                toast_content_gen_failed:'Échec génération contenu',toast_generating_abstract:'Génération résumé...',
+                toast_generating_abstract:'Génération résumé...',
                 toast_abstract_generated:'Résumé généré, synchronisation...',toast_asking_ai:'Demande à l\'IA...',
                 toast_note_added:'Note ajoutée',toast_ai_request_failed:'Échec requête IA : ',
                 toast_select_wrong:'Sélectionnez d\'abord des erreurs',toast_local_file_lost:'Fichier local perdu, récupération...',
@@ -6861,7 +6860,6 @@
                 prompt_photo_or_file:'photo/capture',prompt_file:'fichier',
                 prompt_seminar_extra:'\n\nContenu de séminaire. Ajoute une section "Connaissances de base".',
                 edit_hint:'Cliquer pour modifier',your_name:'Votre nom',me:'Moi',
-                abstract_gen_failed:'Échec génération résumé',
                 notification_abstract_done:'Résumé généré',abstract_added:' résumé ajouté',
                 exercise_task:'Tâches',exercise_click_redo:'Refaire',exercise_restore:'Restaurer',
                 wrong_archive:'Archiver cette erreur',wrong_delete:'Supprimer cette erreur',wrong_restore:'Restaurer',
@@ -7093,6 +7091,21 @@
             prompt_review_quiz_system:'Tu es un coach expérimenté en apprentissage des mathématiques. Conçois un quiz de répétition espacée à partir des notes manuscrites de l’élève. Les notes ne sont qu’un résumé : mobilise le corpus associé et étends les questions aux théorèmes importants, réciproques, corollaires, cas limites, notions proches et variantes courantes. Les questions doivent demander de la réflexion, pas une simple récitation. Commence directement par la première question, sans salutation, réponse ni indice. Utilise Markdown et LaTeX.', prompt_review_quiz_extra:'L’élève a retardé la révision précédente et a besoin d’une consolidation. Crée 3–4 questions à partir de cette page : au moins une extension du même thème et au moins un calcul ou une preuve en plusieurs étapes. Consolide les bases sans question triviale. Renvoie uniquement les questions, sans réponses.', prompt_review_quiz_tonight:'Voici les notes de mathématiques prises aujourd’hui. Crée un quiz « Ce soir » de 4–5 questions : 1–2 questions de compréhension conceptuelle, 1–2 applications directes de calcul ou de preuve, et une extension liée à un théorème, une réciproque, un cas particulier ou une connexion. Renvoie uniquement les questions, sans réponses.', prompt_review_quiz_advanced:'L’élève a étudié ces notes il y a {0} jours. Il s’agit de la révision espacée {1} ({2}). Crée un quiz avancé de 4–5 questions : une distinction conceptuelle, 1–2 variantes, une application intégrée et un défi. Va plus loin que la révision précédente sans répéter les types de questions. Renvoie uniquement les questions, sans réponses.', prompt_previous_quiz:'\n\nQuiz précédent (évite toute répétition et va plus loin) :\n{0}', prompt_previous_quiz_result:'\n\nUtilise la notation IA précédente pour concevoir le prochain quiz. Cible les lacunes et erreurs avec des variantes progressives, réduis la répétition mécanique des acquis et ne révèle aucune réponse.\nNote globale : {0}/10', prompt_ai_feedback:'\nCommentaire IA :\n{0}', prompt_recognized_note:'\n\nTexte reconnu des notes :\n{0}',
             write_answer_first:'Écrivez d’abord votre réponse sur la zone de dessin', grading:'Notation…', grading_in_progress:'Notation en cours…', ai_grading_empty:'L’IA n’a renvoyé aucune notation', per_question_review_heading:'**Vérification question par question :**\n', solutions_missing:'L’IA n’a pas renvoyé les bonnes réponses et les démonstrations complètes', solutions_section:'**✦ Bonnes réponses et démonstrations complètes :**\n{0}', grading_failed:'Échec de la notation : {0}', grading_complete_practice:'Notation terminée ; génération d’un exercice de consolidation…', grading_complete_next:'Notation terminée ; génération du quiz avancé pour {0}…', all_reviews_complete:'Toutes les révisions sont terminées !',
             prompt_review_grade_system:'Tu es un correcteur et solveur de mathématiques strict et professionnel. Résous d’abord chaque question du quiz, puis vérifie la copie manuscrite dans l’ordre. Note globale sur 10 : exactitude et complétude 6, rigueur 2, clarté 2. Couvre chaque question ; même une réponse absente, incomplète ou illisible exige la bonne réponse et une solution complète. per_question évalue uniquement et précisément le travail de l’élève. solutions donne, pour chaque question, une réponse ou conclusion explicite et une démonstration complète sans omettre les étapes clés. N’invente aucune condition et n’ajoute aucun encouragement générique. Renvoie uniquement un JSON valide pour JSON.parse : {"score":nombre de 0 à 10,"per_question":[{"q":"numéro ou résumé","correct":booléen,"comment":"vérification précise"}],"solutions":"bonne réponse et démonstration complète pour chaque question"}. Utilise LaTeX et un échappement JSON valide.', prompt_review_grade_user:'Questions du quiz :\n\n{0}\n\nVérifie la copie manuscrite de l’image dans l’ordre. Pour chaque question, donne une bonne réponse explicite et une démonstration mathématique complète ; ne te contente pas de signaler les erreurs.'
+        });
+        Object.assign(I18N.zh, {
+            ai_reasoning_only:'模型只返回了思考过程，没有正文；请提高输出上限或更换模型',
+            ai_blocked:'请求被模型安全策略拦截（{0}）',
+            ai_empty_reply:'模型返回了空内容'
+        });
+        Object.assign(I18N.en, {
+            ai_reasoning_only:'The model returned only its reasoning, without an answer. Raise the output limit or switch models.',
+            ai_blocked:'The request was blocked by the model safety policy ({0})',
+            ai_empty_reply:'The model returned an empty response'
+        });
+        Object.assign(I18N.fr, {
+            ai_reasoning_only:'Le modèle n’a renvoyé que son raisonnement, sans réponse. Augmentez la limite de sortie ou changez de modèle.',
+            ai_blocked:'La requête a été bloquée par la politique de sécurité du modèle ({0})',
+            ai_empty_reply:'Le modèle a renvoyé une réponse vide'
         });
         let currentLang = 'en';
         function i18n(key, ...args) {
@@ -12395,7 +12408,9 @@
             }
         }
         
-        // 判断一个 URL 是否为 Google Gemini 端点（用 host 判断，不依赖下拉框）
+        // 判断一个 URL 是否为 Google Gemini 端点（用 host 判断，不依赖下拉框）。
+        // 只有真正的 Gemini 端点才走 Gemini 原生协议：自定义渠道即使填了 Gemini 风格的
+        // 模型名，也按 OpenAI 兼容协议请求，PDF 走文本提取兜底而不是 Gemini 附件。
         function isGeminiUrl(url) {
             return typeof url === 'string' && url.indexOf('generativelanguage.googleapis.com') !== -1;
         }
@@ -12413,8 +12428,9 @@
                 model: settings.backupModel,
                 provider: settings.backupProvider || ''
             }];
+            // 长录音要用 Gemini Files API，只有真正的 Gemini 端点能接；自定义渠道不算。
             return candidates.find(config => config.url && config.key && config.model &&
-                (isGeminiUrl(config.url) || config.provider === 'custom')) || null;
+                isGeminiUrl(config.url)) || null;
         }
 
         async function fetchModels(type) {
@@ -18645,13 +18661,13 @@
         }
         
         async function doAIRequest(config, systemPrompt, messages, options = {}) {
-            // Gemini 原生渠道，或用户指定的"自定义"渠道都走 Gemini 协议（按用户要求）
-            const useGemini = isGeminiUrl(config.url) || config.provider === 'custom';
-            if (useGemini) {
+            // 只有 URL 指向 Google 官方端点时才走 Gemini 原生协议。
+            // 自定义渠道按 OpenAI 兼容协议请求，PDF 也不走 Gemini 的附件/Files API。
+            if (isGeminiUrl(config.url)) {
                 return await doGeminiRequest(config, systemPrompt, messages, options);
             }
 
-            // OpenAI / DeepSeek / Claude / 其他 OpenAI 兼容：用 chat/completions 协议
+            // OpenAI / DeepSeek / Claude / 自定义等 OpenAI 兼容：用 chat/completions 协议
             // 这些渠道中只有 Claude 支持原生 PDF，其他需要靠文本预提取兜底
             let finalMessages = messages;
             if (options.pdfAttachment) {
@@ -18660,7 +18676,7 @@
                     finalMessages = await embedPdfForClaude(messages, options.pdfAttachment);
                     return await doClaudeRequest(config, systemPrompt, finalMessages, options);
                 } else {
-                    // OpenAI / DeepSeek / 其他：不支持 PDF，回退文本提取
+                    // OpenAI / DeepSeek / 自定义 / 其他：不支持 PDF，回退文本提取
                     const extractedText = await extractPdfTextAsFallback(options.pdfAttachment);
                     finalMessages = injectPdfTextIntoLastUser(messages, extractedText);
                 }
@@ -18691,37 +18707,63 @@
                 };
             }));
 
-            const requestBody = {
-                model: config.model,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    ...finalMessages
-                ],
-                max_tokens: options.maxTokens || 8192,
-                temperature: options.temperature || 0.7,
-                stream: options.stream || false
+            const baseMaxTokens = options.maxTokens || 8192;
+            const sendChatCompletion = async (maxTokens) => {
+                const requestBody = {
+                    model: config.model,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        ...finalMessages
+                    ],
+                    max_tokens: maxTokens,
+                    temperature: options.temperature || 0.7,
+                    stream: options.stream || false
+                };
+
+                const response = await fetch(config.url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + config.key
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text().catch(() => '');
+                    throw new Error(i18n('api_error', response.status, errText));
+                }
+                return response;
             };
-            
-            const response = await fetch(config.url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + config.key
-                },
-                body: JSON.stringify(requestBody)
-            });
-            
-            if (!response.ok) {
-                const errText = await response.text().catch(() => '');
-                throw new Error(i18n('api_error', response.status, errText));
-            }
-            
+
+            const response = await sendChatCompletion(baseMaxTokens);
             if (options.stream) {
                 return response;
             }
-            
-            const data = await response.json();
-            return data.choices?.[0]?.message?.content || null;
+
+            // 推理模型会把思考放在 reasoning_content 里，或用 <think> 内联进正文：
+            // 只取正文，思考一律丢掉，不能当成结果保存。
+            let answer = AIResponse.extractOpenAiAnswer(await response.json());
+            if (AIResponse.isReasoningOnly(answer)) {
+                // 思考把 max_tokens 吃光，正文是空的：抬高输出上限重试一次。
+                console.warn('渠道只返回了思考内容，提高 max_tokens 重试:', answer.finishReason);
+                const retryMaxTokens = reasoningRetryMaxTokens(baseMaxTokens);
+                if (retryMaxTokens > baseMaxTokens) {
+                    try {
+                        answer = AIResponse.extractOpenAiAnswer(
+                            await (await sendChatCompletion(retryMaxTokens)).json());
+                    } catch (e) {
+                        console.warn('提高 max_tokens 重试失败:', e);
+                    }
+                }
+                if (!answer.text) throw new Error(i18n('ai_reasoning_only'));
+            }
+            return answer.text || null;
+        }
+
+        // 正文被思考挤掉时的重试预算：翻倍，但至少 16K、最多 32K。
+        function reasoningRetryMaxTokens(baseMaxTokens) {
+            return Math.min(Math.max(baseMaxTokens * 2, 16384), 32768);
         }
 
         // 把 PDF 文本提取，作为"附件文本"拼到 messages 最后一条 user 内容前
@@ -18784,7 +18826,9 @@
             }
             const data = await response.json();
             if (Array.isArray(data.content)) {
-                return data.content.filter(x => x.type === 'text').map(x => x.text).join('');
+                // thinking 块不是正文，只取 text 块，再清掉可能内联的思考标签。
+                const text = data.content.filter(x => x.type === 'text').map(x => x.text || '').join('');
+                return AIResponse.splitReasoningMarkup(text).text || null;
             }
             return null;
         }
@@ -18893,36 +18937,61 @@
                 }
             }
 
-            const body = {
-                contents,
-                generationConfig: {
-                    temperature: options.temperature != null ? options.temperature : 0.7,
-                    maxOutputTokens: options.maxTokens || 8192
-                }
-            };
-            if (systemPrompt) {
-                body.systemInstruction = { parts: [{ text: String(systemPrompt) }] };
-            }
-
             const url = base + '/models/' + encodeURIComponent(modelName) + ':generateContent?key=' + encodeURIComponent(config.key);
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
-            if (!response.ok) {
-                const errText = await response.text().catch(() => '');
-                throw new Error(i18n('api_error', response.status, errText));
+            const baseMaxTokens = options.maxTokens || 8192;
+            const sendGenerateContent = async (generationConfig) => {
+                const body = {
+                    contents,
+                    generationConfig: Object.assign({
+                        temperature: options.temperature != null ? options.temperature : 0.7
+                    }, generationConfig)
+                };
+                if (systemPrompt) {
+                    body.systemInstruction = { parts: [{ text: String(systemPrompt) }] };
+                }
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!response.ok) {
+                    const errText = await response.text().catch(() => '');
+                    throw new Error(i18n('api_error', response.status, errText));
+                }
+                // 思考模型会额外返回 thought:true 的 part，那是思考摘要不是正文。
+                return AIResponse.extractGeminiAnswer(await response.json());
+            };
+
+            let answer = await sendGenerateContent({ maxOutputTokens: baseMaxTokens });
+            if (answer.finishReason && answer.finishReason !== 'STOP') {
+                console.warn('Gemini finishReason:', answer.finishReason, '— 输出可能被截断');
             }
-            const data = await response.json();
-            const candidate = data.candidates?.[0];
-            const finishReason = candidate?.finishReason;
-            if (finishReason && finishReason !== 'STOP') {
-                console.warn('Gemini finishReason:', finishReason, '— 输出可能被截断');
+            if (AIResponse.isReasoningOnly(answer)) {
+                // 思考计入 maxOutputTokens，正文一个字都没剩：抬高上限、压缩思考预算重试一次。
+                console.warn('Gemini 只返回了思考内容，提高 maxOutputTokens 重试:', answer.finishReason);
+                const retryMaxTokens = reasoningRetryMaxTokens(baseMaxTokens);
+                const retryConfig = { maxOutputTokens: retryMaxTokens };
+                try {
+                    answer = await sendGenerateContent(Object.assign({}, retryConfig, {
+                        thinkingConfig: {
+                            includeThoughts: false,
+                            thinkingBudget: Math.min(8192, Math.floor(retryMaxTokens / 2))
+                        }
+                    }));
+                } catch (e) {
+                    // 旧模型或代理端点可能不认 thinkingConfig，退回只抬高上限。
+                    console.warn('thinkingConfig 重试失败，仅提高 maxOutputTokens 重试:', e);
+                    try {
+                        answer = await sendGenerateContent(retryConfig);
+                    } catch (e2) {
+                        console.warn('提高 maxOutputTokens 重试失败:', e2);
+                    }
+                }
             }
-            const parts = candidate?.content?.parts;
-            if (Array.isArray(parts) && parts.length > 0) {
-                return parts.map(p => p.text || '').join('');
+            if (answer.text) return answer.text;
+            if (answer.blockReason) throw new Error(i18n('ai_blocked', answer.blockReason));
+            if (answer.reasoning || answer.finishReason === 'MAX_TOKENS') {
+                throw new Error(i18n('ai_reasoning_only'));
             }
             return null;
         }
@@ -19583,7 +19652,9 @@ ${i18n('prompt_lecture_gen')}`;
                     pdfAttachment
                 });
 
-                const contentText = result || i18n('toast_content_gen_failed');
+                // 空回复不能当讲义存下来（否则章节会被标记为已生成，用户只能手动重生成）
+                const contentText = typeof result === 'string' ? result.trim() : '';
+                if (!contentText) throw new Error(i18n('ai_empty_reply'));
                 chapter.status = 'ready';
                 chapter.generatedAt = new Date().toISOString();
                 chapter.updatedAt = chapter.generatedAt;
@@ -21649,7 +21720,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 paper = appData.papers.find(p => p.id === paperId);
                 if (!paper) return;
 
-                const abstractText = result || i18n('abstract_gen_failed');
+                // 同讲义：空回复不能当摘要存下来，否则会被标记为“已生成”
+                const abstractText = typeof result === 'string' ? result.trim() : '';
+                if (!abstractText) throw new Error(i18n('ai_empty_reply'));
                 await saveAbstractContent(paperId, abstractText);
                 paper._abstractCache = abstractText;
                 paper.hasAiAbstract = true;

@@ -13489,8 +13489,6 @@
         let r2SyncInProgress = false;
         let r2PendingSyncQueue = []; // 排队等待的文件变更同步任务队列
         let activeLectureGenerationCount = 0;
-        // 本次会话真正在途的章节生成（bookId/chapterId）。只存内存，不落盘
-        const _lectureInflight = new Set();
         const r2ClassroomRetryTimers = new Map();
         let r2StartupMetadataReady = Promise.resolve();
         let _resolveR2StartupMetadataReady = null;
@@ -18650,15 +18648,6 @@
             // Gemini 原生渠道，或用户指定的"自定义"渠道都走 Gemini 协议（按用户要求）
             const useGemini = isGeminiUrl(config.url) || config.provider === 'custom';
             if (useGemini) {
-                // 自定义渠道只是借用 Gemini 的请求格式，网关不会把 inline_data 的 PDF
-                // 转给后面的模型（模型会说"看不到附件"），所以先在本地提取文本再发。
-                // 请求地址、请求头一概不动，只换 PDF 的携带方式。
-                if (options.pdfAttachment && !isGeminiUrl(config.url)) {
-                    const extractedText = await extractPdfTextAsFallback(options.pdfAttachment);
-                    return await doGeminiRequest(config, systemPrompt,
-                        injectPdfTextIntoLastUser(messages, extractedText),
-                        { ...options, pdfAttachment: null });
-                }
                 return await doGeminiRequest(config, systemPrompt, messages, options);
             }
 
@@ -18732,10 +18721,7 @@
             }
             
             const data = await response.json();
-            // 只取 content：reasoning_content 是思考，不要；内联的 <think> 也清掉
-            const content = data.choices?.[0]?.message?.content;
-            if (typeof content === 'string') return stripThinkingMarkup(content) || null;
-            return content || null;
+            return data.choices?.[0]?.message?.content || null;
         }
 
         // 把 PDF 文本提取，作为"附件文本"拼到 messages 最后一条 user 内容前
@@ -18760,17 +18746,15 @@
         }
 
         function injectPdfTextIntoLastUser(messages, extractedText) {
-            // attached_pdf_text 是带 {0} 的模板，必须传参，否则提示词里留下字面的 {0}
-            const pdfText = i18n('attached_pdf_text', extractedText);
             if (!messages || messages.length === 0) {
-                return [{ role: 'user', content: pdfText }];
+                return [{ role: 'user', content: i18n('attached_pdf_text') + '\n' + extractedText }];
             }
             const out = messages.slice();
             const lastIdx = out.length - 1;
             const last = out[lastIdx];
             out[lastIdx] = {
                 role: last.role,
-                content: pdfText + '\n\n---\n\n' + String(last.content || '')
+                content: i18n('attached_pdf_text') + '\n' + extractedText + '\n\n---\n\n' + String(last.content || '')
             };
             return out;
         }
@@ -18835,31 +18819,6 @@
             const arr = new Uint8Array(raw.length);
             for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
             return arr;
-        }
-
-        // 推理模型（自定义渠道常见的 maxthinking 一类别名）会把思考和正文一起返回，
-        // 网关有时还把思考内联成 <think>…</think>。正文以外的一律丢掉。
-        function stripThinkingMarkup(text) {
-            let out = String(text == null ? '' : text);
-            out = out.replace(/<(think|thinking|reasoning)(?:\s[^>]*)?>[\s\S]*?<\/\1\s*>/gi, '\n');
-            // 思考被截断时只剩半边标签：结束标签之前、开始标签之后的内容都不是正文
-            const beforeClose = out.match(/^[\s\S]*<\/(?:think|thinking|reasoning)\s*>/i);
-            if (beforeClose) out = out.slice(beforeClose[0].length);
-            out = out.replace(/<(?:think|thinking|reasoning)(?:\s[^>]*)?>[\s\S]*$/i, '');
-            return out.trim();
-        }
-
-        // Gemini 响应里 thought:true 的 part 是思考摘要，不是正文
-        function extractGeminiAnswerText(data) {
-            const parts = data?.candidates?.[0]?.content?.parts;
-            if (!Array.isArray(parts)) return '';
-            const answer = parts
-                .filter(p => typeof p?.text === 'string' &&
-                    // 个别网关把布尔发成字符串
-                    !(p.thought && p.thought !== 'false'))
-                .map(p => p.text)
-                .join('');
-            return stripThinkingMarkup(answer);
         }
 
         // Google Gemini 原生协议调用
@@ -18934,17 +18893,11 @@
                 }
             }
 
-            // 思考也计入 maxOutputTokens。思考类模型（模型名带 thinking）用 8192 会把预算
-            // 全花在思考上，正文一个字不剩，所以一开始就给足，只发一次请求，不做重试。
-            let maxOutputTokens = options.maxTokens || 8192;
-            if (/thinking/i.test(modelName)) {
-                maxOutputTokens = Math.min(Math.max(maxOutputTokens, 32768), 65536);
-            }
             const body = {
                 contents,
                 generationConfig: {
                     temperature: options.temperature != null ? options.temperature : 0.7,
-                    maxOutputTokens
+                    maxOutputTokens: options.maxTokens || 8192
                 }
             };
             if (systemPrompt) {
@@ -18952,34 +18905,26 @@
             }
 
             const url = base + '/models/' + encodeURIComponent(modelName) + ':generateContent?key=' + encodeURIComponent(config.key);
-            // 网关断流时 fetch 会一直挂着，界面就永远"生成中"：10 分钟没结果按失败处理
-            const aborter = new AbortController();
-            const abortTimer = setTimeout(() => aborter.abort(), 10 * 60 * 1000);
-            let data;
-            try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                    signal: aborter.signal
-                });
-                if (!response.ok) {
-                    const errText = await response.text().catch(() => '');
-                    throw new Error(i18n('api_error', response.status, errText));
-                }
-                data = await response.json();
-            } catch (e) {
-                if (e && e.name === 'AbortError') throw new Error(i18n('api_error', 408, 'timeout 600s'));
-                throw e;
-            } finally {
-                clearTimeout(abortTimer);
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!response.ok) {
+                const errText = await response.text().catch(() => '');
+                throw new Error(i18n('api_error', response.status, errText));
             }
-            const finishReason = data.candidates?.[0]?.finishReason;
+            const data = await response.json();
+            const candidate = data.candidates?.[0];
+            const finishReason = candidate?.finishReason;
             if (finishReason && finishReason !== 'STOP') {
                 console.warn('Gemini finishReason:', finishReason, '— 输出可能被截断');
             }
-            // 只返回正文；思考摘要绝不能当结果。没有正文就返回空，让调用方报错
-            return extractGeminiAnswerText(data) || null;
+            const parts = candidate?.content?.parts;
+            if (Array.isArray(parts) && parts.length > 0) {
+                return parts.map(p => p.text || '').join('');
+            }
+            return null;
         }
 
         // 构造 Gemini contents，带 PDF。超过 18MB 走 Files API。
@@ -19590,8 +19535,7 @@ ${i18n('prompt_outline_gen')}`;
             renderNotesPage();
 
             // 优先生成第一节，其余章节在用户点击时按需生成
-            // （残留的 'generating' 状态交给 generateChapterContent 的在途去重处理）
-            if (lectureData.chapters.length > 0 && lectureData.chapters[0].status !== 'ready') {
+            if (lectureData.chapters.length > 0 && lectureData.chapters[0].status !== 'ready' && lectureData.chapters[0].status !== 'generating') {
                 generateChapterContent(bookId, 0);
             }
         }
@@ -19603,11 +19547,7 @@ ${i18n('prompt_outline_gen')}`;
 
             const chapter = lectureData.chapters[chapterIndex];
             if (chapter.status === 'ready') return; // 已生成
-            // 防重复要看内存里的在途请求，不能看持久化的 status：
-            // 生成途中应用被杀/WebView 重建后，存下来的 'generating' 会让章节永远转圈
-            const inflightKey = bookId + '/' + chapter.id;
-            if (_lectureInflight.has(inflightKey)) return; // 真正在生成中
-            _lectureInflight.add(inflightKey);
+            if (chapter.status === 'generating') return; // 正在生成中，防止重复调用
 
             chapter.status = 'generating';
             saveData();
@@ -19643,9 +19583,7 @@ ${i18n('prompt_lecture_gen')}`;
                     pdfAttachment
                 });
 
-                // 空回复不能当讲义存下来：会被标记成已生成，用户只能手动重新生成
-                if (!result) throw new Error(i18n('toast_content_gen_failed'));
-                const contentText = result;
+                const contentText = result || i18n('toast_content_gen_failed');
                 chapter.status = 'ready';
                 chapter.generatedAt = new Date().toISOString();
                 chapter.updatedAt = chapter.generatedAt;
@@ -19682,7 +19620,6 @@ ${i18n('prompt_lecture_gen')}`;
                 }
                 renderNotesPage();
             } finally {
-                _lectureInflight.delete(inflightKey);
                 activeLectureGenerationCount = Math.max(0, activeLectureGenerationCount - 1);
                 if (activeLectureGenerationCount === 0 && !r2SyncInProgress && r2PendingSyncQueue.length > 0) {
                     const lectureUploadIndex = r2PendingSyncQueue.findIndex(item =>
@@ -19729,9 +19666,8 @@ ${i18n('prompt_lecture_gen')}`;
                 } catch(e) {}
             }
             
-            // 如果内容未生成，先生成。持久化的 'generating' 可能是上次没跑完的残留，
-            // 也交给 generateChapterContent：真正在途会被去重，残留则重新生成
-            if (chapter.status !== 'ready') {
+            // 如果内容未生成，先生成
+            if (chapter.status !== 'ready' && chapter.status !== 'generating') {
                 generateChapterContent(bookId, chapterIndex);
             }
             

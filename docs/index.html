@@ -18648,6 +18648,15 @@
             // Gemini 原生渠道，或用户指定的"自定义"渠道都走 Gemini 协议（按用户要求）
             const useGemini = isGeminiUrl(config.url) || config.provider === 'custom';
             if (useGemini) {
+                // 自定义渠道只是借用 Gemini 的请求格式，网关不会把 inline_data/Files API 的
+                // PDF 转给后面的模型（模型会说"看不到附件"），所以这里先在本地提取文本再发。
+                // 请求地址、请求头一概不变，只换 PDF 的携带方式。
+                if (options.pdfAttachment && !isGeminiUrl(config.url)) {
+                    const extractedText = await extractPdfTextAsFallback(options.pdfAttachment);
+                    return await doGeminiRequest(config, systemPrompt,
+                        injectPdfTextIntoLastUser(messages, extractedText),
+                        { ...options, pdfAttachment: null });
+                }
                 return await doGeminiRequest(config, systemPrompt, messages, options);
             }
 
@@ -18721,7 +18730,10 @@
             }
             
             const data = await response.json();
-            return data.choices?.[0]?.message?.content || null;
+            // 只取 content：reasoning_content 是思考，不要；内联的 <think> 也清掉
+            const content = data.choices?.[0]?.message?.content;
+            if (typeof content === 'string') return stripThinkingMarkup(content) || null;
+            return content || null;
         }
 
         // 把 PDF 文本提取，作为"附件文本"拼到 messages 最后一条 user 内容前
@@ -18746,15 +18758,17 @@
         }
 
         function injectPdfTextIntoLastUser(messages, extractedText) {
+            // attached_pdf_text 带 {0} 占位符，必须把正文当参数传进去，否则提示词里会留下字面的 {0}
+            const pdfText = i18n('attached_pdf_text', extractedText);
             if (!messages || messages.length === 0) {
-                return [{ role: 'user', content: i18n('attached_pdf_text') + '\n' + extractedText }];
+                return [{ role: 'user', content: pdfText }];
             }
             const out = messages.slice();
             const lastIdx = out.length - 1;
             const last = out[lastIdx];
             out[lastIdx] = {
                 role: last.role,
-                content: i18n('attached_pdf_text') + '\n' + extractedText + '\n\n---\n\n' + String(last.content || '')
+                content: pdfText + '\n\n---\n\n' + String(last.content || '')
             };
             return out;
         }
@@ -18819,6 +18833,38 @@
             const arr = new Uint8Array(raw.length);
             for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
             return arr;
+        }
+
+        // 推理模型（自定义渠道常用的 maxthinking 之类别名）会把思考和正文一起返回，
+        // 网关有时还会把思考内联成 <think>…</think>。这里只保留正文，思考一律丢掉。
+        function stripThinkingMarkup(text) {
+            let out = String(text == null ? '' : text);
+            out = out.replace(/<(think|thinking|reasoning)(?:\s[^>]*)?>[\s\S]*?<\/\1\s*>/gi, '\n');
+            // 思考被截断时只会剩半边标签：结束标签之前、开始标签之后的内容都不是正文
+            const beforeClose = out.match(/^[\s\S]*<\/(?:think|thinking|reasoning)\s*>/i);
+            if (beforeClose) out = out.slice(beforeClose[0].length);
+            out = out.replace(/<(?:think|thinking|reasoning)(?:\s[^>]*)?>[\s\S]*$/i, '');
+            return out.trim();
+        }
+
+        // Gemini 响应里 thought:true 的 part 是思考摘要，不是正文。
+        // 返回 { text, thinking }：text 是正文；thinking 只用来判断“只想了没写”。
+        function extractGeminiAnswer(data) {
+            const parts = data?.candidates?.[0]?.content?.parts;
+            if (!Array.isArray(parts)) return { text: '', thinking: '' };
+            const answerChunks = [];
+            const thinkingChunks = [];
+            parts.forEach(part => {
+                const text = typeof part?.text === 'string' ? part.text : '';
+                if (!text) return;
+                // 个别网关会把布尔值发成字符串
+                if (part.thought && part.thought !== 'false') thinkingChunks.push(text);
+                else answerChunks.push(text);
+            });
+            const raw = answerChunks.join('');
+            const text = stripThinkingMarkup(raw);
+            if (!text && raw.trim()) thinkingChunks.push(raw);
+            return { text, thinking: thinkingChunks.join('\n\n').trim() };
         }
 
         // Google Gemini 原生协议调用
@@ -18905,26 +18951,43 @@
             }
 
             const url = base + '/models/' + encodeURIComponent(modelName) + ':generateContent?key=' + encodeURIComponent(config.key);
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
-            if (!response.ok) {
-                const errText = await response.text().catch(() => '');
-                throw new Error(i18n('api_error', response.status, errText));
+            const sendOnce = async (maxOutputTokens) => {
+                body.generationConfig.maxOutputTokens = maxOutputTokens;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!response.ok) {
+                    const errText = await response.text().catch(() => '');
+                    throw new Error(i18n('api_error', response.status, errText));
+                }
+                const data = await response.json();
+                return {
+                    answer: extractGeminiAnswer(data),
+                    finishReason: data.candidates?.[0]?.finishReason
+                };
+            };
+
+            const baseMaxTokens = options.maxTokens || 8192;
+            let result = await sendOnce(baseMaxTokens);
+            if (result.finishReason && result.finishReason !== 'STOP') {
+                console.warn('Gemini finishReason:', result.finishReason, '— 输出可能被截断');
             }
-            const data = await response.json();
-            const candidate = data.candidates?.[0];
-            const finishReason = candidate?.finishReason;
-            if (finishReason && finishReason !== 'STOP') {
-                console.warn('Gemini finishReason:', finishReason, '— 输出可能被截断');
+            // 思考也算在 maxOutputTokens 里。思考把预算吃光时正文一个字都不会有，
+            // 这时抬高一次上限重试；仍然没有正文就返回空，绝不把思考当结果。
+            if (!result.answer.text &&
+                (result.answer.thinking || result.finishReason === 'MAX_TOKENS')) {
+                const retryMaxTokens = Math.min(Math.max(baseMaxTokens * 4, 32768), 65536);
+                console.warn('只拿到思考没有正文，提高 maxOutputTokens 重试:',
+                    baseMaxTokens, '->', retryMaxTokens);
+                try {
+                    result = await sendOnce(retryMaxTokens);
+                } catch (e) {
+                    console.warn('提高 maxOutputTokens 重试失败:', e);
+                }
             }
-            const parts = candidate?.content?.parts;
-            if (Array.isArray(parts) && parts.length > 0) {
-                return parts.map(p => p.text || '').join('');
-            }
-            return null;
+            return result.answer.text || null;
         }
 
         // 构造 Gemini contents，带 PDF。超过 18MB 走 Files API。
@@ -19583,7 +19646,9 @@ ${i18n('prompt_lecture_gen')}`;
                     pdfAttachment
                 });
 
-                const contentText = result || i18n('toast_content_gen_failed');
+                // 空回复不能当讲义存下来：会被标记成已生成，用户只能手动重新生成
+                if (!result) throw new Error(i18n('toast_content_gen_failed'));
+                const contentText = result;
                 chapter.status = 'ready';
                 chapter.generatedAt = new Date().toISOString();
                 chapter.updatedAt = chapter.generatedAt;

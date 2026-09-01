@@ -13570,7 +13570,6 @@
         let r2SyncInProgress = false;
         let r2PendingSyncQueue = []; // 排队等待的文件变更同步任务队列
         let activeLectureGenerationCount = 0;
-        let activeReaderChatGenerationCount = 0;
         const r2ClassroomRetryTimers = new Map();
         let r2StartupMetadataReady = Promise.resolve();
         let _resolveR2StartupMetadataReady = null;
@@ -13603,22 +13602,6 @@
             return !CLASSROOM_ONLY_METADATA_ACTIONS.includes(action);
         }
         let r2DeferredMetadataPublish = false;
-
-        function isR2SyncDeferredByGeneration() {
-            return activeLectureGenerationCount > 0 || activeReaderChatGenerationCount > 0;
-        }
-
-        function flushR2PendingSyncAfterGeneration() {
-            if (isR2SyncDeferredByGeneration() || r2SyncInProgress || r2PendingSyncQueue.length === 0) {
-                return;
-            }
-            const lectureUploadIndex = r2PendingSyncQueue.findIndex(item =>
-                item.action === 'lecture_upload');
-            const pending = lectureUploadIndex >= 0
-                ? r2PendingSyncQueue.splice(lectureUploadIndex, 1)[0]
-                : r2PendingSyncQueue.shift();
-            triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
-        }
 
         function mergeClassroomTombstones(...sources) {
             const merged = new Map();
@@ -13851,8 +13834,8 @@
                 console.warn('[sync] 数据未加载完成，跳过定时同步');
                 return;
             }
-            if (isR2SyncDeferredByGeneration()) {
-                console.log('[sync] AI 内容仍在生成，延后定时同步');
+            if (activeLectureGenerationCount > 0) {
+                console.log('[sync] 讲义仍在生成，延后定时同步');
                 return;
             }
             const config = appData.settings.r2Config;
@@ -15055,7 +15038,7 @@
                 return;
             }
 
-            if (isR2SyncDeferredByGeneration()) {
+            if (activeLectureGenerationCount > 0) {
                 if (!r2PendingSyncQueue.some(t => t.fileId === fileId && t.action === action)) {
                     r2PendingSyncQueue.push({ fileId, action, attempt });
                 }
@@ -18101,7 +18084,7 @@
             return [];
         }
 
-        function saveReaderChatHistory(docId, history, syncToCloud = true) {
+        function saveReaderChatHistory(docId, history) {
             // Keep max 30 messages
             if (history.length > 30) {
                 history = history.slice(-30);
@@ -18118,17 +18101,8 @@
                 });
                 try { saveData(); } catch (e) { console.error('saveData failed:', e); }
                 doc.chatHistory = orig;
-                if (syncToCloud) debouncedChatSync();
-            }
-        }
-
-        async function finishReaderChatGeneration() {
-            try {
-                // 计数仍大于 0，此调用只会把最终完整聊天记录放入同步队列。
-                await triggerSyncOnFileChange(null, 'metadata_update');
-            } finally {
-                activeReaderChatGenerationCount = Math.max(0, activeReaderChatGenerationCount - 1);
-                flushR2PendingSyncAfterGeneration();
+                // 立即同步到云端防止数据丢失
+                debouncedChatSync();
             }
         }
 
@@ -18505,7 +18479,7 @@
             // Update this message and remove all messages after it
             history[index].content = newText.trim();
             history = history.slice(0, index + 1);
-            saveReaderChatHistory(currentDoc.id, history, false);
+            saveReaderChatHistory(currentDoc.id, history);
             renderReaderChatHistory();
 
             // Re-send to get new AI response
@@ -18514,7 +18488,6 @@
 
         async function resendReaderChatFromIndex(userMsgIndex) {
             if (!currentDoc) return;
-            activeReaderChatGenerationCount++;
             let history = loadReaderChatHistory(currentDoc.id);
 
             // Build system prompt
@@ -18551,14 +18524,12 @@
                 document.getElementById('readerChatLoading')?.remove();
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history, false);
+                    saveReaderChatHistory(currentDoc.id, history);
                     renderReaderChatHistory();
                 }
             } catch (err) {
                 document.getElementById('readerChatLoading')?.remove();
                 showToast(i18n('toast_regen_failed') + err.message);
-            } finally {
-                await finishReaderChatGeneration();
             }
         }
 
@@ -18572,7 +18543,7 @@
 
             // Remove this AI message and all subsequent messages
             history = history.slice(0, index);
-            saveReaderChatHistory(currentDoc.id, history, false);
+            saveReaderChatHistory(currentDoc.id, history);
             renderReaderChatHistory();
 
             // Find last user message to re-send
@@ -18620,7 +18591,7 @@
             const input = document.getElementById('readerChatInput');
             const message = input.value.trim();
             if (!message || !currentDoc) return;
-            activeReaderChatGenerationCount++;
+
             input.value = '';
 
             // 附带引用内容（若有），随后清除引用预览
@@ -18632,7 +18603,7 @@
             const userMsg = { role: 'user', content: message };
             if (quote) userMsg.quote = quote;
             history.push(userMsg);
-            saveReaderChatHistory(currentDoc.id, history, false);
+            saveReaderChatHistory(currentDoc.id, history);
             renderReaderChatHistory();
 
             // 切出当前页PDF作为附件发给AI
@@ -18679,7 +18650,7 @@
 
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history, false);
+                    saveReaderChatHistory(currentDoc.id, history);
                     renderReaderChatHistory();
                 } else {
                     document.getElementById('readerChatLoading')?.remove();
@@ -18692,17 +18663,15 @@
                     ];
                     const fallback = replies[Math.floor(Math.random() * replies.length)];
                     history.push({ role: 'assistant', content: fallback });
-                    saveReaderChatHistory(currentDoc.id, history, false);
+                    saveReaderChatHistory(currentDoc.id, history);
                     renderReaderChatHistory();
                 }
             } catch (e) {
                 console.error('Reader chat error:', e);
                 document.getElementById('readerChatLoading')?.remove();
                 history.push({ role: 'assistant', content: i18n('request_failed') + (e.message || i18n('unknown_error')) });
-                saveReaderChatHistory(currentDoc.id, history, false);
+                saveReaderChatHistory(currentDoc.id, history);
                 renderReaderChatHistory();
-            } finally {
-                await finishReaderChatGeneration();
             }
         }
 
@@ -19733,7 +19702,14 @@ ${i18n('prompt_lecture_gen')}`;
                 renderNotesPage();
             } finally {
                 activeLectureGenerationCount = Math.max(0, activeLectureGenerationCount - 1);
-                flushR2PendingSyncAfterGeneration();
+                if (activeLectureGenerationCount === 0 && !r2SyncInProgress && r2PendingSyncQueue.length > 0) {
+                    const lectureUploadIndex = r2PendingSyncQueue.findIndex(item =>
+                        item.action === 'lecture_upload');
+                    const pending = lectureUploadIndex >= 0
+                        ? r2PendingSyncQueue.splice(lectureUploadIndex, 1)[0]
+                        : r2PendingSyncQueue.shift();
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                }
             }
         }
 

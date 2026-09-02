@@ -2,6 +2,7 @@ package com.mathreader.boox;
 
 import android.app.Activity;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -13,6 +14,7 @@ import com.onyx.android.sdk.data.note.TouchPoint;
 import com.onyx.android.sdk.pen.RawInputCallback;
 import com.onyx.android.sdk.pen.TouchHelper;
 import com.onyx.android.sdk.pen.data.TouchPointList;
+import com.onyx.android.sdk.utils.DeviceFeatureUtil;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -84,6 +86,15 @@ public class BooxPenBridge {
     public BooxPenBridge(Activity activity, WebView webView) {
         this.activity = activity;
         this.webView = webView;
+        // TouchHelper.create() also installs an AppTouchRender listener on ordinary Android
+        // devices where the Onyx SDK is not usable. That listener can consume MOVE/UP outside
+        // the notebook canvas, so WebView buttons receive DOWN but never synthesize click.
+        // Never initialize the Onyx input stack away from BOOX hardware.
+        if (!hasBooxStylus(activity)) {
+            sdkAvailable = false;
+            Log.i(TAG, "BOOX stylus unavailable: native pen bridge disabled");
+            return;
+        }
         try {
             touchHelper = TouchHelper.create(webView, rawInputCallback);
             sdkAvailable = touchHelper != null;
@@ -96,6 +107,30 @@ public class BooxPenBridge {
     @JavascriptInterface
     public boolean isAvailable() {
         return sdkAvailable;
+    }
+
+    private static boolean isBooxHardware() {
+        String device = (Build.MANUFACTURER + " " + Build.BRAND + " " + Build.MODEL)
+                .toLowerCase(Locale.US);
+        return device.contains("onyx") || device.contains("boox");
+    }
+
+    private static boolean hasBooxStylus(Activity activity) {
+        if (!isBooxHardware()) {
+            return false;
+        }
+        try {
+            return DeviceFeatureUtil.hasStylus(activity);
+        } catch (Throwable t) {
+            Log.w(TAG, "Could not verify BOOX stylus support", t);
+            return false;
+        }
+    }
+
+    /** Expose the hardware check independently of pen-SDK initialization. */
+    @JavascriptInterface
+    public boolean isBooxDevice() {
+        return isBooxHardware();
     }
 
     /**

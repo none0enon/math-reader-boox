@@ -13519,6 +13519,8 @@
         let r2SyncInProgress = false;
         let r2PendingSyncQueue = []; // 排队等待的文件变更同步任务队列
         let activeLectureGenerationCount = 0;
+        // 本次会话真正在途的章节生成（bookId/chapterId）。只存内存，不落盘
+        const _lectureInflight = new Set();
         const r2ClassroomRetryTimers = new Map();
         let r2StartupMetadataReady = Promise.resolve();
         let _resolveR2StartupMetadataReady = null;
@@ -13551,22 +13553,6 @@
             return !CLASSROOM_ONLY_METADATA_ACTIONS.includes(action);
         }
         let r2DeferredMetadataPublish = false;
-
-        function isR2SyncDeferredByLectureGeneration() {
-            return activeLectureGenerationCount > 0;
-        }
-
-        function flushR2PendingSyncAfterLectureGeneration() {
-            if (isR2SyncDeferredByLectureGeneration() || r2SyncInProgress || r2PendingSyncQueue.length === 0) {
-                return;
-            }
-            const lectureUploadIndex = r2PendingSyncQueue.findIndex(item =>
-                item.action === 'lecture_upload');
-            const pending = lectureUploadIndex >= 0
-                ? r2PendingSyncQueue.splice(lectureUploadIndex, 1)[0]
-                : r2PendingSyncQueue.shift();
-            triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
-        }
 
         function mergeClassroomTombstones(...sources) {
             const merged = new Map();
@@ -13799,7 +13785,7 @@
                 console.warn('[sync] 数据未加载完成，跳过定时同步');
                 return;
             }
-            if (isR2SyncDeferredByLectureGeneration()) {
+            if (activeLectureGenerationCount > 0) {
                 console.log('[sync] 讲义仍在生成，延后定时同步');
                 return;
             }
@@ -14166,7 +14152,33 @@
                     }
                 }
 
-                // 笔记本页面与媒体已在 metadata 发布前由 r2SyncAllNotebookPages() 合并。
+                // 同步笔记本页面和媒体（本地有云端没有 → 上传，本地没有云端有 → 拉取）
+                for (const nb of (appData.notebooks?.items || [])) {
+                    for (const page of (nb.pages || [])) {
+                        if (!page || !page.id) continue;
+                        let pgData = await getFileData('nbpage_' + page.id).catch(() => null);
+                        if (pgData) {
+                            try { await r2PutObject('notebooks/pages/nbpage_' + page.id, pgData, 'application/json'); } catch(e) {}
+                        } else {
+                            try {
+                                const cd = await r2GetObject('notebooks/pages/nbpage_' + page.id);
+                                if (cd) { pgData = cd; await saveFileData('nbpage_' + page.id, cd); }
+                            } catch(e) {}
+                        }
+                        const mediaIds = r2NotebookMediaIdsFromPage(page, pgData);
+                        for (const mid of mediaIds) {
+                            const localMedia = await getFileData('nbmedia_' + mid).catch(() => null);
+                            if (localMedia) {
+                                try { await r2PutObject('notebooks/media/nbmedia_' + mid, localMedia, 'application/octet-stream'); } catch(e) {}
+                            } else {
+                                try {
+                                    const cd = await r2GetObject('notebooks/media/nbmedia_' + mid);
+                                    if (cd) await saveFileData('nbmedia_' + mid, cd);
+                                } catch(e) {}
+                            }
+                        }
+                    }
+                }
 
                 // 更新上次同步时间
                 config.lastSyncTime = new Date().toISOString();
@@ -14798,103 +14810,34 @@
             return e;
         }
 
-        function r2ParseNotebookPageContent(raw) {
-            if (!raw || typeof raw !== 'string') return null;
-            try {
-                const content = JSON.parse(raw);
-                if (!content || typeof content !== 'object' || Array.isArray(content)) return null;
-                if (!Array.isArray(content.strokes)) content.strokes = [];
-                if (!Array.isArray(content.texts)) content.texts = [];
-                if (!Array.isArray(content.media)) content.media = [];
-                if (!Object.prototype.hasOwnProperty.call(content, 'recognized')) content.recognized = null;
-                return content;
-            } catch (e) {
-                return null;
-            }
-        }
-
-        function r2NotebookPageContentScore(content) {
-            if (!content) return 0;
-            return (content.strokes || []).length + (content.texts || []).length +
-                (content.media || []).length + (content.recognized ? 1 : 0);
-        }
-
-        function r2ChooseNotebookPageSource(localContent, cloudContent) {
-            if (!localContent) return 'cloud';
-            if (!cloudContent) return 'local';
-            const localTs = syncTimestamp(localContent.updatedAt);
-            const cloudTs = syncTimestamp(cloudContent.updatedAt);
-            const localScore = r2NotebookPageContentScore(localContent);
-            const cloudScore = r2NotebookPageContentScore(cloudContent);
-
-            // PR58 可能用页面 metadata 的时间戳生成一个空正文。旧版真实笔迹没有
-            // content.updatedAt 时，不能让这个“较新空页”覆盖它。
-            if (localScore > 0 && cloudScore === 0 && localTs === 0) return 'local';
-            if (cloudScore > 0 && localScore === 0 && cloudTs === 0) return 'cloud';
-            if (localTs !== cloudTs) return localTs > cloudTs ? 'local' : 'cloud';
-            if (localScore !== cloudScore) return localScore > cloudScore ? 'local' : 'cloud';
-            return 'local';
-        }
-
         async function r2SyncNotebookPageBundle(pageId) {
             if (!pageId) return;
             const page = (appData.notebooks?.items || [])
                 .flatMap(nb => nb.pages || [])
                 .find(pg => pg && pg.id === pageId);
-            const pageKey = 'nbpage_' + pageId;
-            const cloudKey = 'notebooks/pages/' + pageKey;
-            const localRaw = await getFileData(pageKey).catch(() => null);
-            let localContent = r2ParseNotebookPageContent(localRaw);
-            const cloudRaw = await r2GetObjectWithTimeout(cloudKey, 5000);
-            let cloudContent = r2ParseNotebookPageContent(cloudRaw);
-
-            if (localRaw && !localContent) {
-                console.warn('[nb-sync] 本地笔记页正文损坏:', pageId);
-            }
-            if (cloudRaw && !cloudContent) {
-                if (!localContent || r2NotebookPageContentScore(localContent) === 0) {
-                    throw new Error('[nb-sync] 云端笔记页正文损坏: ' + pageId);
-                }
-                console.warn('[nb-sync] 使用有效的本地正文修复云端损坏页:', pageId);
-            }
-
-            if (!localContent && !cloudContent) {
-                if (!page) return;
-                localContent = { strokes: [], texts: [], media: [], recognized: null };
-            }
-
-            const source = r2ChooseNotebookPageSource(localContent, cloudContent);
-            const pageContent = source === 'cloud' ? cloudContent : localContent;
-            if (!pageContent) return;
-            if (!pageContent.updatedAt && source === 'local') {
-                pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
-            }
-            const pageJson = JSON.stringify(pageContent);
-            await saveFileData(pageKey, pageJson);
-
-            const contentTs = syncTimestamp(pageContent.updatedAt);
-            if (page && contentTs > syncTimestamp(page.updatedAt || page.createdAt)) {
-                page.updatedAt = pageContent.updatedAt;
-                saveData();
-            }
-
-            const cloudJson = cloudContent ? JSON.stringify(cloudContent) : null;
-            if (source === 'local' && pageJson !== cloudJson) {
-                await r2PutObject(cloudKey, pageJson, 'application/json');
-            }
-
             const mediaIds = new Set();
-            (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
+            let pgData = await getFileData('nbpage_' + pageId).catch(() => null);
+            let pageContent = null;
+            try { pageContent = pgData ? JSON.parse(pgData) : null; } catch (e) {}
+            if (!pageContent && page) pageContent = { strokes: [], texts: [], media: [], recognized: null };
+            if (pageContent) {
+                if (!pageContent.updatedAt) {
+                    pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
+                }
+                if (page && (!page.updatedAt || syncTimestamp(pageContent.updatedAt) >
+                    syncTimestamp(page.updatedAt || page.createdAt))) {
+                    page.updatedAt = pageContent.updatedAt;
+                    saveData();
+                }
+                pgData = JSON.stringify(pageContent);
+                await saveFileData('nbpage_' + pageId, pgData);
+                await r2PutObject('notebooks/pages/nbpage_' + pageId, pgData, 'application/json');
+                (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
+            }
             if (page && page.bgImage) mediaIds.add(page.bgImage);
             for (const mid of mediaIds) {
-                const mediaKey = 'nbmedia_' + mid;
-                const mData = await getFileData(mediaKey).catch(() => null);
-                if (mData) {
-                    await r2PutObject('notebooks/media/' + mediaKey, mData, 'application/octet-stream');
-                } else {
-                    const cloudMedia = await r2GetObjectWithTimeout('notebooks/media/' + mediaKey, 5000);
-                    if (cloudMedia) await saveFileData(mediaKey, cloudMedia);
-                }
+                const mData = await getFileData('nbmedia_' + mid).catch(() => null);
+                if (mData) await r2PutObject('notebooks/media/nbmedia_' + mid, mData, 'application/octet-stream');
             }
         }
 
@@ -14936,16 +14879,9 @@
                         try {
                             const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + page.id);
                             if (cloudPage) {
-                                const localContent = r2ParseNotebookPageContent(pageJson);
-                                const cloudContent = r2ParseNotebookPageContent(cloudPage);
-                                if (cloudContent &&
-                                    r2ChooseNotebookPageSource(localContent, cloudContent) === 'cloud') {
-                                    pageJson = JSON.stringify(cloudContent);
-                                    await saveFileData('nbpage_' + page.id, pageJson);
-                                    pages++;
-                                } else if (!cloudContent) {
-                                    console.warn('[startup-sync] 云端笔记页正文损坏，保留本地:', page.id);
-                                }
+                                pageJson = cloudPage;
+                                await saveFileData('nbpage_' + page.id, cloudPage);
+                                pages++;
                             }
                         } catch (e) { console.warn('[startup-sync] 拉取笔记页失败:', page.id, e); }
                     }
@@ -15053,7 +14989,7 @@
                 return;
             }
 
-            if (isR2SyncDeferredByLectureGeneration()) {
+            if (activeLectureGenerationCount > 0) {
                 if (!r2PendingSyncQueue.some(t => t.fileId === fileId && t.action === action)) {
                     r2PendingSyncQueue.push({ fileId, action, attempt });
                 }
@@ -15260,15 +15196,13 @@
                 }
             } catch (err) {
                 console.error('文件变更同步失败:', err);
-                // 大对象与笔记页面失败时重试；否则正文或新页会一直停留在本机。
-                const retryableSyncAction = ['recording_upload', 'classroom_upload',
+                // 讲义/摘要正文失败时也重试：它们的 metadata 发布排在正文提交之后，
+                // 不重试就会让刚生成的内容一直停留在本地。
+                const retryableClassroomAction = ['recording_upload', 'classroom_upload',
                     'classroom_note_upload', 'classroom_delete', 'classroom_note_delete',
                     'recording_delete', 'classroom_folder_delete',
-                    'lecture_upload', 'abstract_upload',
-                    'notebook_close', 'notebook_page_add', 'notebook_page_update',
-                    'notebook_page_delete', 'notebook_page_reorder', 'notebook_metadata_update',
-                    'notebook_review_add', 'notebook_review_update'].includes(action);
-                if (retryableSyncAction &&
+                    'lecture_upload', 'abstract_upload'].includes(action);
+                if (retryableClassroomAction &&
                     (config.autoSyncEnabled || config.autoSyncOnChange) && Number(attempt || 0) < 8) {
                     const key = action + ':' + fileId;
                     if (!r2ClassroomRetryTimers.has(key)) {
@@ -18101,7 +18035,7 @@
             return [];
         }
 
-        function saveReaderChatHistory(docId, history, syncToCloud = true) {
+        function saveReaderChatHistory(docId, history) {
             // Keep max 30 messages
             if (history.length > 30) {
                 history = history.slice(-30);
@@ -18118,14 +18052,9 @@
                 });
                 try { saveData(); } catch (e) { console.error('saveData failed:', e); }
                 doc.chatHistory = orig;
-                if (syncToCloud) debouncedChatSync();
+                // 立即同步到云端防止数据丢失
+                debouncedChatSync();
             }
-        }
-
-        async function finishReaderChatGeneration() {
-            // 聊天流式生成期间不逐 token 同步，只在最终记录完整后发布一次 metadata。
-            // 不能因此暂停笔记本等互不相关的同步任务。
-            await triggerSyncOnFileChange(null, 'metadata_update');
         }
 
         // 防抖：聊天连续变更时只在最后一次500ms后同步一次
@@ -18501,7 +18430,7 @@
             // Update this message and remove all messages after it
             history[index].content = newText.trim();
             history = history.slice(0, index + 1);
-            saveReaderChatHistory(currentDoc.id, history, false);
+            saveReaderChatHistory(currentDoc.id, history);
             renderReaderChatHistory();
 
             // Re-send to get new AI response
@@ -18546,14 +18475,12 @@
                 document.getElementById('readerChatLoading')?.remove();
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history, false);
+                    saveReaderChatHistory(currentDoc.id, history);
                     renderReaderChatHistory();
                 }
             } catch (err) {
                 document.getElementById('readerChatLoading')?.remove();
                 showToast(i18n('toast_regen_failed') + err.message);
-            } finally {
-                await finishReaderChatGeneration();
             }
         }
 
@@ -18567,7 +18494,7 @@
 
             // Remove this AI message and all subsequent messages
             history = history.slice(0, index);
-            saveReaderChatHistory(currentDoc.id, history, false);
+            saveReaderChatHistory(currentDoc.id, history);
             renderReaderChatHistory();
 
             // Find last user message to re-send
@@ -18615,6 +18542,7 @@
             const input = document.getElementById('readerChatInput');
             const message = input.value.trim();
             if (!message || !currentDoc) return;
+
             input.value = '';
 
             // 附带引用内容（若有），随后清除引用预览
@@ -18626,7 +18554,7 @@
             const userMsg = { role: 'user', content: message };
             if (quote) userMsg.quote = quote;
             history.push(userMsg);
-            saveReaderChatHistory(currentDoc.id, history, false);
+            saveReaderChatHistory(currentDoc.id, history);
             renderReaderChatHistory();
 
             // 切出当前页PDF作为附件发给AI
@@ -18673,7 +18601,7 @@
 
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history, false);
+                    saveReaderChatHistory(currentDoc.id, history);
                     renderReaderChatHistory();
                 } else {
                     document.getElementById('readerChatLoading')?.remove();
@@ -18686,17 +18614,15 @@
                     ];
                     const fallback = replies[Math.floor(Math.random() * replies.length)];
                     history.push({ role: 'assistant', content: fallback });
-                    saveReaderChatHistory(currentDoc.id, history, false);
+                    saveReaderChatHistory(currentDoc.id, history);
                     renderReaderChatHistory();
                 }
             } catch (e) {
                 console.error('Reader chat error:', e);
                 document.getElementById('readerChatLoading')?.remove();
                 history.push({ role: 'assistant', content: i18n('request_failed') + (e.message || i18n('unknown_error')) });
-                saveReaderChatHistory(currentDoc.id, history, false);
+                saveReaderChatHistory(currentDoc.id, history);
                 renderReaderChatHistory();
-            } finally {
-                await finishReaderChatGeneration();
             }
         }
 
@@ -19641,7 +19567,8 @@ ${i18n('prompt_outline_gen')}`;
             renderNotesPage();
 
             // 优先生成第一节，其余章节在用户点击时按需生成
-            if (lectureData.chapters.length > 0 && lectureData.chapters[0].status !== 'ready' && lectureData.chapters[0].status !== 'generating') {
+            // （残留的 'generating' 状态交给 generateChapterContent 的在途去重处理）
+            if (lectureData.chapters.length > 0 && lectureData.chapters[0].status !== 'ready') {
                 generateChapterContent(bookId, 0);
             }
         }
@@ -19653,7 +19580,11 @@ ${i18n('prompt_outline_gen')}`;
 
             const chapter = lectureData.chapters[chapterIndex];
             if (chapter.status === 'ready') return; // 已生成
-            if (chapter.status === 'generating') return; // 正在生成中，防止重复调用
+            // 防重复要看内存里的在途请求，不能看持久化的 status：
+            // 生成途中应用被杀/WebView 重建后，存下来的 'generating' 会让章节永远转圈
+            const inflightKey = bookId + '/' + chapter.id;
+            if (_lectureInflight.has(inflightKey)) return; // 真正在生成中
+            _lectureInflight.add(inflightKey);
 
             chapter.status = 'generating';
             saveData();
@@ -19726,8 +19657,16 @@ ${i18n('prompt_lecture_gen')}`;
                 }
                 renderNotesPage();
             } finally {
+                _lectureInflight.delete(inflightKey);
                 activeLectureGenerationCount = Math.max(0, activeLectureGenerationCount - 1);
-                flushR2PendingSyncAfterLectureGeneration();
+                if (activeLectureGenerationCount === 0 && !r2SyncInProgress && r2PendingSyncQueue.length > 0) {
+                    const lectureUploadIndex = r2PendingSyncQueue.findIndex(item =>
+                        item.action === 'lecture_upload');
+                    const pending = lectureUploadIndex >= 0
+                        ? r2PendingSyncQueue.splice(lectureUploadIndex, 1)[0]
+                        : r2PendingSyncQueue.shift();
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                }
             }
         }
 
@@ -19765,8 +19704,9 @@ ${i18n('prompt_lecture_gen')}`;
                 } catch(e) {}
             }
             
-            // 如果内容未生成，先生成
-            if (chapter.status !== 'ready' && chapter.status !== 'generating') {
+            // 如果内容未生成，先生成。持久化的 'generating' 可能是上次没跑完的残留，
+            // 也交给 generateChapterContent：真正在途会被去重，残留则重新生成
+            if (chapter.status !== 'ready') {
                 generateChapterContent(bookId, chapterIndex);
             }
             
@@ -20055,9 +19995,13 @@ ${i18n('prompt_lecture_gen')}`;
             container.scrollTop = top;
         }
 
-        // 讲义阅读进度只保存在本地；打开、滚动、关闭或切后台都不得触发云同步。
+        // 有尚未推送到云端的讲义阅读进度
+        let _lectureProgressSyncPending = false;
         function flushLectureProgressSync() {
             flushLectureProgressSave();
+            if (!_lectureProgressSyncPending) return;
+            _lectureProgressSyncPending = false;
+            triggerSyncOnFileChange(null, 'metadata_update');
         }
 
         // 立刻把防抖中的进度写回本地（退出讲义 / app 切后台）
@@ -20100,6 +20044,7 @@ ${i18n('prompt_lecture_gen')}`;
             chapter.maxProgress = maxProgress;
             chapter.scrollPosition = scrollPosition;
             chapter.progressUpdatedAt = Date.now();
+            _lectureProgressSyncPending = true;
 
             // 延迟保存，避免频繁写入。阅读进度只落本地，退出讲义时再统一推送云端。
             clearTimeout(window.lectureProgressSaveTimeout);
@@ -21254,7 +21199,8 @@ ${i18n('prompt_lecture_gen')}`;
             saveLectureDraft();
             collapseLectureDraftPanel();
             hideLectureSelectionMenu();
-            // 阅读进度只写本地；退出讲义不触发云同步。
+            // 阅读期间的进度只写本地，退出时统一推一次，多设备仍能接上进度，
+            // 但一次阅读最多产生一次同步而不是每滚动一下一次。
             flushLectureProgressSync();
 
             // Restore book link button visibility
@@ -28212,15 +28158,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     try {
                         const cloud = await r2GetObject('notebooks/pages/nbpage_' + pageId);
                         if (cloud) {
-                            const localContent = r2ParseNotebookPageContent(raw);
-                            const cloudContent = r2ParseNotebookPageContent(cloud);
-                            if (cloudContent &&
-                                r2ChooseNotebookPageSource(localContent, cloudContent) === 'cloud') {
-                                raw = JSON.stringify(cloudContent);
-                                await saveFileData('nbpage_' + pageId, raw).catch(() => {});
-                            } else if (!cloudContent) {
-                                console.warn('[nb] 云端页面内容损坏，保留本地:', pageId);
-                            }
+                            raw = cloud;
+                            await saveFileData('nbpage_' + pageId, cloud).catch(() => {});
                         }
                     } catch (e) { /* 云端也没有 */ }
                 }
@@ -28426,33 +28365,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function nbDisplayScale() { return nbState.fitScale * nbState.zoom; }
 
         // ==================== 编辑器打开 / 关闭 ====================
-        async function nbWaitForStartupMetadata(timeoutMs = 5000) {
-            let timer = null;
-            try {
-                await Promise.race([
-                    r2StartupMetadataReady,
-                    new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); })
-                ]);
-            } finally {
-                if (timer !== null) clearTimeout(timer);
-            }
-        }
-
         async function nbOpenNotebook(id, pageIndex) {
             const openToken = ++_nbOpenRequestToken;
-            const openingCard = Array.from(document.querySelectorAll('.nb-card'))
-                .find(card => card.dataset.nbid === id);
-            if (openingCard) openingCard.classList.add('opening');
-            let cloudPosition = null;
-            try {
-                // metadata 与独立位置对象并行拉取；最多等待 5 秒，离线时仍能打开本地笔记。
-                [cloudPosition] = await Promise.all([
-                    r2FetchNotebookPositionForOpen(id),
-                    nbWaitForStartupMetadata()
-                ]);
-            } finally {
-                if (openingCard) openingCard.classList.remove('opening');
-            }
+            // metadata 与独立位置对象并行拉取；二者都有 5 秒超时，离线时仍能打开本地笔记。
+            const [cloudPosition] = await Promise.all([
+                r2FetchNotebookPositionForOpen(id),
+                r2StartupMetadataReady
+            ]);
             if (openToken !== _nbOpenRequestToken) return;
             const nb = nbGetNotebook(id);
             if (!nb) return;

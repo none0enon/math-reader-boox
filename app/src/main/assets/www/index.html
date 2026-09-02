@@ -28,39 +28,6 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
-        /* ==================== 全页禁止浏览器原生选择 ====================
-           iOS Safari / iPadOS PWA 下，长按或 Apple Pencil 落笔时的轻微抖动会
-           唤起原生选区（蓝色高亮 + 放大镜 + 「拷贝/查询」浮条），笔记书写界面
-           尤其容易误触。逐个界面补 user-select:none 总有漏网元素（工具栏文字、
-           页面容器、画布之外的空白区），所以这里整页默认关闭原生选择，再用
-           白名单把真正需要输入/复制的元素单独打开。
-           新界面若确实需要原生选区，给元素加 class="allow-native-select"。 */
-        html, body {
-            -webkit-tap-highlight-color: transparent;
-        }
-        *, *::before, *::after {
-            -webkit-user-select: none !important;
-            user-select: none !important;
-            -webkit-touch-callout: none !important;
-        }
-        /* 白名单：只有这些元素保留原生选区。注意仅放开 user-select，不放开
-           touch-callout —— 讲义/聊天靠自定义菜单接管选区，原生「拷贝/查询」
-           浮条一旦回来就会把自定义菜单挡住。 */
-        input, textarea, select,
-        [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"],
-        [contenteditable="true"] *, [contenteditable=""] *, [contenteditable="plaintext-only"] *,
-        .allow-native-select, .allow-native-select *,
-        .chat-bubble.selectable, .chat-bubble.selectable *,
-        .lecture-content, .lecture-content * {
-            -webkit-user-select: text !important;
-            user-select: text !important;
-        }
-        /* 输入控件与可编辑区需要原生「粘贴/全选」浮条，单独恢复 callout */
-        input, textarea,
-        [contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"] {
-            -webkit-touch-callout: default !important;
-        }
-
         :root {
             --bg-primary: #ffffff;
             --bg-secondary: #f5f5f5;
@@ -4523,6 +4490,7 @@
             user-select: none;
             -webkit-user-select: none;
         }
+        .nb-card.opening { opacity: 0.6; pointer-events: none; }
         .nb-card-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; word-break: break-all; }
         .nb-card-meta { font-size: 12px; color: var(--text-muted); display: flex; gap: 10px; flex-wrap: wrap; }
         .nb-review-card {
@@ -4626,6 +4594,20 @@
             overflow: auto;
             display: block;
             background: var(--bg-secondary);
+        }
+        /* Only the open notebook writing surface suppresses WebKit selection.
+           Keeping this off document/body preserves iOS synthesized clicks on cards and controls. */
+        #nbEditor.show #nbCanvasWrap,
+        #nbEditor.show #nbCanvasWrap * {
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+        #nbEditor.show #nbTextLayer .nb-textbox-inner:focus,
+        #nbEditor.show #nbTextLayer .nb-textbox-inner:focus * {
+            -webkit-user-select: text;
+            user-select: text;
+            -webkit-touch-callout: default;
         }
         .nb-page-box {
             position: relative;
@@ -13291,54 +13273,6 @@
             layer.addEventListener('touchcancel', stopPencilModeFingerScroll, { passive: true });
         }
 
-        // ==================== 全页原生选择拦截（CSS 之外的第二道保险） ====================
-        // 部分 iOS 版本在触摸拖选时不发可取消的 selectstart，光靠 CSS 仍会出现
-        // 选区和放大镜；这里在捕获阶段拦下选择/拖拽/长按菜单，并用
-        // selectionchange 兜底清掉落在白名单之外的选区。
-        // 白名单与上方 CSS 白名单保持一致，改一处记得同步另一处。
-        const NATIVE_SELECT_ALLOWED = [
-            'input', 'textarea', 'select',
-            '[contenteditable="true"]', '[contenteditable=""]', '[contenteditable="plaintext-only"]',
-            '.allow-native-select',
-            '.chat-bubble.selectable',   // 聊天气泡长按「引用」
-            '.lecture-content'           // 讲义「选中问 AI」
-        ].join(',');
-
-        function nativeSelectionAllowedAt(node) {
-            const el = node && (node.nodeType === 1 ? node : node.parentElement);
-            return !!(el && typeof el.closest === 'function' && el.closest(NATIVE_SELECT_ALLOWED));
-        }
-
-        function blockPageNativeSelection(e) {
-            if (!e || nativeSelectionAllowedAt(e.target)) return;
-            // 只 preventDefault、不 stopPropagation：页面自定义的 contextmenu
-            // 长按菜单（各种卡片菜单）仍然照常触发。
-            if (e.cancelable !== false) e.preventDefault();
-        }
-
-        // 直接沿用「选中问 AI」里已经在 iPad 上跑通的写法（讲义 handleLectureSelection、
-        // 习题 handleExerciseSelection、聊天 handleReaderChatSelection 三处同款）：
-        // mouseup / touchend 后延时 50ms —— 足够让 iPad 完成选区，又赶在原生菜单
-        // 弹出之前 removeAllRanges()，把选区连同原生菜单一起干掉。
-        function clearStrayNativeSelection() {
-            setTimeout(() => {
-                const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
-                // 塌缩选区就是光标本身，清掉会顶掉输入框/文本框的插入点，只处理真实选区。
-                if (!selection || !selection.rangeCount || selection.isCollapsed) return;
-                // 白名单判断与聊天气泡那段同款：选区落在允许的容器里就放过。
-                const active = document.activeElement;
-                if (active && typeof active.closest === 'function' && active.closest(NATIVE_SELECT_ALLOWED)) return;
-                if (nativeSelectionAllowedAt(selection.anchorNode) || nativeSelectionAllowedAt(selection.focusNode)) return;
-                try { selection.removeAllRanges(); } catch (err) {}
-            }, 50);
-        }
-
-        ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
-            document.addEventListener(type, blockPageNativeSelection, true);
-        });
-        document.addEventListener('mouseup', clearStrayNativeSelection, true);
-        document.addEventListener('touchend', clearStrayNativeSelection, true);
-
         function readerPenModeOwnsEventTarget(target) {
             const container = document.getElementById('readerContainer');
             return !!(penMode && container && target
@@ -13570,7 +13504,6 @@
         let r2SyncInProgress = false;
         let r2PendingSyncQueue = []; // 排队等待的文件变更同步任务队列
         let activeLectureGenerationCount = 0;
-        let activeReaderChatGenerationCount = 0;
         const r2ClassroomRetryTimers = new Map();
         let r2StartupMetadataReady = Promise.resolve();
         let _resolveR2StartupMetadataReady = null;
@@ -13604,12 +13537,12 @@
         }
         let r2DeferredMetadataPublish = false;
 
-        function isR2SyncDeferredByGeneration() {
-            return activeLectureGenerationCount > 0 || activeReaderChatGenerationCount > 0;
+        function isR2SyncDeferredByLectureGeneration() {
+            return activeLectureGenerationCount > 0;
         }
 
-        function flushR2PendingSyncAfterGeneration() {
-            if (isR2SyncDeferredByGeneration() || r2SyncInProgress || r2PendingSyncQueue.length === 0) {
+        function flushR2PendingSyncAfterLectureGeneration() {
+            if (isR2SyncDeferredByLectureGeneration() || r2SyncInProgress || r2PendingSyncQueue.length === 0) {
                 return;
             }
             const lectureUploadIndex = r2PendingSyncQueue.findIndex(item =>
@@ -13851,8 +13784,8 @@
                 console.warn('[sync] 数据未加载完成，跳过定时同步');
                 return;
             }
-            if (isR2SyncDeferredByGeneration()) {
-                console.log('[sync] AI 内容仍在生成，延后定时同步');
+            if (isR2SyncDeferredByLectureGeneration()) {
+                console.log('[sync] 讲义仍在生成，延后定时同步');
                 return;
             }
             const config = appData.settings.r2Config;
@@ -14218,33 +14151,7 @@
                     }
                 }
 
-                // 同步笔记本页面和媒体（本地有云端没有 → 上传，本地没有云端有 → 拉取）
-                for (const nb of (appData.notebooks?.items || [])) {
-                    for (const page of (nb.pages || [])) {
-                        if (!page || !page.id) continue;
-                        let pgData = await getFileData('nbpage_' + page.id).catch(() => null);
-                        if (pgData) {
-                            try { await r2PutObject('notebooks/pages/nbpage_' + page.id, pgData, 'application/json'); } catch(e) {}
-                        } else {
-                            try {
-                                const cd = await r2GetObject('notebooks/pages/nbpage_' + page.id);
-                                if (cd) { pgData = cd; await saveFileData('nbpage_' + page.id, cd); }
-                            } catch(e) {}
-                        }
-                        const mediaIds = r2NotebookMediaIdsFromPage(page, pgData);
-                        for (const mid of mediaIds) {
-                            const localMedia = await getFileData('nbmedia_' + mid).catch(() => null);
-                            if (localMedia) {
-                                try { await r2PutObject('notebooks/media/nbmedia_' + mid, localMedia, 'application/octet-stream'); } catch(e) {}
-                            } else {
-                                try {
-                                    const cd = await r2GetObject('notebooks/media/nbmedia_' + mid);
-                                    if (cd) await saveFileData('nbmedia_' + mid, cd);
-                                } catch(e) {}
-                            }
-                        }
-                    }
-                }
+                // 笔记本页面与媒体已在 metadata 发布前由 r2SyncAllNotebookPages() 合并。
 
                 // 更新上次同步时间
                 config.lastSyncTime = new Date().toISOString();
@@ -14876,34 +14783,103 @@
             return e;
         }
 
+        function r2ParseNotebookPageContent(raw) {
+            if (!raw || typeof raw !== 'string') return null;
+            try {
+                const content = JSON.parse(raw);
+                if (!content || typeof content !== 'object' || Array.isArray(content)) return null;
+                if (!Array.isArray(content.strokes)) content.strokes = [];
+                if (!Array.isArray(content.texts)) content.texts = [];
+                if (!Array.isArray(content.media)) content.media = [];
+                if (!Object.prototype.hasOwnProperty.call(content, 'recognized')) content.recognized = null;
+                return content;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function r2NotebookPageContentScore(content) {
+            if (!content) return 0;
+            return (content.strokes || []).length + (content.texts || []).length +
+                (content.media || []).length + (content.recognized ? 1 : 0);
+        }
+
+        function r2ChooseNotebookPageSource(localContent, cloudContent) {
+            if (!localContent) return 'cloud';
+            if (!cloudContent) return 'local';
+            const localTs = syncTimestamp(localContent.updatedAt);
+            const cloudTs = syncTimestamp(cloudContent.updatedAt);
+            const localScore = r2NotebookPageContentScore(localContent);
+            const cloudScore = r2NotebookPageContentScore(cloudContent);
+
+            // PR58 可能用页面 metadata 的时间戳生成一个空正文。旧版真实笔迹没有
+            // content.updatedAt 时，不能让这个“较新空页”覆盖它。
+            if (localScore > 0 && cloudScore === 0 && localTs === 0) return 'local';
+            if (cloudScore > 0 && localScore === 0 && cloudTs === 0) return 'cloud';
+            if (localTs !== cloudTs) return localTs > cloudTs ? 'local' : 'cloud';
+            if (localScore !== cloudScore) return localScore > cloudScore ? 'local' : 'cloud';
+            return 'local';
+        }
+
         async function r2SyncNotebookPageBundle(pageId) {
             if (!pageId) return;
             const page = (appData.notebooks?.items || [])
                 .flatMap(nb => nb.pages || [])
                 .find(pg => pg && pg.id === pageId);
-            const mediaIds = new Set();
-            let pgData = await getFileData('nbpage_' + pageId).catch(() => null);
-            let pageContent = null;
-            try { pageContent = pgData ? JSON.parse(pgData) : null; } catch (e) {}
-            if (!pageContent && page) pageContent = { strokes: [], texts: [], media: [], recognized: null };
-            if (pageContent) {
-                if (!pageContent.updatedAt) {
-                    pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
-                }
-                if (page && (!page.updatedAt || syncTimestamp(pageContent.updatedAt) >
-                    syncTimestamp(page.updatedAt || page.createdAt))) {
-                    page.updatedAt = pageContent.updatedAt;
-                    saveData();
-                }
-                pgData = JSON.stringify(pageContent);
-                await saveFileData('nbpage_' + pageId, pgData);
-                await r2PutObject('notebooks/pages/nbpage_' + pageId, pgData, 'application/json');
-                (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
+            const pageKey = 'nbpage_' + pageId;
+            const cloudKey = 'notebooks/pages/' + pageKey;
+            const localRaw = await getFileData(pageKey).catch(() => null);
+            let localContent = r2ParseNotebookPageContent(localRaw);
+            const cloudRaw = await r2GetObjectWithTimeout(cloudKey, 5000);
+            let cloudContent = r2ParseNotebookPageContent(cloudRaw);
+
+            if (localRaw && !localContent) {
+                console.warn('[nb-sync] 本地笔记页正文损坏:', pageId);
             }
+            if (cloudRaw && !cloudContent) {
+                if (!localContent || r2NotebookPageContentScore(localContent) === 0) {
+                    throw new Error('[nb-sync] 云端笔记页正文损坏: ' + pageId);
+                }
+                console.warn('[nb-sync] 使用有效的本地正文修复云端损坏页:', pageId);
+            }
+
+            if (!localContent && !cloudContent) {
+                if (!page) return;
+                localContent = { strokes: [], texts: [], media: [], recognized: null };
+            }
+
+            const source = r2ChooseNotebookPageSource(localContent, cloudContent);
+            const pageContent = source === 'cloud' ? cloudContent : localContent;
+            if (!pageContent) return;
+            if (!pageContent.updatedAt && source === 'local') {
+                pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
+            }
+            const pageJson = JSON.stringify(pageContent);
+            await saveFileData(pageKey, pageJson);
+
+            const contentTs = syncTimestamp(pageContent.updatedAt);
+            if (page && contentTs > syncTimestamp(page.updatedAt || page.createdAt)) {
+                page.updatedAt = pageContent.updatedAt;
+                saveData();
+            }
+
+            const cloudJson = cloudContent ? JSON.stringify(cloudContent) : null;
+            if (source === 'local' && pageJson !== cloudJson) {
+                await r2PutObject(cloudKey, pageJson, 'application/json');
+            }
+
+            const mediaIds = new Set();
+            (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
             if (page && page.bgImage) mediaIds.add(page.bgImage);
             for (const mid of mediaIds) {
-                const mData = await getFileData('nbmedia_' + mid).catch(() => null);
-                if (mData) await r2PutObject('notebooks/media/nbmedia_' + mid, mData, 'application/octet-stream');
+                const mediaKey = 'nbmedia_' + mid;
+                const mData = await getFileData(mediaKey).catch(() => null);
+                if (mData) {
+                    await r2PutObject('notebooks/media/' + mediaKey, mData, 'application/octet-stream');
+                } else {
+                    const cloudMedia = await r2GetObjectWithTimeout('notebooks/media/' + mediaKey, 5000);
+                    if (cloudMedia) await saveFileData(mediaKey, cloudMedia);
+                }
             }
         }
 
@@ -14945,9 +14921,16 @@
                         try {
                             const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + page.id);
                             if (cloudPage) {
-                                pageJson = cloudPage;
-                                await saveFileData('nbpage_' + page.id, cloudPage);
-                                pages++;
+                                const localContent = r2ParseNotebookPageContent(pageJson);
+                                const cloudContent = r2ParseNotebookPageContent(cloudPage);
+                                if (cloudContent &&
+                                    r2ChooseNotebookPageSource(localContent, cloudContent) === 'cloud') {
+                                    pageJson = JSON.stringify(cloudContent);
+                                    await saveFileData('nbpage_' + page.id, pageJson);
+                                    pages++;
+                                } else if (!cloudContent) {
+                                    console.warn('[startup-sync] 云端笔记页正文损坏，保留本地:', page.id);
+                                }
                             }
                         } catch (e) { console.warn('[startup-sync] 拉取笔记页失败:', page.id, e); }
                     }
@@ -15055,7 +15038,7 @@
                 return;
             }
 
-            if (isR2SyncDeferredByGeneration()) {
+            if (isR2SyncDeferredByLectureGeneration()) {
                 if (!r2PendingSyncQueue.some(t => t.fileId === fileId && t.action === action)) {
                     r2PendingSyncQueue.push({ fileId, action, attempt });
                 }
@@ -15262,13 +15245,15 @@
                 }
             } catch (err) {
                 console.error('文件变更同步失败:', err);
-                // 讲义/摘要正文失败时也重试：它们的 metadata 发布排在正文提交之后，
-                // 不重试就会让刚生成的内容一直停留在本地。
-                const retryableClassroomAction = ['recording_upload', 'classroom_upload',
+                // 大对象与笔记页面失败时重试；否则正文或新页会一直停留在本机。
+                const retryableSyncAction = ['recording_upload', 'classroom_upload',
                     'classroom_note_upload', 'classroom_delete', 'classroom_note_delete',
                     'recording_delete', 'classroom_folder_delete',
-                    'lecture_upload', 'abstract_upload'].includes(action);
-                if (retryableClassroomAction &&
+                    'lecture_upload', 'abstract_upload',
+                    'notebook_close', 'notebook_page_add', 'notebook_page_update',
+                    'notebook_page_delete', 'notebook_page_reorder', 'notebook_metadata_update',
+                    'notebook_review_add', 'notebook_review_update'].includes(action);
+                if (retryableSyncAction &&
                     (config.autoSyncEnabled || config.autoSyncOnChange) && Number(attempt || 0) < 8) {
                     const key = action + ':' + fileId;
                     if (!r2ClassroomRetryTimers.has(key)) {
@@ -18123,13 +18108,9 @@
         }
 
         async function finishReaderChatGeneration() {
-            try {
-                // 计数仍大于 0，此调用只会把最终完整聊天记录放入同步队列。
-                await triggerSyncOnFileChange(null, 'metadata_update');
-            } finally {
-                activeReaderChatGenerationCount = Math.max(0, activeReaderChatGenerationCount - 1);
-                flushR2PendingSyncAfterGeneration();
-            }
+            // 聊天流式生成期间不逐 token 同步，只在最终记录完整后发布一次 metadata。
+            // 不能因此暂停笔记本等互不相关的同步任务。
+            await triggerSyncOnFileChange(null, 'metadata_update');
         }
 
         // 防抖：聊天连续变更时只在最后一次500ms后同步一次
@@ -18514,7 +18495,6 @@
 
         async function resendReaderChatFromIndex(userMsgIndex) {
             if (!currentDoc) return;
-            activeReaderChatGenerationCount++;
             let history = loadReaderChatHistory(currentDoc.id);
 
             // Build system prompt
@@ -18620,7 +18600,6 @@
             const input = document.getElementById('readerChatInput');
             const message = input.value.trim();
             if (!message || !currentDoc) return;
-            activeReaderChatGenerationCount++;
             input.value = '';
 
             // 附带引用内容（若有），随后清除引用预览
@@ -19733,7 +19712,7 @@ ${i18n('prompt_lecture_gen')}`;
                 renderNotesPage();
             } finally {
                 activeLectureGenerationCount = Math.max(0, activeLectureGenerationCount - 1);
-                flushR2PendingSyncAfterGeneration();
+                flushR2PendingSyncAfterLectureGeneration();
             }
         }
 
@@ -28218,8 +28197,15 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     try {
                         const cloud = await r2GetObject('notebooks/pages/nbpage_' + pageId);
                         if (cloud) {
-                            raw = cloud;
-                            await saveFileData('nbpage_' + pageId, cloud).catch(() => {});
+                            const localContent = r2ParseNotebookPageContent(raw);
+                            const cloudContent = r2ParseNotebookPageContent(cloud);
+                            if (cloudContent &&
+                                r2ChooseNotebookPageSource(localContent, cloudContent) === 'cloud') {
+                                raw = JSON.stringify(cloudContent);
+                                await saveFileData('nbpage_' + pageId, raw).catch(() => {});
+                            } else if (!cloudContent) {
+                                console.warn('[nb] 云端页面内容损坏，保留本地:', pageId);
+                            }
                         }
                     } catch (e) { /* 云端也没有 */ }
                 }
@@ -28425,13 +28411,33 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function nbDisplayScale() { return nbState.fitScale * nbState.zoom; }
 
         // ==================== 编辑器打开 / 关闭 ====================
+        async function nbWaitForStartupMetadata(timeoutMs = 5000) {
+            let timer = null;
+            try {
+                await Promise.race([
+                    r2StartupMetadataReady,
+                    new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); })
+                ]);
+            } finally {
+                if (timer !== null) clearTimeout(timer);
+            }
+        }
+
         async function nbOpenNotebook(id, pageIndex) {
             const openToken = ++_nbOpenRequestToken;
-            // metadata 与独立位置对象并行拉取；二者都有 5 秒超时，离线时仍能打开本地笔记。
-            const [cloudPosition] = await Promise.all([
-                r2FetchNotebookPositionForOpen(id),
-                r2StartupMetadataReady
-            ]);
+            const openingCard = Array.from(document.querySelectorAll('.nb-card'))
+                .find(card => card.dataset.nbid === id);
+            if (openingCard) openingCard.classList.add('opening');
+            let cloudPosition = null;
+            try {
+                // metadata 与独立位置对象并行拉取；最多等待 5 秒，离线时仍能打开本地笔记。
+                [cloudPosition] = await Promise.all([
+                    r2FetchNotebookPositionForOpen(id),
+                    nbWaitForStartupMetadata()
+                ]);
+            } finally {
+                if (openingCard) openingCard.classList.remove('opening');
+            }
             if (openToken !== _nbOpenRequestToken) return;
             const nb = nbGetNotebook(id);
             if (!nb) return;
@@ -28983,6 +28989,37 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return null;
         }
 
+        function nbSelectionElement(node) {
+            return node && (node.nodeType === 1 ? node : node.parentElement);
+        }
+
+        function nbSelectionTextEditor(node) {
+            const el = nbSelectionElement(node);
+            return el && typeof el.closest === 'function'
+                ? el.closest('#nbTextLayer .nb-textbox-inner')
+                : null;
+        }
+
+        function nbBlockWritingSurfaceSelection(e) {
+            if (nbSelectionTextEditor(e.target)) return;
+            if (e.cancelable !== false) e.preventDefault();
+        }
+
+        function nbClearWritingSurfaceSelection() {
+            const editor = document.getElementById('nbEditor');
+            const wrap = document.getElementById('nbCanvasWrap');
+            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+            if (!editor?.classList.contains('show') || !wrap || !selection?.rangeCount || selection.isCollapsed) return;
+            const anchorTextEditor = nbSelectionTextEditor(selection.anchorNode);
+            const focusTextEditor = nbSelectionTextEditor(selection.focusNode);
+            if (anchorTextEditor && anchorTextEditor === focusTextEditor) return;
+            const anchor = nbSelectionElement(selection.anchorNode);
+            const focus = nbSelectionElement(selection.focusNode);
+            if ((anchor && wrap.contains(anchor)) || (focus && wrap.contains(focus))) {
+                try { selection.removeAllRanges(); } catch (e) {}
+            }
+        }
+
         function nbInitCanvasEvents() {
             const c = document.getElementById('nbCanvas');
             if (c._nbBound) return;
@@ -28992,6 +29029,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             c.addEventListener('pointerup', nbPointerUp);
             c.addEventListener('pointercancel', nbPointerUp);
             c.addEventListener('contextmenu', e => e.preventDefault());
+            const wrap = document.getElementById('nbCanvasWrap');
+            ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
+                wrap.addEventListener(type, nbBlockWritingSurfaceSelection, true);
+            });
+            document.addEventListener('selectionchange', nbClearWritingSurfaceSelection, true);
         }
 
         function nbPointerDown(e) {

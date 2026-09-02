@@ -2,7 +2,4 @@
 <resources>
     <string name="app_name">数学阅读</string>
     <string name="reader_process_restarted">阅读器进程已恢复，已返回书架</string>
-    <string name="file_chooser_unavailable">无法打开文件选择器</string>
-    <string name="camera_permission_denied">未授予相机权限，改为从相册选择照片</string>
-    <string name="camera_unavailable">无法启动相机，改为从相册选择照片</string>
 </resources>

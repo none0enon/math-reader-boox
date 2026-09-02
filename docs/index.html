@@ -14028,7 +14028,9 @@
                             classroomRecordingState?.id === found.material.id) continue;
                         try {
                             if (found.material.recordingCloudCommitted !== true &&
-                                !await r2SyncRecording(found.material)) classroomPayloadSyncFailed = true;
+                                !await r2SyncRecording(found.material)) {
+                                console.warn('跳过本地不完整的录音，继续定时全量同步:', matId);
+                            }
                         } catch (e) {
                             classroomPayloadSyncFailed = true;
                             console.warn('上传新录音失败:', matId, e);
@@ -14058,6 +14060,10 @@
                         }
                     }
                     catch (e) {
+                        if (e?.code === 'LOCAL_CLASSROOM_NOTE_MISSING') {
+                            console.warn('跳过本地缺失的课堂讲义，继续定时全量同步:', noteId);
+                            continue;
+                        }
                         classroomPayloadSyncFailed = true;
                         console.warn('上传新课堂讲义失败:', noteId, e);
                     }
@@ -14716,7 +14722,18 @@
         async function r2SyncClassroomNote(note) {
             if (!note?.id) return false;
             const content = await ensureClassroomNoteContent(note);
-            if (!String(content || '').trim()) throw new Error(i18n('class_note_content_missing', note.id));
+            if (!String(content || '').trim() && note.contentCloudCommitted === true) return true;
+            if (!String(content || '').trim()) {
+                const current = _findClassroomNote(note.id);
+                if (current) {
+                    current.note.contentCloudCommitted = false;
+                    current.note.contentMetadataCloudCommitted = false;
+                    saveData();
+                }
+                const error = new Error(i18n('class_note_content_missing', note.id));
+                error.code = 'LOCAL_CLASSROOM_NOTE_MISSING';
+                throw error;
+            }
             await r2PutObject('classroom/notes/' + note.id + '.md', content,
                 'text/markdown; charset=utf-8');
             const current = _findClassroomNote(note.id);
@@ -15977,13 +15994,15 @@
                 let uploadedMaterials = 0;
                 let uploadedClassroomNotes = 0;
                 const skippedMissingClassroomMaterials = [];
+                const skippedMissingClassroomNotes = [];
                 for (const listKey of ['courses', 'seminars']) {
                     for (const folder of (appData.classroom?.[listKey] || [])) {
                         for (const session of (folder.sessions || [])) {
                             for (const mat of (session.sourceFolder || [])) {
                                 if (mat.type === 'recording') {
                                     if (!await r2SyncRecording(mat)) {
-                                        throw new Error(i18n('recording_not_fully_saved', mat.id));
+                                        skippedMissingClassroomMaterials.push(mat.id);
+                                        console.warn('跳过本地不完整的录音，继续手动全量同步:', mat.id);
                                     }
                                 } else {
                                     try {
@@ -15997,8 +16016,13 @@
                             }
                             for (const note of (session.notes || [])) {
                                 if (!note.contentKey) continue;
-                                await r2SyncClassroomNote(note);
-                                uploadedClassroomNotes++;
+                                try {
+                                    if (await r2SyncClassroomNote(note)) uploadedClassroomNotes++;
+                                } catch (e) {
+                                    if (e?.code !== 'LOCAL_CLASSROOM_NOTE_MISSING') throw e;
+                                    skippedMissingClassroomNotes.push(note.id);
+                                    console.warn('跳过本地缺失的课堂讲义，继续手动全量同步:', note.id);
+                                }
                             }
                         }
                     }
@@ -16019,6 +16043,9 @@
                 }
                 if (skippedMissingClassroomMaterials.length) {
                     console.warn('本轮全量同步跳过的本地缺失课堂素材:', skippedMissingClassroomMaterials);
+                }
+                if (skippedMissingClassroomNotes.length) {
+                    console.warn('本轮全量同步跳过的本地缺失课堂讲义:', skippedMissingClassroomNotes);
                 }
 
                 // 2. 上传PDF文件 (从IndexedDB获取)

@@ -4566,7 +4566,6 @@
         .nb-tb-btn svg { width: 21px; height: 21px; }
         .nb-tb-btn.active { background: var(--accent); color: #fff; }
         .nb-tb-btn:disabled { opacity: 0.35; cursor: default; }
-        .nb-editor button { touch-action: manipulation; }
         .nb-tb-sep { width: 1px; height: 24px; background: var(--border-color, rgba(0,0,0,0.12)); margin: 0 4px; flex-shrink: 0; }
         .nb-brush-btn {
             width: 38px; height: 38px; border: none; background: none; border-radius: 10px;
@@ -4623,33 +4622,13 @@
         #nbTextLayer { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; transform-origin: 0 0; }
         #nbTextLayer > * { pointer-events: auto; }
         body.nb-text-mode #nbTextLayer { cursor: text; }
-        /* 与阅读器 reader-pen-mode 使用同一套 iOS 防选区策略，但只在笔记编辑器
-           打开期间启用。覆盖 document 边缘和伪元素，避免 Pencil 越界时命中页面文字。 */
-        body.nb-editor-active,
-        body.nb-editor-active::before,
-        body.nb-editor-active::after,
-        body.nb-editor-active *,
-        body.nb-editor-active *::before,
-        body.nb-editor-active *::after {
-            -webkit-user-select: none !important;
-            user-select: none !important;
-            -webkit-touch-callout: none !important;
-            -webkit-tap-highlight-color: transparent !important;
+        /* iOS/iPadOS：书写区与工具栏禁止原生文本选择和长按呼出菜单，避免长按或 Pencil 抖动
+           唤起浏览器选区/放大镜（同阅读页画笔模式的处理）；正在编辑的文本框保留原生光标与选区 */
+        .nb-editor .nb-topbar, .nb-editor .nb-leftbar, .nb-editor .nb-canvas-wrap,
+        .nb-editor .nb-canvas-wrap *:not([contenteditable="true"]) {
+            -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
         }
-        /* 只有已聚焦的输入控件才恢复原生编辑，未聚焦文本框不再成为 Pencil 选区入口。 */
-        body.nb-editor-active input:focus,
-        body.nb-editor-active textarea:focus,
-        body.nb-editor-active select:focus,
-        body.nb-editor-active [contenteditable="true"]:focus,
-        body.nb-editor-active [contenteditable=""]:focus,
-        body.nb-editor-active [contenteditable="plaintext-only"]:focus,
-        body.nb-editor-active [contenteditable="true"]:focus *,
-        body.nb-editor-active [contenteditable=""]:focus *,
-        body.nb-editor-active [contenteditable="plaintext-only"]:focus * {
-            -webkit-user-select: text !important;
-            user-select: text !important;
-            -webkit-touch-callout: default !important;
-        }
+        .nb-editor .nb-textbox-inner[contenteditable="true"] { -webkit-user-select: text; user-select: text; }
 
         .nb-textbox {
             position: absolute;
@@ -7007,7 +6986,7 @@
             local_recording_chunk_corrupt:'本地录音分块 {0} 损坏', recording_source_size_failed:'无法确认录音源文件大小', cloud_recording_manifest_invalid:'云端录音清单无效', cloud_recording_chunk_invalid:'云端录音分块 {0} 无效', cloud_recording_chunk_hash_failed:'云端录音分块 {0} 校验失败', delete_cloud_recording_manifest_failed:'删除云端录音清单失败：{0}', delete_cloud_recording_chunk_failed:'删除云端录音分块失败：{0}', delete_legacy_cloud_recording_failed:'删除旧版云端录音失败：{0}',
             confirm_empty_local_overwrite_cloud:'本地数据为空。确定要覆盖非空的云端数据吗？', upload_cancelled:'上传已取消', recording_not_fully_saved:'录音尚未完整保存：{0}', sync_skipped_class_items:'；{0} 个课堂素材在本机缺失已跳过，云端已有内容保持不变', sync_progress_materials:'正在上传课堂素材 {0}/{1}…', sync_progress_lectures:'正在上传讲义与笔记页…', sync_progress_pages:'正在上传笔记页 {0}/{1}…', sync_progress_metadata:'正在发布云端索引…', sync_progress_files:'正在上传文件 {0}/{1}…', upload_timeout:'上传超时：{0}', restore_progress_files:'正在恢复文件 {0}/{1}…', restore_progress_pages:'正在恢复笔记页 {0}/{1}…', restore_notebook_failed_detail:'，{0} 页笔记未能从云端取回', cloud_index_repaired:'云端索引已修复', count_lectures:'{0} 篇讲义', count_abstracts:'{0} 篇摘要', count_class_materials:'{0} 个课堂素材', count_exercise_files:'{0} 个习题文件', count_note_pages:'{0} 页笔记', count_note_media:'{0} 个笔记媒体', confirm_empty_cloud_overwrite_local:'云端数据为空。确定要覆盖本地数据吗？', restore_cancelled:'恢复已取消', restore_notebook_detail:'，另恢复 {0} 页笔记和 {1} 个媒体文件',
             backup_file_too_large:'备份文件过大', compressed_zip_unsupported:'不支持压缩格式的 ZIP 条目', zip_descriptor_unsupported:'不支持带数据描述符的 ZIP 条目', recording_backup_source_size_invalid:'录音备份源大小无效：{0}', recording_backup_manifest_invalid:'录音备份清单无效：{0}', recording_backup_chunk_missing:'录音 {0} 的第 {1} 个备份分块缺失', recording_backup_length_failed:'录音备份长度校验失败：{0}', unknown_recording_backup_source:'未知的录音备份源：{0}', legacy_recording_missing:'旧版录音缺失：{0}', recording_backup_chunk_length_failed:'录音备份分块长度校验失败：{0}', recording_backup_chunk_missing_simple:'录音备份分块缺失：{0}', recording_has_no_backup_data:'录音没有可备份的数据：{0}', stop_recording_before_backup:'请先停止录音再备份', packing_zip_backup:'正在打包 ZIP 备份…', export_progress:'正在打包 ZIP 备份…已写入 {0} 个文件', export_native_open_failed:'无法在下载目录创建 ZIP 文件', export_native_write_failed:'写入 ZIP 文件失败', recording_added_during_export:'导出期间新增的录音',
-            export_local_files_detail:'（含 {0} 个本地文件）', export_missing_recordings_detail:'（另含 {0} 个补充录音）', export_failed:'导出失败：', confirm_import_zip_overwrite:'导入 ZIP 备份将覆盖当前数据，是否继续？', parsing_zip_backup:'正在解析 ZIP 备份…', zip_parsed_restoring:'ZIP 解析成功，正在恢复数据…', invalid_zip_backup:'ZIP 备份结构无效', encrypted_zip_unsupported:'不支持加密的 ZIP 备份', zip64_unsupported:'暂不支持 ZIP64 备份', zip_deflate_unsupported:'当前设备无法解压此 ZIP，请使用 Math Reader 原始导出的 ZIP', zip_entry_size_mismatch:'ZIP 条目大小校验失败：{0}', backup_missing_metadata:'备份中缺少 metadata.json', missing_recordings_manifest_invalid:'补充录音清单无效', missing_recordings_manifest_invalid_id:'补充录音清单包含无效 ID', recording_backup_index_invalid:'录音备份索引无效', recording_backup_chunk_invalid:'录音 {0} 的第 {1} 个备份分块无效', import_complete_files:'导入完成，共恢复 {0} 个文件', import_failed:'导入失败：',
+            export_local_files_detail:'（含 {0} 个本地文件）', export_missing_recordings_detail:'（另含 {0} 个补充录音）', export_failed:'导出失败：', confirm_import_zip_overwrite:'导入 ZIP 备份将覆盖当前数据，是否继续？', parsing_zip_backup:'正在解析 ZIP 备份…', backup_missing_metadata:'备份中缺少 metadata.json', missing_recordings_manifest_invalid:'补充录音清单无效', missing_recordings_manifest_invalid_id:'补充录音清单包含无效 ID', recording_backup_index_invalid:'录音备份索引无效', recording_backup_chunk_invalid:'录音 {0} 的第 {1} 个备份分块无效', import_complete_files:'导入完成，共恢复 {0} 个文件', import_failed:'导入失败：',
             indexeddb_unavailable:'IndexedDB 不可用', transaction_aborted:'事务被中止：{0}', unknown_reason:'未知原因', recording_transaction_failed:'录音事务失败', recording_transaction_aborted:'录音事务被中止', class_file_transaction_failed:'课堂文件事务失败', class_file_transaction_aborted:'课堂文件事务被中止', recording_storage_module_not_loaded:'录音存储模块未加载', class_lecture_content_empty:'课堂讲义内容为空', data_structure_corrupt:'数据结构损坏：books/papers 不是数组'
         });
         Object.assign(I18N.en, {
@@ -7026,7 +7005,7 @@
             local_recording_chunk_corrupt:'Local recording chunk {0} is corrupted', recording_source_size_failed:'Could not verify the recording source size', cloud_recording_manifest_invalid:'The cloud recording manifest is invalid', cloud_recording_chunk_invalid:'Cloud recording chunk {0} is invalid', cloud_recording_chunk_hash_failed:'Cloud recording chunk {0} failed verification', delete_cloud_recording_manifest_failed:'Failed to delete cloud recording manifest: {0}', delete_cloud_recording_chunk_failed:'Failed to delete cloud recording chunk: {0}', delete_legacy_cloud_recording_failed:'Failed to delete legacy cloud recording: {0}',
             confirm_empty_local_overwrite_cloud:'Local data is empty. Overwrite non-empty cloud data?', upload_cancelled:'Upload cancelled', recording_not_fully_saved:'Recording is not fully saved: {0}', sync_skipped_class_items:'; {0} class materials missing locally were skipped; existing cloud copies were kept', sync_progress_materials:'Uploading class materials {0}/{1}…', sync_progress_lectures:'Uploading lectures and note pages…', sync_progress_pages:'Uploading note pages {0}/{1}…', sync_progress_metadata:'Publishing cloud index…', sync_progress_files:'Uploading files {0}/{1}…', upload_timeout:'Upload timed out: {0}', restore_progress_files:'Restoring files {0}/{1}…', restore_progress_pages:'Restoring note pages {0}/{1}…', restore_notebook_failed_detail:', {0} note pages could not be fetched from the cloud', cloud_index_repaired:'Cloud index repaired', count_lectures:'{0} lectures', count_abstracts:'{0} abstracts', count_class_materials:'{0} class materials', count_exercise_files:'{0} exercise files', count_note_pages:'{0} note pages', count_note_media:'{0} note media files', confirm_empty_cloud_overwrite_local:'Cloud data is empty. Overwrite local data?', restore_cancelled:'Restore cancelled', restore_notebook_detail:', plus {0} note pages and {1} media files',
             backup_file_too_large:'Backup file is too large', compressed_zip_unsupported:'Compressed ZIP entries are not supported', zip_descriptor_unsupported:'ZIP data descriptors are not supported', recording_backup_source_size_invalid:'Invalid recording backup source size: {0}', recording_backup_manifest_invalid:'Invalid recording backup manifest: {0}', recording_backup_chunk_missing:'Backup chunk {1} is missing for recording {0}', recording_backup_length_failed:'Recording backup length verification failed: {0}', unknown_recording_backup_source:'Unknown recording backup source: {0}', legacy_recording_missing:'Legacy recording is missing: {0}', recording_backup_chunk_length_failed:'Recording backup chunk length verification failed: {0}', recording_backup_chunk_missing_simple:'Recording backup chunk is missing: {0}', recording_has_no_backup_data:'Recording has no data to back up: {0}', stop_recording_before_backup:'Stop recording before creating a backup', packing_zip_backup:'Packing ZIP backup…', export_progress:'Packing ZIP backup… {0} files written', export_native_open_failed:'Could not create the ZIP file in Downloads', export_native_write_failed:'Failed to write the ZIP file', recording_added_during_export:'Recording added during export',
-            export_local_files_detail:' ({0} local files included)', export_missing_recordings_detail:' ({0} supplemental recordings included)', export_failed:'Export failed: ', confirm_import_zip_overwrite:'Importing this ZIP backup will overwrite current data. Continue?', parsing_zip_backup:'Parsing ZIP backup…', zip_parsed_restoring:'ZIP parsed successfully; restoring data…', invalid_zip_backup:'The ZIP backup structure is invalid', encrypted_zip_unsupported:'Encrypted ZIP backups are not supported', zip64_unsupported:'ZIP64 backups are not supported yet', zip_deflate_unsupported:'This device cannot decompress the ZIP; use the ZIP exported directly by Math Reader', zip_entry_size_mismatch:'ZIP entry size check failed: {0}', backup_missing_metadata:'metadata.json is missing from the backup', missing_recordings_manifest_invalid:'Supplemental recording manifest is invalid', missing_recordings_manifest_invalid_id:'Supplemental recording manifest contains an invalid ID', recording_backup_index_invalid:'Recording backup index is invalid', recording_backup_chunk_invalid:'Backup chunk {1} is invalid for recording {0}', import_complete_files:'Import complete: {0} files restored', import_failed:'Import failed: ',
+            export_local_files_detail:' ({0} local files included)', export_missing_recordings_detail:' ({0} supplemental recordings included)', export_failed:'Export failed: ', confirm_import_zip_overwrite:'Importing this ZIP backup will overwrite current data. Continue?', parsing_zip_backup:'Parsing ZIP backup…', backup_missing_metadata:'metadata.json is missing from the backup', missing_recordings_manifest_invalid:'Supplemental recording manifest is invalid', missing_recordings_manifest_invalid_id:'Supplemental recording manifest contains an invalid ID', recording_backup_index_invalid:'Recording backup index is invalid', recording_backup_chunk_invalid:'Backup chunk {1} is invalid for recording {0}', import_complete_files:'Import complete: {0} files restored', import_failed:'Import failed: ',
             indexeddb_unavailable:'IndexedDB is unavailable', transaction_aborted:'Transaction aborted: {0}', unknown_reason:'Unknown reason', recording_transaction_failed:'Recording transaction failed', recording_transaction_aborted:'Recording transaction was aborted', class_file_transaction_failed:'Class file transaction failed', class_file_transaction_aborted:'Class file transaction was aborted', recording_storage_module_not_loaded:'Recording storage module is not loaded', class_lecture_content_empty:'Class lecture content is empty', data_structure_corrupt:'Corrupted data structure: books/papers must be arrays'
         });
         Object.assign(I18N.fr, {
@@ -7045,7 +7024,7 @@
             local_recording_chunk_corrupt:"Le segment local d’enregistrement {0} est corrompu", recording_source_size_failed:"Impossible de vérifier la taille de l’enregistrement source", cloud_recording_manifest_invalid:"Le manifeste cloud de l’enregistrement est invalide", cloud_recording_chunk_invalid:'Le segment cloud {0} est invalide', cloud_recording_chunk_hash_failed:'Échec de vérification du segment cloud {0}', delete_cloud_recording_manifest_failed:'Échec de suppression du manifeste cloud : {0}', delete_cloud_recording_chunk_failed:'Échec de suppression du segment cloud : {0}', delete_legacy_cloud_recording_failed:"Échec de suppression de l’ancien enregistrement cloud : {0}",
             confirm_empty_local_overwrite_cloud:'Les données locales sont vides. Remplacer les données cloud non vides ?', upload_cancelled:'Envoi annulé', recording_not_fully_saved:"L’enregistrement n’est pas entièrement sauvegardé : {0}", sync_skipped_class_items:' ; {0} supports de cours absents localement ont été ignorés ; les copies cloud existantes ont été conservées', sync_progress_materials:'Envoi des supports de cours {0}/{1}…', sync_progress_lectures:'Envoi des cours et des pages de notes…', sync_progress_pages:'Envoi des pages de notes {0}/{1}…', sync_progress_metadata:'Publication de l’index cloud…', sync_progress_files:'Envoi des fichiers {0}/{1}…', upload_timeout:'Délai d’envoi dépassé : {0}', restore_progress_files:'Restauration des fichiers {0}/{1}…', restore_progress_pages:'Restauration des pages de notes {0}/{1}…', restore_notebook_failed_detail:', {0} pages de notes n’ont pas pu être récupérées du cloud', cloud_index_repaired:'Index cloud réparé', count_lectures:'{0} cours', count_abstracts:'{0} résumés', count_class_materials:'{0} supports de cours', count_exercise_files:'{0} fichiers d’exercices', count_note_pages:'{0} pages de notes', count_note_media:'{0} médias de notes', confirm_empty_cloud_overwrite_local:'Les données cloud sont vides. Remplacer les données locales ?', restore_cancelled:'Restauration annulée', restore_notebook_detail:', plus {0} pages de notes et {1} médias',
             backup_file_too_large:'Le fichier de sauvegarde est trop volumineux', compressed_zip_unsupported:'Les entrées ZIP compressées ne sont pas prises en charge', zip_descriptor_unsupported:'Les descripteurs de données ZIP ne sont pas pris en charge', recording_backup_source_size_invalid:'Taille de source de sauvegarde invalide : {0}', recording_backup_manifest_invalid:'Manifeste de sauvegarde invalide : {0}', recording_backup_chunk_missing:"Le segment {1} de l’enregistrement {0} manque dans la sauvegarde", recording_backup_length_failed:'Échec de vérification de la longueur de la sauvegarde : {0}', unknown_recording_backup_source:'Source de sauvegarde inconnue : {0}', legacy_recording_missing:'Ancien enregistrement manquant : {0}', recording_backup_chunk_length_failed:'Échec de vérification de la longueur du segment : {0}', recording_backup_chunk_missing_simple:'Segment de sauvegarde manquant : {0}', recording_has_no_backup_data:"L’enregistrement ne contient aucune donnée à sauvegarder : {0}", stop_recording_before_backup:"Arrêtez l’enregistrement avant de créer une sauvegarde", packing_zip_backup:'Création de la sauvegarde ZIP…', export_progress:'Création de la sauvegarde ZIP… {0} fichiers écrits', export_native_open_failed:'Impossible de créer le fichier ZIP dans Téléchargements', export_native_write_failed:'Échec de l’écriture du fichier ZIP', recording_added_during_export:'Enregistrement ajouté pendant l’exportation',
-            export_local_files_detail:' ({0} fichiers locaux inclus)', export_missing_recordings_detail:' ({0} enregistrements supplémentaires inclus)', export_failed:"Échec de l’exportation : ", confirm_import_zip_overwrite:'Importer cette sauvegarde ZIP remplacera les données actuelles. Continuer ?', parsing_zip_backup:'Analyse de la sauvegarde ZIP…', zip_parsed_restoring:'ZIP analysé avec succès ; restauration des données…', invalid_zip_backup:'La structure de la sauvegarde ZIP est invalide', encrypted_zip_unsupported:'Les sauvegardes ZIP chiffrées ne sont pas prises en charge', zip64_unsupported:'Les sauvegardes ZIP64 ne sont pas encore prises en charge', zip_deflate_unsupported:"Cet appareil ne peut pas décompresser ce ZIP ; utilisez le ZIP exporté directement par Math Reader", zip_entry_size_mismatch:"Échec du contrôle de taille de l’entrée ZIP : {0}", backup_missing_metadata:'metadata.json manque dans la sauvegarde', missing_recordings_manifest_invalid:'Le manifeste des enregistrements supplémentaires est invalide', missing_recordings_manifest_invalid_id:'Le manifeste contient un identifiant invalide', recording_backup_index_invalid:"L’index de sauvegarde des enregistrements est invalide", recording_backup_chunk_invalid:'Le segment {1} de l’enregistrement {0} est invalide', import_complete_files:'Importation terminée : {0} fichiers restaurés', import_failed:"Échec de l’importation : ",
+            export_local_files_detail:' ({0} fichiers locaux inclus)', export_missing_recordings_detail:' ({0} enregistrements supplémentaires inclus)', export_failed:"Échec de l’exportation : ", confirm_import_zip_overwrite:'Importer cette sauvegarde ZIP remplacera les données actuelles. Continuer ?', parsing_zip_backup:'Analyse de la sauvegarde ZIP…', backup_missing_metadata:'metadata.json manque dans la sauvegarde', missing_recordings_manifest_invalid:'Le manifeste des enregistrements supplémentaires est invalide', missing_recordings_manifest_invalid_id:'Le manifeste contient un identifiant invalide', recording_backup_index_invalid:"L’index de sauvegarde des enregistrements est invalide", recording_backup_chunk_invalid:'Le segment {1} de l’enregistrement {0} est invalide', import_complete_files:'Importation terminée : {0} fichiers restaurés', import_failed:"Échec de l’importation : ",
             indexeddb_unavailable:'IndexedDB est indisponible', transaction_aborted:'Transaction interrompue : {0}', unknown_reason:'Raison inconnue', recording_transaction_failed:"Échec de la transaction d’enregistrement", recording_transaction_aborted:"La transaction d’enregistrement a été interrompue", class_file_transaction_failed:'Échec de la transaction du fichier de cours', class_file_transaction_aborted:'La transaction du fichier de cours a été interrompue', recording_storage_module_not_loaded:"Le module de stockage des enregistrements n’est pas chargé", class_lecture_content_empty:'Le contenu du cours est vide', data_structure_corrupt:'Structure de données corrompue : books/papers doivent être des tableaux'
         });
         Object.assign(I18N.zh, {
@@ -17559,174 +17538,27 @@
         }
         function dataZipReadU16(v, p) { return v.getUint16(p, true); }
         function dataZipReadU32(v, p) { return v.getUint32(p, true); }
-        function dataZipBlobArrayBuffer(blob) {
-            if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result);
-                reader.onerror = () => reject(reader.error || new Error(i18n('invalid_zip_backup')));
-                reader.readAsArrayBuffer(blob);
-            });
-        }
-        async function dataZipSliceBytes(file, start, end) {
-            return new Uint8Array(await dataZipBlobArrayBuffer(file.slice(start, end)));
-        }
-        function dataZipStructuralError() {
-            const error = new Error(i18n('invalid_zip_backup'));
-            error.dataZipStructure = true;
-            return error;
-        }
-        async function dataZipInflateRaw(blob, name, expectedSize) {
-            if (typeof DecompressionStream !== 'function') {
-                throw new Error(i18n('zip_deflate_unsupported'));
-            }
-            let inflated;
-            try {
-                const source = new Response(blob).body;
-                inflated = await new Response(
-                    source.pipeThrough(new DecompressionStream('deflate-raw'))
-                ).blob();
-            } catch (err) {
-                console.warn('[backup/import] deflate failed:', name, err);
-                throw new Error(i18n('zip_deflate_unsupported'));
-            }
-            if (inflated.size !== expectedSize) {
-                throw new Error(i18n('zip_entry_size_mismatch', name));
-            }
-            return inflated;
-        }
-        async function dataZipDecodeEntry(blob, name, method, compressedSize, size) {
-            if (method === 0) {
-                if (compressedSize !== size || blob.size !== size) {
-                    throw new Error(i18n('zip_entry_size_mismatch', name));
-                }
-                return blob;
-            }
-            if (method === 8) return dataZipInflateRaw(blob, name, size);
-            throw new Error(i18n('compressed_zip_unsupported'));
-        }
-        async function dataZipFindEocd(file) {
-            if (file.size < 22) return null;
-            const length = Math.min(file.size, 22 + 0xffff);
-            const start = file.size - length;
-            const bytes = await dataZipSliceBytes(file, start, file.size);
-            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-            for (let p = bytes.length - 22; p >= 0; p--) {
-                if (dataZipReadU32(view, p) !== 0x06054b50) continue;
-                const commentLength = dataZipReadU16(view, p + 20);
-                if (p + 22 + commentLength !== bytes.length) continue;
-                return {
-                    offset: start + p,
-                    disk: dataZipReadU16(view, p + 4),
-                    centralDisk: dataZipReadU16(view, p + 6),
-                    diskEntries: dataZipReadU16(view, p + 8),
-                    entries: dataZipReadU16(view, p + 10),
-                    centralSize: dataZipReadU32(view, p + 12),
-                    centralOffset: dataZipReadU32(view, p + 16)
-                };
-            }
-            return null;
-        }
-        async function dataZipReadCentral(file) {
-            const eocd = await dataZipFindEocd(file);
-            if (!eocd) return null;
-            if (eocd.entries === 0xffff || eocd.centralSize === 0xffffffff ||
-                eocd.centralOffset === 0xffffffff) {
-                throw new Error(i18n('zip64_unsupported'));
-            }
-            if (eocd.disk || eocd.centralDisk || eocd.diskEntries !== eocd.entries ||
-                eocd.centralOffset + eocd.centralSize > eocd.offset) {
-                throw dataZipStructuralError();
-            }
-            const central = await dataZipSliceBytes(
-                file, eocd.centralOffset, eocd.centralOffset + eocd.centralSize);
-            const view = new DataView(central.buffer, central.byteOffset, central.byteLength);
+        async function dataZipRead(file) {
             const out = {};
             let p = 0;
-            for (let index = 0; index < eocd.entries; index++) {
-                if (p + 46 > central.length || dataZipReadU32(view, p) !== 0x02014b50) {
-                    throw dataZipStructuralError();
-                }
-                const flags = dataZipReadU16(view, p + 8);
-                const method = dataZipReadU16(view, p + 10);
-                const compressedSize = dataZipReadU32(view, p + 20);
-                const size = dataZipReadU32(view, p + 24);
-                const nameLength = dataZipReadU16(view, p + 28);
-                const extraLength = dataZipReadU16(view, p + 30);
-                const commentLength = dataZipReadU16(view, p + 32);
-                const diskStart = dataZipReadU16(view, p + 34);
-                const localOffset = dataZipReadU32(view, p + 42);
-                const recordEnd = p + 46 + nameLength + extraLength + commentLength;
-                if (recordEnd > central.length) throw dataZipStructuralError();
-                if (flags & 0x01) throw new Error(i18n('encrypted_zip_unsupported'));
-                if (diskStart || compressedSize === 0xffffffff || size === 0xffffffff ||
-                    localOffset === 0xffffffff) throw new Error(i18n('zip64_unsupported'));
-                const name = new TextDecoder().decode(central.subarray(p + 46, p + 46 + nameLength));
-                if (localOffset + 30 > file.size) throw dataZipStructuralError();
-                const localBytes = await dataZipSliceBytes(file, localOffset, localOffset + 30);
-                const local = new DataView(localBytes.buffer, localBytes.byteOffset, localBytes.byteLength);
-                if (dataZipReadU32(local, 0) !== 0x04034b50 ||
-                    dataZipReadU16(local, 8) !== method) throw dataZipStructuralError();
-                const localFlags = dataZipReadU16(local, 6);
-                if (localFlags & 0x01) throw new Error(i18n('encrypted_zip_unsupported'));
-                const localNameLength = dataZipReadU16(local, 26);
-                const localExtraLength = dataZipReadU16(local, 28);
-                const dataStart = localOffset + 30 + localNameLength + localExtraLength;
-                if (dataStart + compressedSize > file.size) throw dataZipStructuralError();
-                if (!name.endsWith('/')) {
-                    const compressed = file.slice(dataStart, dataStart + compressedSize);
-                    out[name] = await dataZipDecodeEntry(
-                        compressed, name, method, compressedSize, size);
-                }
-                p = recordEnd;
-            }
-            return out;
-        }
-        // 兼容 PR #76 之前由 Math Reader 写出的中央目录缺少两个字节的备份。
-        async function dataZipReadLegacyLocal(file) {
-            const out = {};
-            let p = 0;
-            let found = false;
             while (p + 30 <= file.size) {
-                const headerBytes = await dataZipSliceBytes(file, p, p + 30);
-                const view = new DataView(headerBytes.buffer, headerBytes.byteOffset, headerBytes.byteLength);
+                const headerBuf = await file.slice(p, p + 30).arrayBuffer();
+                const view = new DataView(headerBuf);
                 if (dataZipReadU32(view, 0) !== 0x04034b50) break;
-                found = true;
                 const flags = dataZipReadU16(view, 6), method = dataZipReadU16(view, 8);
-                if (flags & 0x01) throw new Error(i18n('encrypted_zip_unsupported'));
+                if (method !== 0) throw new Error(i18n('compressed_zip_unsupported'));
                 if (flags & 0x08) throw new Error(i18n('zip_descriptor_unsupported'));
-                const compressedSize = dataZipReadU32(view, 18);
-                const size = dataZipReadU32(view, 22);
-                const nameLen = dataZipReadU16(view, 26), extraLen = dataZipReadU16(view, 28);
-                if (p + 30 + nameLen + extraLen > file.size) throw dataZipStructuralError();
-                const nameBytes = await dataZipSliceBytes(file, p + 30, p + 30 + nameLen);
+                const size = dataZipReadU32(view, 18), nameLen = dataZipReadU16(view, 26), extraLen = dataZipReadU16(view, 28);
+                const nameBytes = new Uint8Array(await file.slice(p + 30, p + 30 + nameLen).arrayBuffer());
                 const name = new TextDecoder().decode(nameBytes);
                 const dataStart = p + 30 + nameLen + extraLen;
-                if (dataStart + compressedSize > file.size) throw dataZipStructuralError();
-                if (!name.endsWith('/')) {
-                    const compressed = file.slice(dataStart, dataStart + compressedSize);
-                    out[name] = await dataZipDecodeEntry(
-                        compressed, name, method, compressedSize, size);
-                }
-                p = dataStart + compressedSize;
+                out[name] = file.slice(dataStart, dataStart + size);
+                p = dataStart + size;
             }
-            if (!found) throw dataZipStructuralError();
             return out;
         }
-        async function dataZipRead(file) {
-            try {
-                const entries = await dataZipReadCentral(file);
-                if (entries) return entries;
-            } catch (err) {
-                if (!err?.dataZipStructure) throw err;
-                console.warn('[backup/import] invalid central directory; trying legacy local headers');
-            }
-            return dataZipReadLegacyLocal(file);
-        }
         async function dataZipText(value) {
-            if (value instanceof Blob) {
-                return new TextDecoder().decode(await dataZipBlobArrayBuffer(value));
-            }
+            if (value instanceof Blob) return value.text();
             return new TextDecoder().decode(value);
         }
 
@@ -18168,11 +18000,10 @@
             if (!file) return;
             if (!confirm(i18n('confirm_import_zip_overwrite'))) return;
             try {
-                showToast(i18n('parsing_zip_backup'), 60000);
+                showToast(i18n('parsing_zip_backup'));
                 const entries = await dataZipRead(file);
                 if (!entries['metadata.json']) throw new Error(i18n('backup_missing_metadata'));
                 const imported = JSON.parse(await dataZipText(entries['metadata.json']));
-                showToast(i18n('zip_parsed_restoring'), 60000);
                 if (imported.exportFormat && !['math-reader-full-zip-v1', 'math-reader-full-zip-v2'].includes(imported.exportFormat)) {
                     console.warn('未知导出格式:', imported.exportFormat);
                 }
@@ -18322,10 +18153,10 @@
                 renderClassroomPage();
                 renderExercisesPage();
                 renderNotebooksPage?.();
-                showToast(i18n('import_complete_files', restored), 6000);
+                showToast(i18n('import_complete_files', restored));
             } catch (err) {
                 console.error('导入 ZIP 失败:', err);
-                showToast(i18n('import_failed') + err.message, 6000);
+                showToast(i18n('import_failed') + err.message);
             }
         }
 
@@ -28869,9 +28700,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbState.redoStack = [];
             nbState.selection = null;
             nbState.bgImageCache = {};
-            document.body.classList.add('nb-editor-active');
             document.getElementById('nbEditor').classList.add('show');
-            nbForceClearNotebookNativeSelection();
             document.getElementById('nbTitle').textContent = nb.name;
             nbSetTool('pen');
             nbSelectBrush(nbState.brushIndex);
@@ -28889,9 +28718,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbHidePanel();
             nbHideOutline();
             nbClearSelection();
-            nbForceClearNotebookNativeSelection();
             document.getElementById('nbEditor').classList.remove('show');
-            document.body.classList.remove('nb-editor-active', 'nb-text-mode');
             nbState.notebookId = null;
             nbState.content = null;
             nbState.bgImageCache = {};
@@ -29275,7 +29102,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
         function nbSetTool(tool) {
             if (nbState.tool === tool && (tool === 'lasso' || tool === 'text')) tool = 'pen'; // 再点一次取消
-            if (tool !== 'text') nbBlurNotebookTextEditing();
             if (nbState.tool !== 'eraser') nbState.prevTool = nbState.tool;
             nbState.tool = tool;
             if (tool !== 'lasso') nbClearSelection();
@@ -29406,90 +29232,36 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbInitPencilModeTouch(c);
         }
 
-        // ---------- iOS/iPadOS 原生选区拦截（完整复用 PR #62 的策略） ----------
-        const NB_NATIVE_SELECTION_CONTROL = [
-            'input', 'textarea', 'select',
-            '[contenteditable="true"]', '[contenteditable=""]', '[contenteditable="plaintext-only"]'
-        ].join(',');
-
-        function nbSelectionElement(node) {
-            return node && (node.nodeType === 1 ? node : node.parentElement);
-        }
-        function nbNativeSelectionControlAt(node) {
-            const el = nbSelectionElement(node);
-            return el && typeof el.closest === 'function'
-                ? el.closest(NB_NATIVE_SELECTION_CONTROL)
-                : null;
-        }
-        function nbFocusedNativeSelectionControlAt(node) {
-            const control = nbNativeSelectionControlAt(node);
-            const activeControl = nbNativeSelectionControlAt(document.activeElement);
-            return control && control === activeControl ? control : null;
-        }
-        function nbNotebookSelectionGuardActive() {
+        // ---------- iOS/iPadOS 原生选区拦截（同阅读页画笔模式） ----------
+        // Safari 在长按、Pencil 抖动或跨元素拖动时会尝试建立原生文本选区并弹出放大镜/菜单，
+        // 打断书写。编辑器显示期间，在捕获阶段拦截书写区与工具栏上的 selectstart / dragstart /
+        // contextmenu，并清掉已经形成的选区；正在编辑的文本框与输入控件不受影响。
+        function nbNativeSelectionGuardOwns(target) {
             const editor = document.getElementById('nbEditor');
-            return !!(document.body.classList.contains('nb-editor-active') &&
-                editor?.classList.contains('show'));
+            if (!editor || !editor.classList.contains('show') || !target) return false;
+            const el = target.nodeType === Node.TEXT_NODE ? target.parentElement : target;
+            if (!el || typeof el.closest !== 'function') return false;
+            if (el.closest('[contenteditable="true"], input, textarea, select')) return false;
+            return !!el.closest('#nbEditor .nb-topbar, #nbEditor .nb-leftbar, #nbCanvasWrap');
         }
-        // 只取消浏览器默认行为，不阻断传播；缩略图等自定义 contextmenu 仍需收到事件。
-        function nbBlockNotebookNativeSelection(e) {
-            if (!e || !nbNotebookSelectionGuardActive() ||
-                nbFocusedNativeSelectionControlAt(e.target)) return;
+        function nbBlockNativeSelection(e) {
+            if (!e || !nbNativeSelectionGuardOwns(e.target)) return;
             e.preventDefault();
+            if (typeof e.stopPropagation === 'function') e.stopPropagation();
         }
-        function nbClearNotebookNativeSelection() {
-            if (!nbNotebookSelectionGuardActive()) return;
+        function nbClearNativeSelection() {
+            const editor = document.getElementById('nbEditor');
+            if (!editor || !editor.classList.contains('show')) return;
             const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
             if (!selection || !selection.rangeCount) return;
-            const anchorControl = nbFocusedNativeSelectionControlAt(selection.anchorNode);
-            const focusControl = nbFocusedNativeSelectionControlAt(selection.focusNode);
-            if (anchorControl && anchorControl === focusControl) return;
-            try { selection.removeAllRanges(); } catch (e) {}
-        }
-        let _nbNativeSelectionClearTimer = null;
-        function nbScheduleNotebookNativeSelectionClear() {
-            clearTimeout(_nbNativeSelectionClearTimer);
-            _nbNativeSelectionClearTimer = setTimeout(() => {
-                _nbNativeSelectionClearTimer = null;
-                nbClearNotebookNativeSelection();
-            }, 50);
-        }
-        function nbForceClearNotebookNativeSelection() {
-            const editor = document.getElementById('nbEditor');
-            const activeControl = nbNativeSelectionControlAt(document.activeElement);
-            if (activeControl && editor?.contains(activeControl)) {
-                try { activeControl.blur(); } catch (e) {}
+            if (nbNativeSelectionGuardOwns(selection.anchorNode) || nbNativeSelectionGuardOwns(selection.focusNode)) {
+                selection.removeAllRanges();
             }
-            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
-            if (selection?.rangeCount) {
-                try { selection.removeAllRanges(); } catch (e) {}
-            }
-        }
-        function nbBlurNotebookTextEditing() {
-            const activeControl = nbNativeSelectionControlAt(document.activeElement);
-            if (activeControl?.closest('#nbTextLayer')) {
-                try { activeControl.blur(); } catch (e) {}
-                nbForceClearNotebookNativeSelection();
-            }
-        }
-        function nbBlurNotebookControlOnOutsidePointer(e) {
-            if (!nbNotebookSelectionGuardActive()) return;
-            const activeControl = nbNativeSelectionControlAt(document.activeElement);
-            if (!activeControl || !document.getElementById('nbEditor')?.contains(activeControl)) return;
-            if (nbNativeSelectionControlAt(e.target) === activeControl) return;
-            try { activeControl.blur(); } catch (err) {}
-            nbForceClearNotebookNativeSelection();
         }
         ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
-            document.addEventListener(type, nbBlockNotebookNativeSelection, true);
+            document.addEventListener(type, nbBlockNativeSelection, true);
         });
-        document.addEventListener('selectionchange', nbClearNotebookNativeSelection, true);
-        document.addEventListener('mouseup', nbScheduleNotebookNativeSelectionClear, true);
-        document.addEventListener('touchend', nbScheduleNotebookNativeSelectionClear, true);
-        document.addEventListener('touchcancel', nbScheduleNotebookNativeSelectionClear, true);
-        document.addEventListener('pointerup', nbScheduleNotebookNativeSelectionClear, true);
-        document.addEventListener('pointercancel', nbScheduleNotebookNativeSelectionClear, true);
-        document.addEventListener('pointerdown', nbBlurNotebookControlOnOutsidePointer, true);
+        document.addEventListener('selectionchange', nbClearNativeSelection, true);
 
         // ---------- Apple Pencil 模式：手指单指滚动画布、双指缩放（同阅读页） ----------
         // 画布 touch-action:none 以防 Safari 把 Pencil 竖向笔迹当成滚动并发 pointercancel，
@@ -29582,7 +29354,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             // Apple Pencil 模式（同阅读页）：只有触控笔可以在画布上书写、擦除、套索与画图形；
             // 手指等其它指针不落笔，改由上方的 touch 处理器用于滚动画布与双指缩放。
             if (applePencilMode && !booxReaderIsPen(e)) return;
-            nbBlurNotebookTextEditing();
             nbHidePanel();
             nbHideOutline();
             nbHideTextToolbar();

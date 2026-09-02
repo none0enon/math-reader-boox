@@ -90,7 +90,7 @@ API Key 保存在本机设置中，不会随 R2 元数据同步到云端；完�
 3. 进入具体场次后，使用右下角按钮：
    - **麦克风**：开始/停止课堂录音；首次使用需要授予麦克风权限。
    - **上传**：可选择图片、音频、PDF、Word、纯文本、Markdown、TeX/LaTeX 等资料。
-   - **相机**：拍摄板书、讲义或现场资料。
+   - **相机**：拍摄板书、讲义或现场资料；安卓 APK 首次使用需要授予相机权限。
 4. 上传完成后，资料保存在“源素材”，应用会基于素材生成 AI 笔记；停止录音后会保存录音并生成转写纪要。
 5. 打开 AI 笔记可阅读 LaTeX 内容、查看进度，并通过来源引用跳回对应素材。
 6. 长按源素材可重新生成笔记或删除；长按 AI 笔记可下载 Markdown 或删除。课程/讲座文件夹支持重命名和删除，场次支持重命名。
@@ -268,7 +268,7 @@ Normal text search on a text PDF does not need AI. OCR, lasso questions, and scr
 
 1. Tap an empty area under Course or Seminar to create a top-level folder.
 2. Open it and create a session. A date-based title is suggested and can be edited.
-3. In the session, use the lower-right actions to record audio, upload files, or take a photo. Uploads accept images, audio, PDF, Word, plain text, Markdown, and TeX/LaTeX files.
+3. In the session, use the lower-right actions to record audio, upload files, or take a photo. The Android APK asks for camera permission the first time you take a photo. Uploads accept images, audio, PDF, Word, plain text, Markdown, and TeX/LaTeX files.
 4. Uploaded material appears under Source Material and is converted into an AI note. Stopping a recording saves it and starts transcript/minutes generation.
 5. Open an AI note to read formatted math and follow source references back to the original material.
 6. Long-press source material to regenerate its note or delete it. Long-press an AI note to download Markdown or delete it. Folders and sessions can be renamed.

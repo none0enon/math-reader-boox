@@ -7,7 +7,7 @@
  *    探测完全基于 PWA 已有的通用信号（可见性 + pointer-events），不依赖其内部状态。
  * 2. 抬笔后原生回传整笔触点，本脚本以合成 PointerEvent 回放给画布元素，
  *    PWA 自己的绘制/撤销/保存逻辑零修改全部复用。
- * 3. 拦截 blob: 下载（PWA 导出 PDF/JSON），转交原生保存到下载目录。
+ * 3. 拦截 blob: 下载（PWA 导出 PDF / 数据备份 ZIP / JSON），分片转交原生保存到下载目录。
  *
  * index.html 含阅读器套索模式的 Boox 集成补丁，升级上游时需保留对应接口。
  */
@@ -58,22 +58,62 @@
     /* ---------------- blob 下载桥接（与手写 SDK 无关，始终启用） ---------------- */
     var dl = window.BooxDownloadNative;
     if (dl) {
+        /* 分片大小（原始字节）。数据备份 ZIP 可达几十到几百 MB，整体 readAsDataURL 会撞上
+         * JS 字符串长度上限，整段传给 JS 桥也会超出单次消息上限而静默失败——PDF 小所以能
+         * 成功，ZIP 却拿不到文件。改为逐片 base64 → DownloadBridge.appendBase64，Java 侧逐片
+         * 解码追加，最终与 PDF 走同一 open()，落在同一下载目录。 */
+        var SAVE_CHUNK_BYTES = 2 * 1024 * 1024;
+        var base64Of = function (blob) {
+            return new Promise(function (resolve, reject) {
+                var fr = new FileReader();
+                fr.onload = function () {
+                    var s = String(fr.result || '');
+                    var i = s.indexOf(',');
+                    resolve(i >= 0 ? s.slice(i + 1) : '');
+                };
+                fr.onerror = function () { reject(fr.error || new Error('read failed')); };
+                fr.readAsDataURL(blob);
+            });
+        };
+        var saveBlobChunked = function (name, blob) {
+            var mime = blob.type || 'application/octet-stream';
+            if (typeof dl.beginSave !== 'function') {
+                // 旧版原生桥：整体一次写入
+                return base64Of(blob).then(function (b64) { dl.saveBase64(name, mime, b64); });
+            }
+            var token = dl.beginSave(name, mime);
+            if (!token) { throw new Error('beginSave failed'); }
+            var offset = 0;
+            var step = function () {
+                if (offset >= blob.size) {
+                    if (!dl.finishSave(token)) { throw new Error('finishSave failed'); }
+                    return;
+                }
+                var slice = blob.slice(offset, Math.min(blob.size, offset + SAVE_CHUNK_BYTES), mime);
+                return base64Of(slice).then(function (b64) {
+                    if (!dl.appendBase64(token, b64)) { throw new Error('appendBase64 failed'); }
+                    offset += slice.size;
+                    return step();
+                }, function (err) {
+                    try { dl.abortSave(token, String(err && err.message || err)); } catch (e) { /* 忽略 */ }
+                    throw err;
+                });
+            };
+            return Promise.resolve().then(step);
+        };
         var handleBlobAnchor = function (a) {
             var name = a.getAttribute('download') || 'download.bin';
             fetch(a.href)
                 .then(function (r) { return r.blob(); })
-                .then(function (blob) {
-                    var fr = new FileReader();
-                    fr.onload = function () {
-                        var s = String(fr.result || '');
-                        var i = s.indexOf(',');
-                        if (i >= 0) {
-                            dl.saveBase64(name, blob.type || 'application/octet-stream', s.slice(i + 1));
+                .then(function (blob) { return saveBlobChunked(name, blob); })
+                .catch(function (e) {
+                    console.warn('boox-pen: blob download failed', e);
+                    try {
+                        if (typeof window.showToast === 'function') {
+                            window.showToast((typeof window.i18n === 'function' ? window.i18n('export_failed') : '导出失败：') + name);
                         }
-                    };
-                    fr.readAsDataURL(blob);
-                })
-                .catch(function (e) { console.warn('boox-pen: blob download failed', e); });
+                    } catch (e2) { /* 忽略 */ }
+                });
         };
         // PWA 多处用 a.click() 触发下载，且 anchor 可能未挂到 DOM，必须打补丁
         var origClick = HTMLAnchorElement.prototype.click;

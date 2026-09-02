@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 课堂拍照临时输出：getCacheDir()/camera/ -->
+    <cache-path name="camera" path="camera/" />
+</paths>

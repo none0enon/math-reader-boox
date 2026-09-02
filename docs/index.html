@@ -29037,12 +29037,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 editor?.classList.contains('show'));
         }
 
-        // 与 blockReaderNativeSelectionInPenMode 保持同一捕获阶段策略。
+        // 捕获阶段只取消浏览器默认行为，不阻断传播；页面缩略图等已有的
+        // 自定义 contextmenu 处理器仍需收到事件。
         function nbBlockNotebookNativeSelection(e) {
             if (!e || !nbNotebookSelectionGuardActive() ||
                 nbFocusedNativeSelectionControlAt(e.target)) return;
             e.preventDefault();
-            if (typeof e.stopPropagation === 'function') e.stopPropagation();
         }
 
         function nbClearNotebookNativeSelection() {

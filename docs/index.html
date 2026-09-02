@@ -28488,6 +28488,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbState.redoStack = [];
             nbState.selection = null;
             nbState.bgImageCache = {};
+            nbResetNotebookTouchGesture();
             document.body.classList.add('nb-editor-active');
             document.getElementById('nbEditor').classList.add('show');
             nbForceClearNotebookNativeSelection();
@@ -28508,6 +28509,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbHidePanel();
             nbHideOutline();
             nbClearSelection();
+            nbResetNotebookTouchGesture();
             nbForceClearNotebookNativeSelection();
             document.getElementById('nbEditor').classList.remove('show');
             document.body.classList.remove('nb-editor-active', 'nb-text-mode');
@@ -29093,6 +29095,162 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbForceClearNotebookNativeSelection();
         }
 
+        // Apple Pencil 模式与阅读界面保持一致：Pencil 负责当前画布工具，
+        // 手指在画布上只负责单指滚动和双指缩放。
+        let _nbTouchGesture = null;
+
+        function nbDirectFingerTouch(touch) {
+            return !!touch && touch.touchType !== 'stylus';
+        }
+
+        function nbTwoDirectFingerTouches(touches) {
+            return !!touches && touches.length === 2 &&
+                nbDirectFingerTouch(touches[0]) && nbDirectFingerTouch(touches[1]);
+        }
+
+        function nbTouchDistance(t1, t2) {
+            return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        }
+
+        function nbTouchCenter(t1, t2) {
+            return {
+                x: (t1.clientX + t2.clientX) / 2,
+                y: (t1.clientY + t2.clientY) / 2
+            };
+        }
+
+        function nbClearTouchZoomPreview() {
+            const box = document.getElementById('nbPageBox');
+            if (!box) return;
+            box.style.transform = '';
+            box.style.transformOrigin = '';
+        }
+
+        function nbResetNotebookTouchGesture() {
+            nbClearTouchZoomPreview();
+            _nbTouchGesture = null;
+        }
+
+        function nbStartNotebookPinch(touches) {
+            const box = document.getElementById('nbPageBox');
+            if (!box || !nbTwoDirectFingerTouches(touches)) return false;
+            const distance = nbTouchDistance(touches[0], touches[1]);
+            if (distance <= 0) return false;
+            const center = nbTouchCenter(touches[0], touches[1]);
+            const rect = box.getBoundingClientRect();
+            _nbTouchGesture = {
+                mode: 'pinch',
+                startDistance: distance,
+                baseZoom: nbState.zoom,
+                liveZoom: nbState.zoom,
+                lastCenterX: center.x,
+                lastCenterY: center.y,
+                originX: center.x - rect.left,
+                originY: center.y - rect.top
+            };
+            box.style.transformOrigin = _nbTouchGesture.originX + 'px ' + _nbTouchGesture.originY + 'px';
+            return true;
+        }
+
+        function nbNotebookTouchStart(e) {
+            if (!applePencilMode || !nbNotebookSelectionGuardActive()) return;
+            if (nbState.drawing) {
+                nbResetNotebookTouchGesture();
+                return;
+            }
+            if (nbTwoDirectFingerTouches(e.touches)) {
+                nbClearTouchZoomPreview();
+                if (nbStartNotebookPinch(e.touches)) e.preventDefault();
+                return;
+            }
+            if (e.touches.length === 1 && nbDirectFingerTouch(e.touches[0])) {
+                nbClearTouchZoomPreview();
+                _nbTouchGesture = {
+                    mode: 'pan',
+                    lastX: e.touches[0].clientX,
+                    lastY: e.touches[0].clientY
+                };
+                return;
+            }
+            // Pencil + finger must not be promoted to a notebook pinch gesture.
+            nbResetNotebookTouchGesture();
+        }
+
+        function nbNotebookTouchMove(e) {
+            if (!applePencilMode || !nbNotebookSelectionGuardActive()) {
+                nbResetNotebookTouchGesture();
+                return;
+            }
+            if (nbState.drawing) {
+                nbResetNotebookTouchGesture();
+                return;
+            }
+            const wrap = document.getElementById('nbCanvasWrap');
+            if (!wrap) return;
+
+            if (nbTwoDirectFingerTouches(e.touches)) {
+                if (!_nbTouchGesture || _nbTouchGesture.mode !== 'pinch') {
+                    nbClearTouchZoomPreview();
+                    if (!nbStartNotebookPinch(e.touches)) return;
+                }
+                const g = _nbTouchGesture;
+                const center = nbTouchCenter(e.touches[0], e.touches[1]);
+                wrap.scrollLeft -= center.x - g.lastCenterX;
+                wrap.scrollTop -= center.y - g.lastCenterY;
+                g.lastCenterX = center.x;
+                g.lastCenterY = center.y;
+                const scale = nbTouchDistance(e.touches[0], e.touches[1]) / g.startDistance;
+                g.liveZoom = Math.max(0.5, Math.min(2, g.baseZoom * scale));
+                const previewScale = g.liveZoom / g.baseZoom;
+                const box = document.getElementById('nbPageBox');
+                if (box) box.style.transform = 'scale(' + previewScale + ')';
+                e.preventDefault();
+                return;
+            }
+
+            if (_nbTouchGesture?.mode === 'pan' && e.touches.length === 1 &&
+                nbDirectFingerTouch(e.touches[0])) {
+                const touch = e.touches[0];
+                wrap.scrollLeft -= touch.clientX - _nbTouchGesture.lastX;
+                wrap.scrollTop -= touch.clientY - _nbTouchGesture.lastY;
+                _nbTouchGesture.lastX = touch.clientX;
+                _nbTouchGesture.lastY = touch.clientY;
+                e.preventDefault();
+                return;
+            }
+
+            nbResetNotebookTouchGesture();
+        }
+
+        function nbFinishNotebookTouchGesture(e, commitZoom) {
+            const g = _nbTouchGesture;
+            const wrap = document.getElementById('nbCanvasWrap');
+            nbClearTouchZoomPreview();
+            _nbTouchGesture = null;
+
+            if (commitZoom && g?.mode === 'pinch' && wrap &&
+                Math.abs(g.liveZoom - g.baseZoom) >= 0.01) {
+                const rect = wrap.getBoundingClientRect();
+                const viewportX = Math.max(0, Math.min(rect.width, g.lastCenterX - rect.left));
+                const viewportY = Math.max(0, Math.min(rect.height, g.lastCenterY - rect.top));
+                const oldScrollLeft = wrap.scrollLeft;
+                const oldScrollTop = wrap.scrollTop;
+                const ratio = g.liveZoom / g.baseZoom;
+                nbZoomSet(g.liveZoom * 100);
+                wrap.scrollLeft = (oldScrollLeft + viewportX) * ratio - viewportX;
+                wrap.scrollTop = (oldScrollTop + viewportY) * ratio - viewportY;
+            }
+
+            if (commitZoom && applePencilMode && e?.touches?.length === 1 &&
+                nbDirectFingerTouch(e.touches[0])) {
+                _nbTouchGesture = {
+                    mode: 'pan',
+                    lastX: e.touches[0].clientX,
+                    lastY: e.touches[0].clientY
+                };
+            }
+        }
+
         function nbInitCanvasEvents() {
             const c = document.getElementById('nbCanvas');
             if (c._nbBound) return;
@@ -29102,6 +29260,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             c.addEventListener('pointerup', nbPointerUp);
             c.addEventListener('pointercancel', nbPointerUp);
             c.addEventListener('contextmenu', e => e.preventDefault());
+            c.addEventListener('touchstart', nbNotebookTouchStart, { passive: false });
+            c.addEventListener('touchmove', nbNotebookTouchMove, { passive: false });
+            c.addEventListener('touchend', e => nbFinishNotebookTouchGesture(e, true), { passive: true });
+            c.addEventListener('touchcancel', e => nbFinishNotebookTouchGesture(e, false), { passive: true });
             ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
                 document.addEventListener(type, nbBlockNotebookNativeSelection, true);
             });
@@ -29115,7 +29277,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function nbPointerDown(e) {
-            if (e.button === 2) return;
+            if (e.button === 2 || nbState.drawing) return;
+            if (applePencilMode && !booxReaderIsPen(e)) return;
             nbBlurNotebookTextEditing();
             nbHidePanel();
             nbHideOutline();
@@ -29136,29 +29299,30 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         document.querySelectorAll('.nb-media-img.selected,.nb-media-audio.selected').forEach(x => x.classList.remove('selected'));
                         document.querySelector(`#nbTextLayer [data-id="${hit.obj.id}"]`)?.classList.add('selected');
                     }
-                    nbState.drawing = { mode: 'boxdrag', kind: hit.kind, obj: hit.obj, last: p, moved: false };
+                    nbState.drawing = { mode: 'boxdrag', pointerId: e.pointerId, kind: hit.kind, obj: hit.obj, last: p, moved: false };
                     nbNativeRefresh();   // 清掉原生层点按留下的墨点
                     return;
                 }
                 const brush = nbState.brushes[nbState.brushIndex];
                 nbState.drawing = {
                     mode: 'stroke',
+                    pointerId: e.pointerId,
                     stroke: { id: nbUid('s'), tool: brush.type, color: brush.color, w: Math.round(brush.mm * NB_MM * 100) / 100, paths: [[p]] },
                     last: p
                 };
             } else if (tool === 'eraser') {
-                nbState.drawing = { mode: 'erase', last: p, removed: [] };
+                nbState.drawing = { mode: 'erase', pointerId: e.pointerId, last: p, removed: [] };
                 nbEraseAt(p, p);
             } else if (tool === 'lasso') {
                 const sel = nbState.selection;
                 if (sel && p[0] >= sel.bbox.x0 - 10 && p[0] <= sel.bbox.x1 + 10 && p[1] >= sel.bbox.y0 - 10 && p[1] <= sel.bbox.y1 + 10) {
-                    nbState.drawing = { mode: 'move', last: p, start: p, before: nbCopySelStrokes(), moved: false };
+                    nbState.drawing = { mode: 'move', pointerId: e.pointerId, last: p, start: p, before: nbCopySelStrokes(), moved: false };
                 } else {
                     nbClearSelection();
-                    nbState.drawing = { mode: 'lasso', pts: [p] };
+                    nbState.drawing = { mode: 'lasso', pointerId: e.pointerId, pts: [p] };
                 }
             } else if (tool === 'shape') {
-                nbState.drawing = { mode: 'shape', start: p, cur: p, freehand: [p], preview: null };
+                nbState.drawing = { mode: 'shape', pointerId: e.pointerId, start: p, cur: p, freehand: [p], preview: null };
             } else if (tool === 'text') {
                 nbAddTextBox(p[0], p[1]);
                 nbState.drawing = null;
@@ -29167,7 +29331,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbPointerMove(e) {
             const d = nbState.drawing;
-            if (!d) return;
+            if (!d || d.pointerId !== e.pointerId) return;
             e.preventDefault();
             const events = (typeof e.getCoalescedEvents === 'function' && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
             for (const ev of events) {
@@ -29223,7 +29387,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbPointerUp(e) {
             const d = nbState.drawing;
-            if (!d) return;
+            if (!d || d.pointerId !== e.pointerId) return;
             nbState.drawing = null;
             if (d.mode === 'stroke') {
                 const pts = d.stroke.paths[0];

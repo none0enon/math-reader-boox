@@ -14016,6 +14016,9 @@
                     throw e;
                 }
 
+                // 笔记页面必须先同步；课堂残留素材失败不能阻断整本笔记上传。
+                await r2SyncAllNotebookPages();
+
                 // 所有课堂正文先于 metadata 提交，避免其它设备看见悬空索引。
                 let classroomPayloadSyncFailed = false;
                 for (const matId of (newMatIds || [])) {
@@ -14058,7 +14061,6 @@
                 if (classroomPayloadSyncFailed) return;
 
                 await r2SyncChangedLectureContents();
-                await r2SyncAllNotebookPages();
 
                 // 再把合并后的结果推回云端
                 const metadataPublishResult = await r2SyncMetadataOnly();
@@ -15950,6 +15952,9 @@
                     }
                     allowEmptyMetadataOverwrite = true;
                 }
+                // 笔记页面必须先同步；课堂残留素材失败不能阻断整本笔记上传。
+                await r2SyncAllNotebookPages();
+
                 // 课堂正文（录音、照片/文件、AI 讲义）必须全部先于 metadata 提交。
                 let uploadedMaterials = 0;
                 let uploadedClassroomNotes = 0;
@@ -15976,7 +15981,6 @@
                 }
                 // 手动"同步到云端"是全量推送，同时充当云端正文丢失后的修复入口。
                 const uploadedLectures = await r2SyncChangedLectureContents({ force: true });
-                await r2SyncAllNotebookPages();
                 metadata.lectures = stripLectureContent(appData.lectures);
                 metadata.notebooks = appData.notebooks || { items: [], reviews: [] };
                 metadata.classroom = stripClassroomData(appData.classroom, true);

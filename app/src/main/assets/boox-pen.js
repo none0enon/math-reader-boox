@@ -7,8 +7,7 @@
  *    探测完全基于 PWA 已有的通用信号（可见性 + pointer-events），不依赖其内部状态。
  * 2. 抬笔后原生回传整笔触点，本脚本以合成 PointerEvent 回放给画布元素，
  *    PWA 自己的绘制/撤销/保存逻辑零修改全部复用。
- * 3. 拦截 blob: 下载（PWA 导出 PDF / JSON 等），分片转交原生保存到下载目录；
- *    数据备份 ZIP 由页面直接经 DownloadBridge 流式写入，不经过此处。
+ * 3. 拦截 blob: 下载（PWA 导出 PDF / 数据备份 ZIP / JSON），分片转交原生保存到下载目录。
  *
  * index.html 含阅读器套索模式的 Boox 集成补丁，升级上游时需保留对应接口。
  */

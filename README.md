@@ -159,7 +159,7 @@ AI 识题完成前不要关闭任务页面。照片应尽量正对、无阴影�
 
 1. 在 **R2 云同步配置** 填写 Access Key ID、Secret Access Key、Endpoint 和 Bucket；自定义域名可选。
 2. 点击 **测试连接**，成功后保存配置。
-3. 可手动使用 **同步到云端** / **从云端恢复**，也可开启定时同步和“文件变更时自动同步”。
+3. 可手动使用 **同步到云端** / **从云端恢复**，也可开启定时同步和“文件变更时自动同步”。手动 **同步到云端** 是全量推送：上传全部本地正文，并以本机数据覆盖云端索引（本机已删除的条目不会从云端合并回来）；手动 **从云端恢复** 是全量恢复：笔记本索引直接采用云端快照，并按云端副本覆盖本地全部笔记页正文。
 4. API Key 和 R2 配置本身只保留在设备本地，不随 R2 元数据上传；新设备仍需自行配置这些凭据。
 5. 首次迁移或准备清空设备时，优先保留一份完整 ZIP。R2 是同步副本，不应作为唯一备份。
 6. 讲义阅读进度在阅读时只写本地，退出讲义或应用切到后台时统一上传一次；讲义正文只在重新生成后才会上传，未改动的章节不会被重复传输。
@@ -310,7 +310,7 @@ Settings include user/AI profiles, notifications, photo retention, exercise time
 
 **Full ZIP backup** includes metadata, source documents, annotations, lectures, classroom material/recordings, exercise writing, notebooks, and local settings. Import replaces the current local books, notes, classes, exercises, lectures, and notebooks. A ZIP may contain credentials, private documents, chats, and recordings; never post it publicly. **Clear All Data** is irreversible.
 
-**Cloudflare R2 sync** is optional. Enter the access key, secret, endpoint, and bucket, test the connection, then use manual upload/restore or enable scheduled/on-change sync. API keys and the R2 configuration itself remain local and must be configured again on a new device. Keep a full ZIP for migrations; R2 should not be the only backup. Lecture reading progress is written locally while you read and uploaded once when you leave the lecture or the app goes to the background; lecture bodies are uploaded only after they are regenerated, so unchanged chapters are never re-sent.
+**Cloudflare R2 sync** is optional. Enter the access key, secret, endpoint, and bucket, test the connection, then use manual upload/restore or enable scheduled/on-change sync. Manual upload is a full push: it uploads every local body and replaces the cloud index with the local snapshot (items deleted locally are not merged back), and manual restore is a full pull: the notebook index is taken from the cloud snapshot and every local notebook page body is overwritten with the cloud copy. API keys and the R2 configuration itself remain local and must be configured again on a new device. Keep a full ZIP for migrations; R2 should not be the only backup. Lecture reading progress is written locally while you read and uploaded once when you leave the lecture or the app goes to the background; lecture bodies are uploaded only after they are regenerated, so unchanged chapters are never re-sent.
 
 ### 10. BOOX / E Ink compatibility
 

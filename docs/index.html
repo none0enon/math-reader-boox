@@ -4595,16 +4595,23 @@
             display: block;
             background: var(--bg-secondary);
         }
-        /* Only the open notebook writing surface suppresses WebKit selection.
-           Keeping this off document/body preserves iOS synthesized clicks on cards and controls. */
-        #nbEditor.show #nbCanvasWrap,
-        #nbEditor.show #nbCanvasWrap * {
+        /* Suppress WebKit selection across the open editor, including the 56px left toolbar.
+           Keeping this off document/body preserves iOS synthesized clicks on notebook cards. */
+        #nbEditor.show,
+        #nbEditor.show * {
             -webkit-user-select: none;
             user-select: none;
             -webkit-touch-callout: none;
         }
-        #nbEditor.show #nbTextLayer .nb-textbox-inner:focus,
-        #nbEditor.show #nbTextLayer .nb-textbox-inner:focus * {
+        #nbEditor.show input,
+        #nbEditor.show textarea,
+        #nbEditor.show select,
+        #nbEditor.show [contenteditable="true"],
+        #nbEditor.show [contenteditable=""],
+        #nbEditor.show [contenteditable="plaintext-only"],
+        #nbEditor.show [contenteditable="true"] *,
+        #nbEditor.show [contenteditable=""] *,
+        #nbEditor.show [contenteditable="plaintext-only"] * {
             -webkit-user-select: text;
             user-select: text;
             -webkit-touch-callout: default;
@@ -28993,29 +29000,29 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return node && (node.nodeType === 1 ? node : node.parentElement);
         }
 
-        function nbSelectionTextEditor(node) {
+        function nbSelectionEditable(node) {
             const el = nbSelectionElement(node);
             return el && typeof el.closest === 'function'
-                ? el.closest('#nbTextLayer .nb-textbox-inner')
+                ? el.closest('input, textarea, select, [contenteditable="true"], ' +
+                    '[contenteditable=""], [contenteditable="plaintext-only"]')
                 : null;
         }
 
-        function nbBlockWritingSurfaceSelection(e) {
-            if (nbSelectionTextEditor(e.target)) return;
+        function nbBlockEditorNativeSelection(e) {
+            if (nbSelectionEditable(e.target)) return;
             if (e.cancelable !== false) e.preventDefault();
         }
 
-        function nbClearWritingSurfaceSelection() {
+        function nbClearEditorNativeSelection() {
             const editor = document.getElementById('nbEditor');
-            const wrap = document.getElementById('nbCanvasWrap');
             const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
-            if (!editor?.classList.contains('show') || !wrap || !selection?.rangeCount || selection.isCollapsed) return;
-            const anchorTextEditor = nbSelectionTextEditor(selection.anchorNode);
-            const focusTextEditor = nbSelectionTextEditor(selection.focusNode);
-            if (anchorTextEditor && anchorTextEditor === focusTextEditor) return;
+            if (!editor?.classList.contains('show') || !selection?.rangeCount) return;
+            const anchorEditable = nbSelectionEditable(selection.anchorNode);
+            const focusEditable = nbSelectionEditable(selection.focusNode);
+            if (anchorEditable && anchorEditable === focusEditable) return;
             const anchor = nbSelectionElement(selection.anchorNode);
             const focus = nbSelectionElement(selection.focusNode);
-            if ((anchor && wrap.contains(anchor)) || (focus && wrap.contains(focus))) {
+            if ((anchor && editor.contains(anchor)) || (focus && editor.contains(focus))) {
                 try { selection.removeAllRanges(); } catch (e) {}
             }
         }
@@ -29029,11 +29036,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             c.addEventListener('pointerup', nbPointerUp);
             c.addEventListener('pointercancel', nbPointerUp);
             c.addEventListener('contextmenu', e => e.preventDefault());
-            const wrap = document.getElementById('nbCanvasWrap');
+            const editor = document.getElementById('nbEditor');
             ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
-                wrap.addEventListener(type, nbBlockWritingSurfaceSelection, true);
+                editor.addEventListener(type, nbBlockEditorNativeSelection, true);
             });
-            document.addEventListener('selectionchange', nbClearWritingSurfaceSelection, true);
+            document.addEventListener('selectionchange', nbClearEditorNativeSelection, true);
         }
 
         function nbPointerDown(e) {

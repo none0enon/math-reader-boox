@@ -14040,6 +14040,10 @@
                             }
                         }
                         catch (e) {
+                            if (e?.code === 'LOCAL_CLASSROOM_ASSET_MISSING') {
+                                console.warn('跳过本地缺失的课堂素材，继续定时全量同步:', matId);
+                                continue;
+                            }
                             classroomPayloadSyncFailed = true;
                             console.warn('上传新课堂素材失败:', matId, e);
                         }
@@ -14678,7 +14682,21 @@
             if (!material?.id || material.type === 'recording') return false;
             let data = material.data;
             if (!data) data = await getFileData(classroomAssetDataKey(material.id)).catch(() => null);
-            if (!data) throw new Error(i18n('local_class_material_missing', material.id));
+            // 已确认提交过云端的素材不要求本机仍保留一份副本；手动全量同步不能
+            // 因为这种本地缓存缺失而中断。未提交过且本地也缺失的条目保持 pending，
+            // 由 metadata 过滤，但其它类别继续同步。
+            if (!data && material.assetCloudCommitted === true) return true;
+            if (!data) {
+                const current = _findRecordingMaterial(material.id);
+                if (current) {
+                    current.material.assetCloudCommitted = false;
+                    current.material.assetMetadataCloudCommitted = false;
+                    saveData();
+                }
+                const error = new Error(i18n('local_class_material_missing', material.id));
+                error.code = 'LOCAL_CLASSROOM_ASSET_MISSING';
+                throw error;
+            }
             await r2PutObject('classroom/' + material.id, data,
                 material.mimeType || 'application/octet-stream');
             const current = _findRecordingMaterial(material.id);
@@ -15958,6 +15976,7 @@
                 // 课堂正文（录音、照片/文件、AI 讲义）必须全部先于 metadata 提交。
                 let uploadedMaterials = 0;
                 let uploadedClassroomNotes = 0;
+                const skippedMissingClassroomMaterials = [];
                 for (const listKey of ['courses', 'seminars']) {
                     for (const folder of (appData.classroom?.[listKey] || [])) {
                         for (const session of (folder.sessions || [])) {
@@ -15967,8 +15986,13 @@
                                         throw new Error(i18n('recording_not_fully_saved', mat.id));
                                     }
                                 } else {
-                                    await r2SyncClassroomAsset(mat);
-                                    uploadedMaterials++;
+                                    try {
+                                        if (await r2SyncClassroomAsset(mat)) uploadedMaterials++;
+                                    } catch (e) {
+                                        if (e?.code !== 'LOCAL_CLASSROOM_ASSET_MISSING') throw e;
+                                        skippedMissingClassroomMaterials.push(mat.id);
+                                        console.warn('跳过本地缺失的课堂素材，继续手动全量同步:', mat.id);
+                                    }
                                 }
                             }
                             for (const note of (session.notes || [])) {
@@ -15992,6 +16016,9 @@
                     });
                 if (metadataPublishResult.casCommitted) {
                     await flushClassroomDeletionOutboxAfterMetadata();
+                }
+                if (skippedMissingClassroomMaterials.length) {
+                    console.warn('本轮全量同步跳过的本地缺失课堂素材:', skippedMissingClassroomMaterials);
                 }
 
                 // 2. 上传PDF文件 (从IndexedDB获取)

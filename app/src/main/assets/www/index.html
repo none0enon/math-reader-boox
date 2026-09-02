@@ -4563,6 +4563,8 @@
             display: flex; align-items: center; justify-content: center; cursor: pointer;
             color: var(--text-secondary); flex-shrink: 0; position: relative;
         }
+        /* 触屏：按钮不参与双击缩放/平移手势判定，点按立即派发 click */
+        .nb-editor button { touch-action: manipulation; }
         .nb-tb-btn svg { width: 21px; height: 21px; }
         .nb-tb-btn.active { background: var(--accent); color: #fff; }
         .nb-tb-btn:disabled { opacity: 0.35; cursor: default; }
@@ -6986,7 +6988,7 @@
             local_recording_chunk_corrupt:'本地录音分块 {0} 损坏', recording_source_size_failed:'无法确认录音源文件大小', cloud_recording_manifest_invalid:'云端录音清单无效', cloud_recording_chunk_invalid:'云端录音分块 {0} 无效', cloud_recording_chunk_hash_failed:'云端录音分块 {0} 校验失败', delete_cloud_recording_manifest_failed:'删除云端录音清单失败：{0}', delete_cloud_recording_chunk_failed:'删除云端录音分块失败：{0}', delete_legacy_cloud_recording_failed:'删除旧版云端录音失败：{0}',
             confirm_empty_local_overwrite_cloud:'本地数据为空。确定要覆盖非空的云端数据吗？', upload_cancelled:'上传已取消', recording_not_fully_saved:'录音尚未完整保存：{0}', sync_skipped_class_items:'；{0} 个课堂素材在本机缺失已跳过，云端已有内容保持不变', sync_progress_materials:'正在上传课堂素材 {0}/{1}…', sync_progress_lectures:'正在上传讲义与笔记页…', sync_progress_pages:'正在上传笔记页 {0}/{1}…', sync_progress_metadata:'正在发布云端索引…', sync_progress_files:'正在上传文件 {0}/{1}…', upload_timeout:'上传超时：{0}', restore_progress_files:'正在恢复文件 {0}/{1}…', restore_progress_pages:'正在恢复笔记页 {0}/{1}…', restore_notebook_failed_detail:'，{0} 页笔记未能从云端取回', cloud_index_repaired:'云端索引已修复', count_lectures:'{0} 篇讲义', count_abstracts:'{0} 篇摘要', count_class_materials:'{0} 个课堂素材', count_exercise_files:'{0} 个习题文件', count_note_pages:'{0} 页笔记', count_note_media:'{0} 个笔记媒体', confirm_empty_cloud_overwrite_local:'云端数据为空。确定要覆盖本地数据吗？', restore_cancelled:'恢复已取消', restore_notebook_detail:'，另恢复 {0} 页笔记和 {1} 个媒体文件',
             backup_file_too_large:'备份文件过大', compressed_zip_unsupported:'不支持压缩格式的 ZIP 条目', zip_descriptor_unsupported:'不支持带数据描述符的 ZIP 条目', recording_backup_source_size_invalid:'录音备份源大小无效：{0}', recording_backup_manifest_invalid:'录音备份清单无效：{0}', recording_backup_chunk_missing:'录音 {0} 的第 {1} 个备份分块缺失', recording_backup_length_failed:'录音备份长度校验失败：{0}', unknown_recording_backup_source:'未知的录音备份源：{0}', legacy_recording_missing:'旧版录音缺失：{0}', recording_backup_chunk_length_failed:'录音备份分块长度校验失败：{0}', recording_backup_chunk_missing_simple:'录音备份分块缺失：{0}', recording_has_no_backup_data:'录音没有可备份的数据：{0}', stop_recording_before_backup:'请先停止录音再备份', packing_zip_backup:'正在打包 ZIP 备份…', export_progress:'正在打包 ZIP 备份…已写入 {0} 个文件', export_native_open_failed:'无法在下载目录创建 ZIP 文件', export_native_write_failed:'写入 ZIP 文件失败', recording_added_during_export:'导出期间新增的录音',
-            export_local_files_detail:'（含 {0} 个本地文件）', export_missing_recordings_detail:'（另含 {0} 个补充录音）', export_failed:'导出失败：', confirm_import_zip_overwrite:'导入 ZIP 备份将覆盖当前数据，是否继续？', parsing_zip_backup:'正在解析 ZIP 备份…', backup_missing_metadata:'备份中缺少 metadata.json', missing_recordings_manifest_invalid:'补充录音清单无效', missing_recordings_manifest_invalid_id:'补充录音清单包含无效 ID', recording_backup_index_invalid:'录音备份索引无效', recording_backup_chunk_invalid:'录音 {0} 的第 {1} 个备份分块无效', import_complete_files:'导入完成，共恢复 {0} 个文件', import_failed:'导入失败：',
+            export_local_files_detail:'（含 {0} 个本地文件）', export_missing_recordings_detail:'（另含 {0} 个补充录音）', export_failed:'导出失败：', confirm_import_zip_overwrite:'导入 ZIP 备份将覆盖当前数据，是否继续？', parsing_zip_backup:'正在解析 ZIP 备份…', import_progress:'正在导入备份 {0}/{1}…', import_file_unreadable:'无法读取所选文件（大小为 0），请从系统文件选择器的“下载”目录中选择 ZIP', backup_missing_metadata:'备份中缺少 metadata.json', missing_recordings_manifest_invalid:'补充录音清单无效', missing_recordings_manifest_invalid_id:'补充录音清单包含无效 ID', recording_backup_index_invalid:'录音备份索引无效', recording_backup_chunk_invalid:'录音 {0} 的第 {1} 个备份分块无效', import_complete_files:'导入完成，共恢复 {0} 个文件', import_failed:'导入失败：',
             indexeddb_unavailable:'IndexedDB 不可用', transaction_aborted:'事务被中止：{0}', unknown_reason:'未知原因', recording_transaction_failed:'录音事务失败', recording_transaction_aborted:'录音事务被中止', class_file_transaction_failed:'课堂文件事务失败', class_file_transaction_aborted:'课堂文件事务被中止', recording_storage_module_not_loaded:'录音存储模块未加载', class_lecture_content_empty:'课堂讲义内容为空', data_structure_corrupt:'数据结构损坏：books/papers 不是数组'
         });
         Object.assign(I18N.en, {
@@ -7005,7 +7007,7 @@
             local_recording_chunk_corrupt:'Local recording chunk {0} is corrupted', recording_source_size_failed:'Could not verify the recording source size', cloud_recording_manifest_invalid:'The cloud recording manifest is invalid', cloud_recording_chunk_invalid:'Cloud recording chunk {0} is invalid', cloud_recording_chunk_hash_failed:'Cloud recording chunk {0} failed verification', delete_cloud_recording_manifest_failed:'Failed to delete cloud recording manifest: {0}', delete_cloud_recording_chunk_failed:'Failed to delete cloud recording chunk: {0}', delete_legacy_cloud_recording_failed:'Failed to delete legacy cloud recording: {0}',
             confirm_empty_local_overwrite_cloud:'Local data is empty. Overwrite non-empty cloud data?', upload_cancelled:'Upload cancelled', recording_not_fully_saved:'Recording is not fully saved: {0}', sync_skipped_class_items:'; {0} class materials missing locally were skipped; existing cloud copies were kept', sync_progress_materials:'Uploading class materials {0}/{1}…', sync_progress_lectures:'Uploading lectures and note pages…', sync_progress_pages:'Uploading note pages {0}/{1}…', sync_progress_metadata:'Publishing cloud index…', sync_progress_files:'Uploading files {0}/{1}…', upload_timeout:'Upload timed out: {0}', restore_progress_files:'Restoring files {0}/{1}…', restore_progress_pages:'Restoring note pages {0}/{1}…', restore_notebook_failed_detail:', {0} note pages could not be fetched from the cloud', cloud_index_repaired:'Cloud index repaired', count_lectures:'{0} lectures', count_abstracts:'{0} abstracts', count_class_materials:'{0} class materials', count_exercise_files:'{0} exercise files', count_note_pages:'{0} note pages', count_note_media:'{0} note media files', confirm_empty_cloud_overwrite_local:'Cloud data is empty. Overwrite local data?', restore_cancelled:'Restore cancelled', restore_notebook_detail:', plus {0} note pages and {1} media files',
             backup_file_too_large:'Backup file is too large', compressed_zip_unsupported:'Compressed ZIP entries are not supported', zip_descriptor_unsupported:'ZIP data descriptors are not supported', recording_backup_source_size_invalid:'Invalid recording backup source size: {0}', recording_backup_manifest_invalid:'Invalid recording backup manifest: {0}', recording_backup_chunk_missing:'Backup chunk {1} is missing for recording {0}', recording_backup_length_failed:'Recording backup length verification failed: {0}', unknown_recording_backup_source:'Unknown recording backup source: {0}', legacy_recording_missing:'Legacy recording is missing: {0}', recording_backup_chunk_length_failed:'Recording backup chunk length verification failed: {0}', recording_backup_chunk_missing_simple:'Recording backup chunk is missing: {0}', recording_has_no_backup_data:'Recording has no data to back up: {0}', stop_recording_before_backup:'Stop recording before creating a backup', packing_zip_backup:'Packing ZIP backup…', export_progress:'Packing ZIP backup… {0} files written', export_native_open_failed:'Could not create the ZIP file in Downloads', export_native_write_failed:'Failed to write the ZIP file', recording_added_during_export:'Recording added during export',
-            export_local_files_detail:' ({0} local files included)', export_missing_recordings_detail:' ({0} supplemental recordings included)', export_failed:'Export failed: ', confirm_import_zip_overwrite:'Importing this ZIP backup will overwrite current data. Continue?', parsing_zip_backup:'Parsing ZIP backup…', backup_missing_metadata:'metadata.json is missing from the backup', missing_recordings_manifest_invalid:'Supplemental recording manifest is invalid', missing_recordings_manifest_invalid_id:'Supplemental recording manifest contains an invalid ID', recording_backup_index_invalid:'Recording backup index is invalid', recording_backup_chunk_invalid:'Backup chunk {1} is invalid for recording {0}', import_complete_files:'Import complete: {0} files restored', import_failed:'Import failed: ',
+            export_local_files_detail:' ({0} local files included)', export_missing_recordings_detail:' ({0} supplemental recordings included)', export_failed:'Export failed: ', confirm_import_zip_overwrite:'Importing this ZIP backup will overwrite current data. Continue?', parsing_zip_backup:'Parsing ZIP backup…', import_progress:'Importing backup {0}/{1}…', import_file_unreadable:'The selected file cannot be read (size 0); pick the ZIP from the system file picker’s Downloads folder', backup_missing_metadata:'metadata.json is missing from the backup', missing_recordings_manifest_invalid:'Supplemental recording manifest is invalid', missing_recordings_manifest_invalid_id:'Supplemental recording manifest contains an invalid ID', recording_backup_index_invalid:'Recording backup index is invalid', recording_backup_chunk_invalid:'Backup chunk {1} is invalid for recording {0}', import_complete_files:'Import complete: {0} files restored', import_failed:'Import failed: ',
             indexeddb_unavailable:'IndexedDB is unavailable', transaction_aborted:'Transaction aborted: {0}', unknown_reason:'Unknown reason', recording_transaction_failed:'Recording transaction failed', recording_transaction_aborted:'Recording transaction was aborted', class_file_transaction_failed:'Class file transaction failed', class_file_transaction_aborted:'Class file transaction was aborted', recording_storage_module_not_loaded:'Recording storage module is not loaded', class_lecture_content_empty:'Class lecture content is empty', data_structure_corrupt:'Corrupted data structure: books/papers must be arrays'
         });
         Object.assign(I18N.fr, {
@@ -7024,7 +7026,7 @@
             local_recording_chunk_corrupt:"Le segment local d’enregistrement {0} est corrompu", recording_source_size_failed:"Impossible de vérifier la taille de l’enregistrement source", cloud_recording_manifest_invalid:"Le manifeste cloud de l’enregistrement est invalide", cloud_recording_chunk_invalid:'Le segment cloud {0} est invalide', cloud_recording_chunk_hash_failed:'Échec de vérification du segment cloud {0}', delete_cloud_recording_manifest_failed:'Échec de suppression du manifeste cloud : {0}', delete_cloud_recording_chunk_failed:'Échec de suppression du segment cloud : {0}', delete_legacy_cloud_recording_failed:"Échec de suppression de l’ancien enregistrement cloud : {0}",
             confirm_empty_local_overwrite_cloud:'Les données locales sont vides. Remplacer les données cloud non vides ?', upload_cancelled:'Envoi annulé', recording_not_fully_saved:"L’enregistrement n’est pas entièrement sauvegardé : {0}", sync_skipped_class_items:' ; {0} supports de cours absents localement ont été ignorés ; les copies cloud existantes ont été conservées', sync_progress_materials:'Envoi des supports de cours {0}/{1}…', sync_progress_lectures:'Envoi des cours et des pages de notes…', sync_progress_pages:'Envoi des pages de notes {0}/{1}…', sync_progress_metadata:'Publication de l’index cloud…', sync_progress_files:'Envoi des fichiers {0}/{1}…', upload_timeout:'Délai d’envoi dépassé : {0}', restore_progress_files:'Restauration des fichiers {0}/{1}…', restore_progress_pages:'Restauration des pages de notes {0}/{1}…', restore_notebook_failed_detail:', {0} pages de notes n’ont pas pu être récupérées du cloud', cloud_index_repaired:'Index cloud réparé', count_lectures:'{0} cours', count_abstracts:'{0} résumés', count_class_materials:'{0} supports de cours', count_exercise_files:'{0} fichiers d’exercices', count_note_pages:'{0} pages de notes', count_note_media:'{0} médias de notes', confirm_empty_cloud_overwrite_local:'Les données cloud sont vides. Remplacer les données locales ?', restore_cancelled:'Restauration annulée', restore_notebook_detail:', plus {0} pages de notes et {1} médias',
             backup_file_too_large:'Le fichier de sauvegarde est trop volumineux', compressed_zip_unsupported:'Les entrées ZIP compressées ne sont pas prises en charge', zip_descriptor_unsupported:'Les descripteurs de données ZIP ne sont pas pris en charge', recording_backup_source_size_invalid:'Taille de source de sauvegarde invalide : {0}', recording_backup_manifest_invalid:'Manifeste de sauvegarde invalide : {0}', recording_backup_chunk_missing:"Le segment {1} de l’enregistrement {0} manque dans la sauvegarde", recording_backup_length_failed:'Échec de vérification de la longueur de la sauvegarde : {0}', unknown_recording_backup_source:'Source de sauvegarde inconnue : {0}', legacy_recording_missing:'Ancien enregistrement manquant : {0}', recording_backup_chunk_length_failed:'Échec de vérification de la longueur du segment : {0}', recording_backup_chunk_missing_simple:'Segment de sauvegarde manquant : {0}', recording_has_no_backup_data:"L’enregistrement ne contient aucune donnée à sauvegarder : {0}", stop_recording_before_backup:"Arrêtez l’enregistrement avant de créer une sauvegarde", packing_zip_backup:'Création de la sauvegarde ZIP…', export_progress:'Création de la sauvegarde ZIP… {0} fichiers écrits', export_native_open_failed:'Impossible de créer le fichier ZIP dans Téléchargements', export_native_write_failed:'Échec de l’écriture du fichier ZIP', recording_added_during_export:'Enregistrement ajouté pendant l’exportation',
-            export_local_files_detail:' ({0} fichiers locaux inclus)', export_missing_recordings_detail:' ({0} enregistrements supplémentaires inclus)', export_failed:"Échec de l’exportation : ", confirm_import_zip_overwrite:'Importer cette sauvegarde ZIP remplacera les données actuelles. Continuer ?', parsing_zip_backup:'Analyse de la sauvegarde ZIP…', backup_missing_metadata:'metadata.json manque dans la sauvegarde', missing_recordings_manifest_invalid:'Le manifeste des enregistrements supplémentaires est invalide', missing_recordings_manifest_invalid_id:'Le manifeste contient un identifiant invalide', recording_backup_index_invalid:"L’index de sauvegarde des enregistrements est invalide", recording_backup_chunk_invalid:'Le segment {1} de l’enregistrement {0} est invalide', import_complete_files:'Importation terminée : {0} fichiers restaurés', import_failed:"Échec de l’importation : ",
+            export_local_files_detail:' ({0} fichiers locaux inclus)', export_missing_recordings_detail:' ({0} enregistrements supplémentaires inclus)', export_failed:"Échec de l’exportation : ", confirm_import_zip_overwrite:'Importer cette sauvegarde ZIP remplacera les données actuelles. Continuer ?', parsing_zip_backup:'Analyse de la sauvegarde ZIP…', import_progress:'Importation de la sauvegarde {0}/{1}…', import_file_unreadable:'Le fichier sélectionné est illisible (taille 0) ; choisissez le ZIP dans le dossier Téléchargements du sélecteur système', backup_missing_metadata:'metadata.json manque dans la sauvegarde', missing_recordings_manifest_invalid:'Le manifeste des enregistrements supplémentaires est invalide', missing_recordings_manifest_invalid_id:'Le manifeste contient un identifiant invalide', recording_backup_index_invalid:"L’index de sauvegarde des enregistrements est invalide", recording_backup_chunk_invalid:'Le segment {1} de l’enregistrement {0} est invalide', import_complete_files:'Importation terminée : {0} fichiers restaurés', import_failed:"Échec de l’importation : ",
             indexeddb_unavailable:'IndexedDB est indisponible', transaction_aborted:'Transaction interrompue : {0}', unknown_reason:'Raison inconnue', recording_transaction_failed:"Échec de la transaction d’enregistrement", recording_transaction_aborted:"La transaction d’enregistrement a été interrompue", class_file_transaction_failed:'Échec de la transaction du fichier de cours', class_file_transaction_aborted:'La transaction du fichier de cours a été interrompue', recording_storage_module_not_loaded:"Le module de stockage des enregistrements n’est pas chargé", class_lecture_content_empty:'Le contenu du cours est vide', data_structure_corrupt:'Structure de données corrompue : books/papers doivent être des tableaux'
         });
         Object.assign(I18N.zh, {
@@ -7474,7 +7476,15 @@
                 try {
                     const tx = fileDB.transaction('files', 'readonly');
                     const req = tx.objectStore('files').get(id);
-                    req.onsuccess = () => resolve(req.result?.data || null);
+                    req.onsuccess = () => {
+                        const record = req.result;
+                        // 大文本记录（见 saveFileTextBlob）按需转回字符串，调用方无感知
+                        if (record && record.textBlob && record.data instanceof Blob) {
+                            record.data.text().then(resolve, reject);
+                            return;
+                        }
+                        resolve(record?.data || null);
+                    };
                     req.onerror = () => reject(req.error);
                 } catch (e) {
                     fileDB = null;
@@ -7484,6 +7494,27 @@
             });
         }
         
+        // 大段文本（base64 形式的 PDF、照片、笔记媒体）以 Blob 形式存入 IndexedDB，
+        // 由浏览器的 blob 存储持有字节，不在 JS 堆里驻留整段字符串；getFileData 读取时
+        // 再转成字符串。ZIP 导入在 Boox 等低内存 WebView 上曾因此被系统杀掉。
+        const FILE_TEXT_BLOB_BYTES = 4 * 1024 * 1024;
+        async function saveFileTextBlob(id, blob) {
+            if (!await ensureFileDB()) throw new Error(i18n('indexeddb_unavailable'));
+            return new Promise((resolve, reject) => {
+                try {
+                    const tx = fileDB.transaction('files', 'readwrite');
+                    tx.objectStore('files').put({ id, data: blob, textBlob: true });
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                    tx.onabort = () => reject(new Error(i18n('transaction_aborted', tx.error?.message || i18n('unknown_reason'))));
+                } catch (e) {
+                    fileDB = null;
+                    fileDBReady = false;
+                    reject(e);
+                }
+            });
+        }
+
         async function deleteFileData(id) {
             if (!await ensureFileDB()) return;
             return new Promise((resolve, reject) => {
@@ -17999,8 +18030,17 @@
             input.value = '';
             if (!file) return;
             if (!confirm(i18n('confirm_import_zip_overwrite'))) return;
+            let lastImportProgressAt = Date.now();
+            const importProgress = (done, total) => {
+                const now = Date.now();
+                if (done < total && now - lastImportProgressAt < 2500) return;
+                lastImportProgressAt = now;
+                showToast(i18n('import_progress', done, total), 4000);
+            };
             try {
-                showToast(i18n('parsing_zip_backup'));
+                // 部分文件选择器（虚拟文档）返回不可读的文件，提前给出明确提示
+                if (!file.size) throw new Error(i18n('import_file_unreadable'));
+                showToast(i18n('parsing_zip_backup'), 4000);
                 const entries = await dataZipRead(file);
                 if (!entries['metadata.json']) throw new Error(i18n('backup_missing_metadata'));
                 const imported = JSON.parse(await dataZipText(entries['metadata.json']));
@@ -18074,13 +18114,20 @@
                 let restored = 0;
                 if (entries['idb/index.json']) {
                     const index = JSON.parse(await dataZipText(entries['idb/index.json']));
-                    for (const item of index) {
+                    for (let i = 0; i < index.length; i++) {
+                        const item = index[i];
+                        importProgress(i + 1, index.length);
                         const entry = entries[item.path];
                         if (!entry || item.id === undefined) continue;
                         let value;
                         if (item.kind === 'blob') value = new Blob([entry], { type: item.mime || 'application/octet-stream' });
                         else if (item.kind === 'json') value = JSON.parse(await dataZipText(entry));
-                        else value = await dataZipText(entry);
+                        else if (entry.size >= FILE_TEXT_BLOB_BYTES) {
+                            // 大段文本不解码成字符串，直接以 Blob 存入（见 saveFileTextBlob）
+                            await saveFileTextBlob(item.id, entry.slice(0, entry.size, 'text/plain'));
+                            restored++;
+                            continue;
+                        } else value = await dataZipText(entry);
                         await saveFileData(item.id, value);
                         restored++;
                     }
@@ -18153,10 +18200,10 @@
                 renderClassroomPage();
                 renderExercisesPage();
                 renderNotebooksPage?.();
-                showToast(i18n('import_complete_files', restored));
+                showToast(i18n('import_complete_files', restored), 6000);
             } catch (err) {
                 console.error('导入 ZIP 失败:', err);
-                showToast(i18n('import_failed') + err.message);
+                showToast(i18n('import_failed') + err.message, 6000);
             }
         }
 

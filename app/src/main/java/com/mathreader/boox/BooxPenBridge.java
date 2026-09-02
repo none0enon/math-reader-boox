@@ -2,6 +2,7 @@ package com.mathreader.boox;
 
 import android.app.Activity;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -84,6 +85,15 @@ public class BooxPenBridge {
     public BooxPenBridge(Activity activity, WebView webView) {
         this.activity = activity;
         this.webView = webView;
+        // TouchHelper.create 在任何安卓设备上都能成功构造，并不代表设备具备 Onyx 手写
+        // 服务。普通安卓手机若照样进入原生直渲染模式，会拦截 WebView 的触摸输入，
+        // 表现为笔记书写页所有按钮无法点击。因此只在 Onyx/BOOX 设备上启用。
+        if (!isOnyxDevice()) {
+            Log.i(TAG, "Not an Onyx device (" + Build.MANUFACTURER + "/" + Build.BRAND + "/"
+                    + Build.MODEL + "), native pen disabled");
+            sdkAvailable = false;
+            return;
+        }
         try {
             touchHelper = TouchHelper.create(webView, rawInputCallback);
             sdkAvailable = touchHelper != null;
@@ -91,6 +101,20 @@ public class BooxPenBridge {
             Log.w(TAG, "Onyx Pen SDK unavailable, fallback to plain WebView: " + t);
             sdkAvailable = false;
         }
+    }
+
+    private static boolean isOnyxDevice() {
+        String[] fields = { Build.MANUFACTURER, Build.BRAND, Build.MODEL, Build.PRODUCT, Build.DEVICE };
+        for (String field : fields) {
+            if (field == null) {
+                continue;
+            }
+            String value = field.toLowerCase(Locale.US);
+            if (value.contains("onyx") || value.contains("boox")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @JavascriptInterface

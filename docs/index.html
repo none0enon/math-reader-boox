@@ -4595,26 +4595,34 @@
             display: block;
             background: var(--bg-secondary);
         }
-        /* Suppress WebKit selection across the open editor, including the 56px left toolbar.
-           Keeping this off document/body preserves iOS synthesized clicks on notebook cards. */
-        #nbEditor.show,
-        #nbEditor.show * {
-            -webkit-user-select: none;
-            user-select: none;
-            -webkit-touch-callout: none;
+        /* 与阅读器 reader-pen-mode 使用同一套 iOS 防选区策略，但只在笔记编辑器
+           打开期间启用。覆盖 document 边缘和伪元素，避免 Pencil 从页面左下角越界时
+           命中 body / toolbar 文本后唤起 Safari 原生选区。 */
+        body.nb-editor-active,
+        body.nb-editor-active::before,
+        body.nb-editor-active::after,
+        body.nb-editor-active *,
+        body.nb-editor-active *::before,
+        body.nb-editor-active *::after {
+            -webkit-user-select: none !important;
+            user-select: none !important;
+            -webkit-touch-callout: none !important;
+            -webkit-tap-highlight-color: transparent !important;
         }
-        #nbEditor.show input,
-        #nbEditor.show textarea,
-        #nbEditor.show select,
-        #nbEditor.show [contenteditable="true"],
-        #nbEditor.show [contenteditable=""],
-        #nbEditor.show [contenteditable="plaintext-only"],
-        #nbEditor.show [contenteditable="true"] *,
-        #nbEditor.show [contenteditable=""] *,
-        #nbEditor.show [contenteditable="plaintext-only"] * {
-            -webkit-user-select: text;
-            user-select: text;
-            -webkit-touch-callout: default;
+        /* 只有已经明确获得焦点的输入控件才临时恢复原生编辑；未聚焦的
+           contenteditable 不能再成为 Pencil 触发浏览器选区的白名单漏洞。 */
+        body.nb-editor-active input:focus,
+        body.nb-editor-active textarea:focus,
+        body.nb-editor-active select:focus,
+        body.nb-editor-active [contenteditable="true"]:focus,
+        body.nb-editor-active [contenteditable=""]:focus,
+        body.nb-editor-active [contenteditable="plaintext-only"]:focus,
+        body.nb-editor-active [contenteditable="true"]:focus *,
+        body.nb-editor-active [contenteditable=""]:focus *,
+        body.nb-editor-active [contenteditable="plaintext-only"]:focus * {
+            -webkit-user-select: text !important;
+            user-select: text !important;
+            -webkit-touch-callout: default !important;
         }
         .nb-page-box {
             position: relative;
@@ -28480,7 +28488,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbState.redoStack = [];
             nbState.selection = null;
             nbState.bgImageCache = {};
+            document.body.classList.add('nb-editor-active');
             document.getElementById('nbEditor').classList.add('show');
+            nbForceClearNotebookNativeSelection();
             document.getElementById('nbTitle').textContent = nb.name;
             nbSetTool('pen');
             nbSelectBrush(nbState.brushIndex);
@@ -28498,7 +28508,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbHidePanel();
             nbHideOutline();
             nbClearSelection();
+            nbForceClearNotebookNativeSelection();
             document.getElementById('nbEditor').classList.remove('show');
+            document.body.classList.remove('nb-editor-active', 'nb-text-mode');
             nbState.notebookId = null;
             nbState.content = null;
             nbState.bgImageCache = {};
@@ -28878,6 +28890,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
         function nbSetTool(tool) {
             if (nbState.tool === tool && (tool === 'lasso' || tool === 'text')) tool = 'pen'; // 再点一次取消
+            if (tool !== 'text') nbBlurNotebookTextEditing();
             if (nbState.tool !== 'eraser') nbState.prevTool = nbState.tool;
             nbState.tool = tool;
             if (tool !== 'lasso') nbClearSelection();
@@ -28996,35 +29009,88 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return null;
         }
 
+        const NB_NATIVE_SELECTION_CONTROL = [
+            'input', 'textarea', 'select',
+            '[contenteditable="true"]', '[contenteditable=""]', '[contenteditable="plaintext-only"]'
+        ].join(',');
+
         function nbSelectionElement(node) {
             return node && (node.nodeType === 1 ? node : node.parentElement);
         }
 
-        function nbSelectionEditable(node) {
+        function nbNativeSelectionControlAt(node) {
             const el = nbSelectionElement(node);
             return el && typeof el.closest === 'function'
-                ? el.closest('input, textarea, select, [contenteditable="true"], ' +
-                    '[contenteditable=""], [contenteditable="plaintext-only"]')
+                ? el.closest(NB_NATIVE_SELECTION_CONTROL)
                 : null;
         }
 
-        function nbBlockEditorNativeSelection(e) {
-            if (nbSelectionEditable(e.target)) return;
-            if (e.cancelable !== false) e.preventDefault();
+        function nbFocusedNativeSelectionControlAt(node) {
+            const control = nbNativeSelectionControlAt(node);
+            const activeControl = nbNativeSelectionControlAt(document.activeElement);
+            return control && control === activeControl ? control : null;
         }
 
-        function nbClearEditorNativeSelection() {
+        function nbNotebookSelectionGuardActive() {
             const editor = document.getElementById('nbEditor');
+            return !!(document.body.classList.contains('nb-editor-active') &&
+                editor?.classList.contains('show'));
+        }
+
+        // 与 blockReaderNativeSelectionInPenMode 保持同一捕获阶段策略。
+        function nbBlockNotebookNativeSelection(e) {
+            if (!e || !nbNotebookSelectionGuardActive() ||
+                nbFocusedNativeSelectionControlAt(e.target)) return;
+            e.preventDefault();
+            if (typeof e.stopPropagation === 'function') e.stopPropagation();
+        }
+
+        function nbClearNotebookNativeSelection() {
+            if (!nbNotebookSelectionGuardActive()) return;
             const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
-            if (!editor?.classList.contains('show') || !selection?.rangeCount) return;
-            const anchorEditable = nbSelectionEditable(selection.anchorNode);
-            const focusEditable = nbSelectionEditable(selection.focusNode);
-            if (anchorEditable && anchorEditable === focusEditable) return;
-            const anchor = nbSelectionElement(selection.anchorNode);
-            const focus = nbSelectionElement(selection.focusNode);
-            if ((anchor && editor.contains(anchor)) || (focus && editor.contains(focus))) {
+            if (!selection || !selection.rangeCount) return;
+            const anchorControl = nbFocusedNativeSelectionControlAt(selection.anchorNode);
+            const focusControl = nbFocusedNativeSelectionControlAt(selection.focusNode);
+            if (anchorControl && anchorControl === focusControl) return;
+            try { selection.removeAllRanges(); } catch (e) {}
+        }
+
+        let _nbNativeSelectionClearTimer = null;
+        function nbScheduleNotebookNativeSelectionClear() {
+            clearTimeout(_nbNativeSelectionClearTimer);
+            _nbNativeSelectionClearTimer = setTimeout(() => {
+                _nbNativeSelectionClearTimer = null;
+                nbClearNotebookNativeSelection();
+            }, 50);
+        }
+
+        function nbForceClearNotebookNativeSelection() {
+            const editor = document.getElementById('nbEditor');
+            const activeControl = nbNativeSelectionControlAt(document.activeElement);
+            if (activeControl && editor?.contains(activeControl)) {
+                try { activeControl.blur(); } catch (e) {}
+            }
+            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+            if (selection?.rangeCount) {
                 try { selection.removeAllRanges(); } catch (e) {}
             }
+        }
+
+        function nbBlurNotebookTextEditing() {
+            const activeControl = nbNativeSelectionControlAt(document.activeElement);
+            if (activeControl?.closest('#nbTextLayer')) {
+                try { activeControl.blur(); } catch (e) {}
+                nbForceClearNotebookNativeSelection();
+            }
+        }
+
+        function nbBlurNotebookControlOnOutsidePointer(e) {
+            if (!nbNotebookSelectionGuardActive()) return;
+            const activeControl = nbNativeSelectionControlAt(document.activeElement);
+            if (!activeControl || !document.getElementById('nbEditor')?.contains(activeControl)) return;
+            if (nbNativeSelectionControlAt(e.target) === activeControl) return;
+            try { activeControl.blur(); } catch (err) {}
+            nbForceClearNotebookNativeSelection();
         }
 
         function nbInitCanvasEvents() {
@@ -29036,15 +29102,21 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             c.addEventListener('pointerup', nbPointerUp);
             c.addEventListener('pointercancel', nbPointerUp);
             c.addEventListener('contextmenu', e => e.preventDefault());
-            const editor = document.getElementById('nbEditor');
             ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
-                editor.addEventListener(type, nbBlockEditorNativeSelection, true);
+                document.addEventListener(type, nbBlockNotebookNativeSelection, true);
             });
-            document.addEventListener('selectionchange', nbClearEditorNativeSelection, true);
+            document.addEventListener('selectionchange', nbClearNotebookNativeSelection, true);
+            document.addEventListener('mouseup', nbScheduleNotebookNativeSelectionClear, true);
+            document.addEventListener('touchend', nbScheduleNotebookNativeSelectionClear, true);
+            document.addEventListener('touchcancel', nbScheduleNotebookNativeSelectionClear, true);
+            document.addEventListener('pointerup', nbScheduleNotebookNativeSelectionClear, true);
+            document.addEventListener('pointercancel', nbScheduleNotebookNativeSelectionClear, true);
+            document.addEventListener('pointerdown', nbBlurNotebookControlOnOutsidePointer, true);
         }
 
         function nbPointerDown(e) {
             if (e.button === 2) return;
+            nbBlurNotebookTextEditing();
             nbHidePanel();
             nbHideOutline();
             nbHideTextToolbar();

@@ -4532,18 +4532,32 @@
             background: var(--bg-secondary);
             display: none;
             flex-direction: column;
+            /* 顶栏实际高度由 nbLayout() 量测后写入，窄屏换行为两行时左栏/画布区随之下移 */
+            --nb-topbar-h: 52px;
         }
         .nb-editor.show { display: flex; }
         .nb-topbar {
-            height: 52px; flex-shrink: 0;
+            min-height: 52px; flex-shrink: 0;
             background: var(--bg-primary);
             border-bottom: 1px solid var(--border-color, rgba(0,0,0,0.08));
             display: flex; align-items: center; justify-content: space-between;
             padding: 0 10px; gap: 8px; z-index: 3010;
         }
         .nb-topbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
-        .nb-topbar-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+        .nb-topbar-right, .nb-topbar-nav { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
         .nb-title { font-size: 15px; font-weight: 700; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+        /* 手机等窄屏：笔刷/橡皮/撤销重做换行到第二行；退出、标题与翻页留在首行，
+           顶栏不再横向溢出屏幕，退出与下一页按钮始终可点 */
+        @media (max-width: 640px) {
+            .nb-topbar { flex-wrap: wrap; padding: 4px 8px; row-gap: 2px; column-gap: 6px; }
+            .nb-topbar-left { order: 0; min-height: 40px; }
+            .nb-topbar-nav { order: 1; min-height: 40px; }
+            .nb-topbar-nav .nb-tb-sep { display: none; }
+            .nb-topbar-right { order: 2; flex: 1 1 100%; justify-content: center; gap: 6px; min-height: 40px; }
+            .nb-title { max-width: none; }
+            .nb-topbar .nb-tb-btn, .nb-topbar .nb-brush-btn { width: 36px; height: 36px; }
+            .nb-pageno { padding: 6px 8px; }
+        }
         .nb-tb-btn {
             width: 38px; height: 38px; border: none; background: none; border-radius: 10px;
             display: flex; align-items: center; justify-content: center; cursor: pointer;
@@ -4569,7 +4583,7 @@
 
         /* ---------- 左栏 ---------- */
         .nb-leftbar {
-            position: absolute; left: 0; top: 52px; bottom: 0; width: 56px;
+            position: absolute; left: 0; top: var(--nb-topbar-h, 52px); bottom: 0; width: 56px;
             background: var(--bg-primary);
             border-right: 1px solid var(--border-color, rgba(0,0,0,0.08));
             display: flex; flex-direction: column; align-items: center;
@@ -4589,7 +4603,7 @@
 
         /* ---------- 画布区 ---------- */
         .nb-canvas-wrap {
-            position: absolute; left: 56px; right: 0; top: 52px; bottom: 0;
+            position: absolute; left: 56px; right: 0; top: var(--nb-topbar-h, 52px); bottom: 0;
             overflow: auto;
             display: block;
             background: var(--bg-secondary);
@@ -4608,6 +4622,13 @@
         #nbTextLayer { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; transform-origin: 0 0; }
         #nbTextLayer > * { pointer-events: auto; }
         body.nb-text-mode #nbTextLayer { cursor: text; }
+        /* iOS/iPadOS：书写区与工具栏禁止原生文本选择和长按呼出菜单，避免长按或 Pencil 抖动
+           唤起浏览器选区/放大镜（同阅读页画笔模式的处理）；正在编辑的文本框保留原生光标与选区 */
+        .nb-editor .nb-topbar, .nb-editor .nb-leftbar, .nb-editor .nb-canvas-wrap,
+        .nb-editor .nb-canvas-wrap *:not([contenteditable="true"]) {
+            -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+        }
+        .nb-editor .nb-textbox-inner[contenteditable="true"] { -webkit-user-select: text; user-select: text; }
 
         .nb-textbox {
             position: absolute;
@@ -4681,7 +4702,7 @@
 
         /* ---------- 页面大纲抽屉 ---------- */
         .nb-outline {
-            position: absolute; right: 0; top: 52px; bottom: 0; width: 330px; max-width: 85vw;
+            position: absolute; right: 0; top: var(--nb-topbar-h, 52px); bottom: 0; width: 330px; max-width: 85vw;
             background: var(--bg-primary);
             box-shadow: -4px 0 16px rgba(0,0,0,0.12);
             z-index: 3040; display: none; flex-direction: column; padding: 12px;
@@ -6134,6 +6155,8 @@
                 <button class="nb-tb-btn" id="nbRedoBtn" onclick="nbRedo()" title="重做" data-i18n="redo" data-i18n-attr="title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 014-4h12"/></svg>
                 </button>
+            </div>
+            <div class="nb-topbar-nav">
                 <div class="nb-tb-sep"></div>
                 <button class="nb-tb-btn" onclick="nbPrevPage()" title="上一页" data-i18n="prev_page" data-i18n-attr="title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
@@ -6961,7 +6984,7 @@
             local_class_material_missing:'本地课堂素材缺失：{0}', class_material_index_changed:'课堂素材索引已变化：{0}', class_note_content_missing:'课堂讲义内容缺失：{0}', class_note_index_changed:'课堂讲义索引已变化：{0}', delete_cloud_class_material_failed:'删除云端课堂素材失败：{0}', delete_cloud_class_note_failed:'删除云端课堂讲义失败：{0}',
             notification_lecture_sync_title:'讲义同步完成', notification_lecture_sync_body:'讲义已同步到云端', notification_abstract_sync_title:'摘要同步完成', notification_abstract_sync_body:'摘要已同步到云端', network_endpoint_cors_error:'网络、Endpoint 或 CORS 配置错误', permission_key_error:'权限或密钥错误', bucket_not_found:'未找到存储桶',
             local_recording_chunk_corrupt:'本地录音分块 {0} 损坏', recording_source_size_failed:'无法确认录音源文件大小', cloud_recording_manifest_invalid:'云端录音清单无效', cloud_recording_chunk_invalid:'云端录音分块 {0} 无效', cloud_recording_chunk_hash_failed:'云端录音分块 {0} 校验失败', delete_cloud_recording_manifest_failed:'删除云端录音清单失败：{0}', delete_cloud_recording_chunk_failed:'删除云端录音分块失败：{0}', delete_legacy_cloud_recording_failed:'删除旧版云端录音失败：{0}',
-            confirm_empty_local_overwrite_cloud:'本地数据为空。确定要覆盖非空的云端数据吗？', upload_cancelled:'上传已取消', recording_not_fully_saved:'录音尚未完整保存：{0}', cloud_index_repaired:'云端索引已修复', count_lectures:'{0} 篇讲义', count_abstracts:'{0} 篇摘要', count_class_materials:'{0} 个课堂素材', count_exercise_files:'{0} 个习题文件', count_note_pages:'{0} 页笔记', count_note_media:'{0} 个笔记媒体', confirm_empty_cloud_overwrite_local:'云端数据为空。确定要覆盖本地数据吗？', restore_cancelled:'恢复已取消', restore_notebook_detail:'，另恢复 {0} 页笔记和 {1} 个媒体文件',
+            confirm_empty_local_overwrite_cloud:'本地数据为空。确定要覆盖非空的云端数据吗？', upload_cancelled:'上传已取消', recording_not_fully_saved:'录音尚未完整保存：{0}', sync_skipped_class_items:'；{0} 个课堂素材在本机缺失已跳过，云端已有内容保持不变', cloud_index_repaired:'云端索引已修复', count_lectures:'{0} 篇讲义', count_abstracts:'{0} 篇摘要', count_class_materials:'{0} 个课堂素材', count_exercise_files:'{0} 个习题文件', count_note_pages:'{0} 页笔记', count_note_media:'{0} 个笔记媒体', confirm_empty_cloud_overwrite_local:'云端数据为空。确定要覆盖本地数据吗？', restore_cancelled:'恢复已取消', restore_notebook_detail:'，另恢复 {0} 页笔记和 {1} 个媒体文件',
             backup_file_too_large:'备份文件过大', compressed_zip_unsupported:'不支持压缩格式的 ZIP 条目', zip_descriptor_unsupported:'不支持带数据描述符的 ZIP 条目', recording_backup_source_size_invalid:'录音备份源大小无效：{0}', recording_backup_manifest_invalid:'录音备份清单无效：{0}', recording_backup_chunk_missing:'录音 {0} 的第 {1} 个备份分块缺失', recording_backup_length_failed:'录音备份长度校验失败：{0}', unknown_recording_backup_source:'未知的录音备份源：{0}', legacy_recording_missing:'旧版录音缺失：{0}', recording_backup_chunk_length_failed:'录音备份分块长度校验失败：{0}', recording_backup_chunk_missing_simple:'录音备份分块缺失：{0}', recording_has_no_backup_data:'录音没有可备份的数据：{0}', stop_recording_before_backup:'请先停止录音再备份', packing_zip_backup:'正在打包 ZIP 备份…', recording_added_during_export:'导出期间新增的录音',
             export_local_files_detail:'（含 {0} 个本地文件）', export_missing_recordings_detail:'（另含 {0} 个补充录音）', export_failed:'导出失败：', confirm_import_zip_overwrite:'导入 ZIP 备份将覆盖当前数据，是否继续？', parsing_zip_backup:'正在解析 ZIP 备份…', backup_missing_metadata:'备份中缺少 metadata.json', missing_recordings_manifest_invalid:'补充录音清单无效', missing_recordings_manifest_invalid_id:'补充录音清单包含无效 ID', recording_backup_index_invalid:'录音备份索引无效', recording_backup_chunk_invalid:'录音 {0} 的第 {1} 个备份分块无效', import_complete_files:'导入完成，共恢复 {0} 个文件', import_failed:'导入失败：',
             indexeddb_unavailable:'IndexedDB 不可用', transaction_aborted:'事务被中止：{0}', unknown_reason:'未知原因', recording_transaction_failed:'录音事务失败', recording_transaction_aborted:'录音事务被中止', class_file_transaction_failed:'课堂文件事务失败', class_file_transaction_aborted:'课堂文件事务被中止', recording_storage_module_not_loaded:'录音存储模块未加载', class_lecture_content_empty:'课堂讲义内容为空', data_structure_corrupt:'数据结构损坏：books/papers 不是数组'
@@ -6980,7 +7003,7 @@
             local_class_material_missing:'Local class material is missing: {0}', class_material_index_changed:'The class material index changed: {0}', class_note_content_missing:'Class lecture content is missing: {0}', class_note_index_changed:'The class lecture index changed: {0}', delete_cloud_class_material_failed:'Failed to delete cloud class material: {0}', delete_cloud_class_note_failed:'Failed to delete cloud class lecture: {0}',
             notification_lecture_sync_title:'Lecture sync complete', notification_lecture_sync_body:'The lecture was synced to the cloud', notification_abstract_sync_title:'Abstract sync complete', notification_abstract_sync_body:'The abstract was synced to the cloud', network_endpoint_cors_error:'Network, endpoint, or CORS configuration error', permission_key_error:'Permission or credential error', bucket_not_found:'Bucket not found',
             local_recording_chunk_corrupt:'Local recording chunk {0} is corrupted', recording_source_size_failed:'Could not verify the recording source size', cloud_recording_manifest_invalid:'The cloud recording manifest is invalid', cloud_recording_chunk_invalid:'Cloud recording chunk {0} is invalid', cloud_recording_chunk_hash_failed:'Cloud recording chunk {0} failed verification', delete_cloud_recording_manifest_failed:'Failed to delete cloud recording manifest: {0}', delete_cloud_recording_chunk_failed:'Failed to delete cloud recording chunk: {0}', delete_legacy_cloud_recording_failed:'Failed to delete legacy cloud recording: {0}',
-            confirm_empty_local_overwrite_cloud:'Local data is empty. Overwrite non-empty cloud data?', upload_cancelled:'Upload cancelled', recording_not_fully_saved:'Recording is not fully saved: {0}', cloud_index_repaired:'Cloud index repaired', count_lectures:'{0} lectures', count_abstracts:'{0} abstracts', count_class_materials:'{0} class materials', count_exercise_files:'{0} exercise files', count_note_pages:'{0} note pages', count_note_media:'{0} note media files', confirm_empty_cloud_overwrite_local:'Cloud data is empty. Overwrite local data?', restore_cancelled:'Restore cancelled', restore_notebook_detail:', plus {0} note pages and {1} media files',
+            confirm_empty_local_overwrite_cloud:'Local data is empty. Overwrite non-empty cloud data?', upload_cancelled:'Upload cancelled', recording_not_fully_saved:'Recording is not fully saved: {0}', sync_skipped_class_items:'; {0} class materials missing locally were skipped; existing cloud copies were kept', cloud_index_repaired:'Cloud index repaired', count_lectures:'{0} lectures', count_abstracts:'{0} abstracts', count_class_materials:'{0} class materials', count_exercise_files:'{0} exercise files', count_note_pages:'{0} note pages', count_note_media:'{0} note media files', confirm_empty_cloud_overwrite_local:'Cloud data is empty. Overwrite local data?', restore_cancelled:'Restore cancelled', restore_notebook_detail:', plus {0} note pages and {1} media files',
             backup_file_too_large:'Backup file is too large', compressed_zip_unsupported:'Compressed ZIP entries are not supported', zip_descriptor_unsupported:'ZIP data descriptors are not supported', recording_backup_source_size_invalid:'Invalid recording backup source size: {0}', recording_backup_manifest_invalid:'Invalid recording backup manifest: {0}', recording_backup_chunk_missing:'Backup chunk {1} is missing for recording {0}', recording_backup_length_failed:'Recording backup length verification failed: {0}', unknown_recording_backup_source:'Unknown recording backup source: {0}', legacy_recording_missing:'Legacy recording is missing: {0}', recording_backup_chunk_length_failed:'Recording backup chunk length verification failed: {0}', recording_backup_chunk_missing_simple:'Recording backup chunk is missing: {0}', recording_has_no_backup_data:'Recording has no data to back up: {0}', stop_recording_before_backup:'Stop recording before creating a backup', packing_zip_backup:'Packing ZIP backup…', recording_added_during_export:'Recording added during export',
             export_local_files_detail:' ({0} local files included)', export_missing_recordings_detail:' ({0} supplemental recordings included)', export_failed:'Export failed: ', confirm_import_zip_overwrite:'Importing this ZIP backup will overwrite current data. Continue?', parsing_zip_backup:'Parsing ZIP backup…', backup_missing_metadata:'metadata.json is missing from the backup', missing_recordings_manifest_invalid:'Supplemental recording manifest is invalid', missing_recordings_manifest_invalid_id:'Supplemental recording manifest contains an invalid ID', recording_backup_index_invalid:'Recording backup index is invalid', recording_backup_chunk_invalid:'Backup chunk {1} is invalid for recording {0}', import_complete_files:'Import complete: {0} files restored', import_failed:'Import failed: ',
             indexeddb_unavailable:'IndexedDB is unavailable', transaction_aborted:'Transaction aborted: {0}', unknown_reason:'Unknown reason', recording_transaction_failed:'Recording transaction failed', recording_transaction_aborted:'Recording transaction was aborted', class_file_transaction_failed:'Class file transaction failed', class_file_transaction_aborted:'Class file transaction was aborted', recording_storage_module_not_loaded:'Recording storage module is not loaded', class_lecture_content_empty:'Class lecture content is empty', data_structure_corrupt:'Corrupted data structure: books/papers must be arrays'
@@ -6999,7 +7022,7 @@
             local_class_material_missing:'Support de cours local manquant : {0}', class_material_index_changed:"L’index des supports de cours a changé : {0}", class_note_content_missing:'Contenu du cours manquant : {0}', class_note_index_changed:"L’index des cours a changé : {0}", delete_cloud_class_material_failed:'Échec de suppression du support cloud : {0}', delete_cloud_class_note_failed:'Échec de suppression du cours cloud : {0}',
             notification_lecture_sync_title:'Synchronisation du cours terminée', notification_lecture_sync_body:'Le cours a été synchronisé dans le cloud', notification_abstract_sync_title:'Synchronisation du résumé terminée', notification_abstract_sync_body:'Le résumé a été synchronisé dans le cloud', network_endpoint_cors_error:'Erreur de réseau, d’endpoint ou de configuration CORS', permission_key_error:'Erreur d’autorisation ou d’identifiants', bucket_not_found:'Bucket introuvable',
             local_recording_chunk_corrupt:"Le segment local d’enregistrement {0} est corrompu", recording_source_size_failed:"Impossible de vérifier la taille de l’enregistrement source", cloud_recording_manifest_invalid:"Le manifeste cloud de l’enregistrement est invalide", cloud_recording_chunk_invalid:'Le segment cloud {0} est invalide', cloud_recording_chunk_hash_failed:'Échec de vérification du segment cloud {0}', delete_cloud_recording_manifest_failed:'Échec de suppression du manifeste cloud : {0}', delete_cloud_recording_chunk_failed:'Échec de suppression du segment cloud : {0}', delete_legacy_cloud_recording_failed:"Échec de suppression de l’ancien enregistrement cloud : {0}",
-            confirm_empty_local_overwrite_cloud:'Les données locales sont vides. Remplacer les données cloud non vides ?', upload_cancelled:'Envoi annulé', recording_not_fully_saved:"L’enregistrement n’est pas entièrement sauvegardé : {0}", cloud_index_repaired:'Index cloud réparé', count_lectures:'{0} cours', count_abstracts:'{0} résumés', count_class_materials:'{0} supports de cours', count_exercise_files:'{0} fichiers d’exercices', count_note_pages:'{0} pages de notes', count_note_media:'{0} médias de notes', confirm_empty_cloud_overwrite_local:'Les données cloud sont vides. Remplacer les données locales ?', restore_cancelled:'Restauration annulée', restore_notebook_detail:', plus {0} pages de notes et {1} médias',
+            confirm_empty_local_overwrite_cloud:'Les données locales sont vides. Remplacer les données cloud non vides ?', upload_cancelled:'Envoi annulé', recording_not_fully_saved:"L’enregistrement n’est pas entièrement sauvegardé : {0}", sync_skipped_class_items:' ; {0} supports de cours absents localement ont été ignorés ; les copies cloud existantes ont été conservées', cloud_index_repaired:'Index cloud réparé', count_lectures:'{0} cours', count_abstracts:'{0} résumés', count_class_materials:'{0} supports de cours', count_exercise_files:'{0} fichiers d’exercices', count_note_pages:'{0} pages de notes', count_note_media:'{0} médias de notes', confirm_empty_cloud_overwrite_local:'Les données cloud sont vides. Remplacer les données locales ?', restore_cancelled:'Restauration annulée', restore_notebook_detail:', plus {0} pages de notes et {1} médias',
             backup_file_too_large:'Le fichier de sauvegarde est trop volumineux', compressed_zip_unsupported:'Les entrées ZIP compressées ne sont pas prises en charge', zip_descriptor_unsupported:'Les descripteurs de données ZIP ne sont pas pris en charge', recording_backup_source_size_invalid:'Taille de source de sauvegarde invalide : {0}', recording_backup_manifest_invalid:'Manifeste de sauvegarde invalide : {0}', recording_backup_chunk_missing:"Le segment {1} de l’enregistrement {0} manque dans la sauvegarde", recording_backup_length_failed:'Échec de vérification de la longueur de la sauvegarde : {0}', unknown_recording_backup_source:'Source de sauvegarde inconnue : {0}', legacy_recording_missing:'Ancien enregistrement manquant : {0}', recording_backup_chunk_length_failed:'Échec de vérification de la longueur du segment : {0}', recording_backup_chunk_missing_simple:'Segment de sauvegarde manquant : {0}', recording_has_no_backup_data:"L’enregistrement ne contient aucune donnée à sauvegarder : {0}", stop_recording_before_backup:"Arrêtez l’enregistrement avant de créer une sauvegarde", packing_zip_backup:'Création de la sauvegarde ZIP…', recording_added_during_export:'Enregistrement ajouté pendant l’exportation',
             export_local_files_detail:' ({0} fichiers locaux inclus)', export_missing_recordings_detail:' ({0} enregistrements supplémentaires inclus)', export_failed:"Échec de l’exportation : ", confirm_import_zip_overwrite:'Importer cette sauvegarde ZIP remplacera les données actuelles. Continuer ?', parsing_zip_backup:'Analyse de la sauvegarde ZIP…', backup_missing_metadata:'metadata.json manque dans la sauvegarde', missing_recordings_manifest_invalid:'Le manifeste des enregistrements supplémentaires est invalide', missing_recordings_manifest_invalid_id:'Le manifeste contient un identifiant invalide', recording_backup_index_invalid:"L’index de sauvegarde des enregistrements est invalide", recording_backup_chunk_invalid:'Le segment {1} de l’enregistrement {0} est invalide', import_complete_files:'Importation terminée : {0} fichiers restaurés', import_failed:"Échec de l’importation : ",
             indexeddb_unavailable:'IndexedDB est indisponible', transaction_aborted:'Transaction interrompue : {0}', unknown_reason:'Raison inconnue', recording_transaction_failed:"Échec de la transaction d’enregistrement", recording_transaction_aborted:"La transaction d’enregistrement a été interrompue", class_file_transaction_failed:'Échec de la transaction du fichier de cours', class_file_transaction_aborted:'La transaction du fichier de cours a été interrompue', recording_storage_module_not_loaded:"Le module de stockage des enregistrements n’est pas chargé", class_lecture_content_empty:'Le contenu du cours est vide', data_structure_corrupt:'Structure de données corrompue : books/papers doivent être des tableaux'
@@ -15918,26 +15941,43 @@
                     }
                     allowEmptyMetadataOverwrite = true;
                 }
-                // 课堂正文（录音、照片/文件、AI 讲义）必须全部先于 metadata 提交。
+                // 课堂正文（录音、照片/文件、AI 讲义）先于 metadata 提交。单个素材在本机缺失
+                // （仅存在于云端尚未下载、录音尚未完整保存等）或上传失败时只跳过该素材，不中止
+                // 整次手动同步：跳过项不会上传任何空正文；其云端已有的正文对象原样保留，云端索引
+                // 中的对应条目也由随后的 CAS 合并按云端副本保留（同 id 以云端为准，本机 pending
+                // 条目不会进入出站索引），因此不会被本机的空数据覆盖。
                 let uploadedMaterials = 0;
                 let uploadedClassroomNotes = 0;
+                const skippedClassroomItems = [];
+                const skipClassroomItem = (item, reason) => {
+                    skippedClassroomItems.push({ id: item?.id, name: item?.name || item?.title || '', reason });
+                    console.warn('[sync] 课堂素材已跳过，云端已有内容保持不变:', item?.id, reason);
+                };
                 for (const listKey of ['courses', 'seminars']) {
                     for (const folder of (appData.classroom?.[listKey] || [])) {
                         for (const session of (folder.sessions || [])) {
                             for (const mat of (session.sourceFolder || [])) {
-                                if (mat.type === 'recording') {
-                                    if (!await r2SyncRecording(mat)) {
-                                        throw new Error(i18n('recording_not_fully_saved', mat.id));
+                                try {
+                                    if (mat.type === 'recording') {
+                                        if (!await r2SyncRecording(mat)) {
+                                            skipClassroomItem(mat, i18n('recording_not_fully_saved', mat.id));
+                                        }
+                                    } else {
+                                        await r2SyncClassroomAsset(mat);
+                                        uploadedMaterials++;
                                     }
-                                } else {
-                                    await r2SyncClassroomAsset(mat);
-                                    uploadedMaterials++;
+                                } catch (err) {
+                                    skipClassroomItem(mat, (err && err.message) || String(err));
                                 }
                             }
                             for (const note of (session.notes || [])) {
                                 if (!note.contentKey) continue;
-                                await r2SyncClassroomNote(note);
-                                uploadedClassroomNotes++;
+                                try {
+                                    await r2SyncClassroomNote(note);
+                                    uploadedClassroomNotes++;
+                                } catch (err) {
+                                    skipClassroomItem(note, (err && err.message) || String(err));
+                                }
                             }
                         }
                     }
@@ -16050,7 +16090,10 @@
                     }
                 }
 
-                showToast(i18n('sync_done_detail', uploadedFiles, uploadedLectures, uploadedAbstracts));
+                showToast(i18n('sync_done_detail', uploadedFiles, uploadedLectures, uploadedAbstracts) +
+                    (skippedClassroomItems.length
+                        ? i18n('sync_skipped_class_items', skippedClassroomItems.length)
+                        : ''));
             } catch (err) {
                 console.error('Sync to R2 failed:', err);
                 showToast(i18n('toast_sync_failed') + err.message);
@@ -28496,8 +28539,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // ==================== 布局与渲染 ====================
         function nbLayout() {
+            const editor = document.getElementById('nbEditor');
             const wrap = document.getElementById('nbCanvasWrap');
-            if (!wrap || !document.getElementById('nbEditor').classList.contains('show')) return;
+            if (!wrap || !editor || !editor.classList.contains('show')) return;
+            // 顶栏在窄屏会换行为两行：左栏与画布区的顶部偏移跟随顶栏实际高度
+            const topbar = editor.querySelector('.nb-topbar');
+            if (topbar) editor.style.setProperty('--nb-topbar-h', topbar.offsetHeight + 'px');
             const availW = wrap.clientWidth, availH = wrap.clientHeight;
             if (availW <= 0 || availH <= 0) return;
             nbState.fitScale = Math.min(availW / NB_PAGE_W, availH / NB_PAGE_H);
@@ -28893,10 +28940,131 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             c.addEventListener('pointerup', nbPointerUp);
             c.addEventListener('pointercancel', nbPointerUp);
             c.addEventListener('contextmenu', e => e.preventDefault());
+            nbInitPencilModeTouch(c);
+        }
+
+        // ---------- iOS/iPadOS 原生选区拦截（同阅读页画笔模式） ----------
+        // Safari 在长按、Pencil 抖动或跨元素拖动时会尝试建立原生文本选区并弹出放大镜/菜单，
+        // 打断书写。编辑器显示期间，在捕获阶段拦截书写区与工具栏上的 selectstart / dragstart /
+        // contextmenu，并清掉已经形成的选区；正在编辑的文本框与输入控件不受影响。
+        function nbNativeSelectionGuardOwns(target) {
+            const editor = document.getElementById('nbEditor');
+            if (!editor || !editor.classList.contains('show') || !target) return false;
+            const el = target.nodeType === Node.TEXT_NODE ? target.parentElement : target;
+            if (!el || typeof el.closest !== 'function') return false;
+            if (el.closest('[contenteditable="true"], input, textarea, select')) return false;
+            return !!el.closest('#nbEditor .nb-topbar, #nbEditor .nb-leftbar, #nbCanvasWrap');
+        }
+        function nbBlockNativeSelection(e) {
+            if (!e || !nbNativeSelectionGuardOwns(e.target)) return;
+            e.preventDefault();
+            if (typeof e.stopPropagation === 'function') e.stopPropagation();
+        }
+        function nbClearNativeSelection() {
+            const editor = document.getElementById('nbEditor');
+            if (!editor || !editor.classList.contains('show')) return;
+            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+            if (!selection || !selection.rangeCount) return;
+            if (nbNativeSelectionGuardOwns(selection.anchorNode) || nbNativeSelectionGuardOwns(selection.focusNode)) {
+                selection.removeAllRanges();
+            }
+        }
+        ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
+            document.addEventListener(type, nbBlockNativeSelection, true);
+        });
+        document.addEventListener('selectionchange', nbClearNativeSelection, true);
+
+        // ---------- Apple Pencil 模式：手指单指滚动画布、双指缩放（同阅读页） ----------
+        // 画布 touch-action:none 以防 Safari 把 Pencil 竖向笔迹当成滚动并发 pointercancel，
+        // 因此 Pencil 模式下手指的滚动与缩放需手动实现。touchType==='stylus' 的触点是 Pencil，
+        // 交给 pointer 事件正常落笔；只有全部触点都是手指时才进入滚动/缩放。
+        const nbPencilTouch = { panActive: false, lastX: 0, lastY: 0, pinch: null };
+        function nbInitPencilModeTouch(c) {
+            const isStylus = t => !!t && t.touchType === 'stylus';
+            const fingersOf = e => Array.from(e.touches).filter(t => !isStylus(t));
+            const pinchGeom = fingers => ({
+                dist: Math.hypot(fingers[1].clientX - fingers[0].clientX, fingers[1].clientY - fingers[0].clientY),
+                cx: (fingers[0].clientX + fingers[1].clientX) / 2,
+                cy: (fingers[0].clientY + fingers[1].clientY) / 2
+            });
+            const resetPinchPreview = () => {
+                const box = document.getElementById('nbPageBox');
+                if (box) { box.style.transform = ''; box.style.transformOrigin = ''; }
+            };
+            c.addEventListener('touchstart', (e) => {
+                nbPencilTouch.panActive = false;
+                if (!applePencilMode) return;
+                const fingers = fingersOf(e);
+                if (fingers.length !== e.touches.length) return;   // 有 Pencil 参与 → 交给 pointer 事件
+                if (fingers.length === 1 && !nbPencilTouch.pinch) {
+                    nbPencilTouch.panActive = true;
+                    nbPencilTouch.lastX = fingers[0].clientX;
+                    nbPencilTouch.lastY = fingers[0].clientY;
+                } else if (fingers.length === 2) {
+                    const g = pinchGeom(fingers);
+                    const box = document.getElementById('nbPageBox');
+                    const br = box ? box.getBoundingClientRect() : { left: 0, top: 0 };
+                    nbPencilTouch.pinch = {
+                        startDist: Math.max(1, g.dist), startZoom: nbState.zoom, scale: 1,
+                        cx: g.cx, cy: g.cy, ox: g.cx - br.left, oy: g.cy - br.top
+                    };
+                    if (box) box.style.transformOrigin = nbPencilTouch.pinch.ox + 'px ' + nbPencilTouch.pinch.oy + 'px';
+                }
+            }, { passive: true });
+            c.addEventListener('touchmove', (e) => {
+                if (!applePencilMode) { nbPencilTouch.panActive = false; return; }
+                const fingers = fingersOf(e);
+                if (fingers.length !== e.touches.length) { nbPencilTouch.panActive = false; return; }
+                const p = nbPencilTouch.pinch;
+                if (p && fingers.length === 2) {
+                    const g = pinchGeom(fingers);
+                    const target = Math.max(0.5, Math.min(2, p.startZoom * (g.dist / p.startDist)));
+                    p.scale = target / p.startZoom;
+                    const box = document.getElementById('nbPageBox');
+                    if (box) box.style.transform = 'scale(' + p.scale + ')';
+                    e.preventDefault();
+                    return;
+                }
+                if (!nbPencilTouch.panActive || fingers.length !== 1) { nbPencilTouch.panActive = false; return; }
+                const t = fingers[0];
+                const dx = t.clientX - nbPencilTouch.lastX, dy = t.clientY - nbPencilTouch.lastY;
+                nbPencilTouch.lastX = t.clientX;
+                nbPencilTouch.lastY = t.clientY;
+                const wrap = document.getElementById('nbCanvasWrap');
+                if (wrap) { wrap.scrollLeft -= dx; wrap.scrollTop -= dy; }
+                e.preventDefault();
+            }, { passive: false });
+            const end = (e) => {
+                nbPencilTouch.panActive = false;
+                const p = nbPencilTouch.pinch;
+                if (!p || e.touches.length >= 2) return;
+                nbPencilTouch.pinch = null;
+                resetPinchPreview();
+                nbCommitPinchZoom(p);
+            };
+            c.addEventListener('touchend', end, { passive: true });
+            c.addEventListener('touchcancel', end, { passive: true });
+        }
+        // 双指缩放结束：按 5% 步进落到 nbZoomSet，并让捏合中心下的页面点保持在原屏幕位置
+        function nbCommitPinchZoom(p) {
+            const wrap = document.getElementById('nbCanvasWrap');
+            const box = document.getElementById('nbPageBox');
+            const pct = Math.round(p.startZoom * p.scale * 20) * 5;
+            if (!wrap || !box || pct === Math.round(nbState.zoom * 100)) return;
+            const before = nbDisplayScale();
+            const pageX = p.ox / before, pageY = p.oy / before;
+            nbZoomSet(pct);
+            const after = nbDisplayScale();
+            const r = box.getBoundingClientRect();
+            wrap.scrollLeft += (r.left + pageX * after) - p.cx;
+            wrap.scrollTop += (r.top + pageY * after) - p.cy;
         }
 
         function nbPointerDown(e) {
             if (e.button === 2) return;
+            // Apple Pencil 模式（同阅读页）：只有触控笔可以在画布上书写、擦除、套索与画图形；
+            // 手指等其它指针不落笔，改由上方的 touch 处理器用于滚动画布与双指缩放。
+            if (applePencilMode && !booxReaderIsPen(e)) return;
             nbHidePanel();
             nbHideOutline();
             nbHideTextToolbar();
@@ -30455,8 +30623,25 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const minDue = nbAt20(nbAddDays(new Date(), 1));   // 至少留到明晚
             return new Date(Math.max(planned.getTime(), minDue.getTime())).toISOString();
         }
+        // 复习记录的删除采用“墓碑”而非直接移除：云端 metadata 与本机按 id 合并并取 updatedAt
+        // 较新的一方，直接移除后下一次 CAS 合并或启动拉取会把云端仍存在的副本重新加回来，
+        // 表现为“删不掉”。墓碑保留 id 与归属，把 updatedAt 推到删除时刻，因而在所有设备上
+        // 都以删除为准；所有读取复习列表的地方一律通过 nbLiveReviews() 过滤墓碑。
+        function nbReviewIsDeleted(r) { return !!(r && (r.deleted === true || r.status === 'deleted')); }
+        function nbLiveReviews() { return (nbData().reviews || []).filter(r => !nbReviewIsDeleted(r)); }
+        function nbTombstoneReview(r) {
+            const now = new Date().toISOString();
+            for (const key of Object.keys(r)) {
+                if (!['id', 'notebookId', 'pageId', 'createdAt'].includes(key)) delete r[key];
+            }
+            r.status = 'deleted';
+            r.deleted = true;
+            r.deletedAt = now;
+            r.updatedAt = now;
+            r.quizzes = [];
+        }
         function nbFindReviewForPage(pageId) {
-            return nbData().reviews.find(r => r.pageId === pageId);
+            return nbLiveReviews().find(r => r.pageId === pageId);
         }
         function nbTouchReview(r) { r.updatedAt = new Date().toISOString(); }
 
@@ -30464,7 +30649,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function nbRefreshReviewStates() {
             const now = Date.now();
             let changed = false;
-            for (const r of nbData().reviews) {
+            for (const r of nbLiveReviews()) {
                 if (r.status !== 'pending' || !r.dueAt) continue;
                 const due = Date.parse(r.dueAt);
                 if (isNaN(due)) continue;
@@ -30512,7 +30697,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function renderNbReviewList() {
             const el = document.getElementById('nbReviewList');
             if (!el) return;
-            const reviews = nbData().reviews.slice();
+            const reviews = nbLiveReviews();
             document.getElementById('nbReviewCount').textContent = reviews.filter(r => r.status === 'pending').length;
             if (!reviews.length) {
                 el.innerHTML = `<div class="empty-state"><p>${i18n('review_empty_hint')}</p></div>`;
@@ -30611,7 +30796,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbReviewCardMenu(e, id) {
             closeLongPressMenu();
-            const r = nbData().reviews.find(x => x.id === id);
+            const r = nbFindReviewById(id);
             if (!r) return;
             const overlay = document.createElement('div');
             overlay.className = 'longpress-overlay';
@@ -30640,7 +30825,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function nbFindReviewById(id) {
-            return nbData().reviews.find(x => x.id === id);
+            return nbLiveReviews().find(x => x.id === id);
         }
 
         function nbDeleteReviewQuizById(id) {
@@ -30658,8 +30843,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function nbDeleteReviewQuiz(r) {
             if (!r || !confirm(i18n('confirm_delete_review_quiz'))) return;
             const reviews = nbData().reviews;
-            const idx = reviews.findIndex(x => x.id === r.id);
-            if (idx >= 0) reviews.splice(idx, 1);
+            // 同 id 的记录（含历史合并残留）全部置为墓碑，保证云端合并后不再复活
+            const targets = reviews.filter(x => x && x.id === r.id);
+            if (!targets.length) targets.push(r);
+            targets.forEach(nbTombstoneReview);
             saveData();
             nbUpdateReviewBtn();
             renderNbReviewList();
@@ -30799,6 +30986,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 else if (nbState.content && nbState.content.recognized) task += i18n('prompt_recognized_note', nbState.content.recognized.text);
                 content.push({ type: 'text', text: task });
                 const quizText = await callAI(sys, [{ role: 'user', content }]);
+                // 生成期间该复习已被删除（墓碑）→ 丢弃结果，不能把墓碑重新激活
+                if (nbReviewIsDeleted(r)) return;
                 const generatedAt = new Date().toISOString();
                 r.quizzes.push({
                     id: nbUid('quiz'),
@@ -30816,6 +31005,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 showToast(i18n('quiz_generated', isExtra ? i18n('practice') : nbStageName(stage)));
             } catch (e) {
                 console.error('[nb] Quiz 生成失败:', e);
+                if (nbReviewIsDeleted(r)) return;
                 r.genFailed = true;
                 nbTouchReview(r);
                 saveData();
@@ -31103,7 +31293,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // ---------- 复习列表点击 → 打开 quiz ----------
         function nbOpenReview(id) {
-            const r = nbData().reviews.find(x => x.id === id);
+            const r = nbFindReviewById(id);
             if (!r) return;
             if (r.status === 'invalid') {
                 if (confirm(i18n('confirm_restart_invalid_review'))) nbRestartReview(r);
@@ -31125,7 +31315,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function nbOpenReviewQuiz(reviewId, quizId, readOnly = false) {
-            const r = nbData().reviews.find(x => x.id === reviewId);
+            const r = nbFindReviewById(reviewId);
             const quiz = r && (r.quizzes || []).find(q => q.id === quizId);
             if (!r || !quiz) return;
             nbShowQuiz(r, quiz, readOnly || !!quiz.completedAt);
@@ -31191,7 +31381,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbSaveQuizDraftToReview(syncCloud = true) {
             if (!qzCurrentReviewId || qzCurrentReadOnly || !qzCanvasCtx) return false;
-            const r = nbData().reviews.find(x => x.id === qzCurrentReviewId);
+            const r = nbFindReviewById(qzCurrentReviewId);
             const quiz = r && (r.quizzes || []).find(q => q.id === qzCurrentQuizId);
             if (!r || !quiz || quiz.completedAt) return false;
             const canvas = document.getElementById('nbQuizFsCanvas');
@@ -31229,7 +31419,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbGoToReviewPageFs() {
             if (!qzCurrentReviewId) return;
-            const r = nbData().reviews.find(x => x.id === qzCurrentReviewId);
+            const r = nbFindReviewById(qzCurrentReviewId);
             if (!r) return;
             const nb = nbGetNotebook(r.notebookId);
             if (!nb) { showToast(i18n('deleted_notebook')); return; }
@@ -31240,7 +31430,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function nbGoToReviewPage(id) {
-            const r = nbData().reviews.find(x => x.id === id);
+            const r = nbFindReviewById(id);
             if (!r) return;
             const nb = nbGetNotebook(r.notebookId);
             if (!nb) { showToast(i18n('deleted_notebook')); return; }
@@ -31253,7 +31443,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 完成 Quiz：截取画布 → 发给 AI 评分 → 显示结果 → 推进复习流程
         async function nbCompleteQuizFs() {
             if (!qzCurrentReviewId) return;
-            const r = nbData().reviews.find(x => x.id === qzCurrentReviewId);
+            const r = nbFindReviewById(qzCurrentReviewId);
             if (!r) return;
             const quiz = (r.quizzes || []).find(q => q.id === qzCurrentQuizId);
             if (!quiz || quiz.completedAt) { nbCloseQuizFullscreen(); return; }

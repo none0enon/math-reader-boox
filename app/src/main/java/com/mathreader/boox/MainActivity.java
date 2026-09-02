@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.view.ViewGroup;
 import android.webkit.PermissionRequest;
@@ -28,15 +29,22 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.webkit.WebViewAssetLoader;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
@@ -44,7 +52,10 @@ public class MainActivity extends AppCompatActivity {
     // https 同源加载，localStorage / IndexedDB / ServiceWorker 才能正常持久化
     private static final String START_URL = "https://appassets.androidplatform.net/www/index.html";
     private static final int REQUEST_FILE_CHOOSER = 1001;
-    private static final int REQUEST_RECORD_AUDIO = 1002;
+    private static final int REQUEST_WEB_PERMISSION = 1002;
+    private static final int REQUEST_CAMERA_CAPTURE = 1003;
+    private static final int REQUEST_CAMERA_PERMISSION = 1004;
+    private static final String CAMERA_CACHE_DIR = "camera";
 
     private WebView webView;
     private BooxPenBridge penBridge;
@@ -52,6 +63,10 @@ public class MainActivity extends AppCompatActivity {
     private RecordingBridge recordingBridge;
     private ValueCallback<Uri[]> filePathCallback;
     private PermissionRequest pendingWebPermission;
+    /** 等待 CAMERA 运行时授权期间暂存的文件选择参数（授权失败时退回文件选择器） */
+    private WebChromeClient.FileChooserParams pendingChooserParams;
+    /** 正在拍摄的照片输出 URI（FileProvider） */
+    private Uri cameraOutputUri;
     private String adapterJs;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -169,6 +184,8 @@ public class MainActivity extends AppCompatActivity {
                     filePathCallback = null;
                 }
                 pendingWebPermission = null;
+                pendingChooserParams = null;
+                cameraOutputUri = null;
                 if (view.getParent() instanceof ViewGroup) {
                     ((ViewGroup) view.getParent()).removeView(view);
                 }
@@ -193,32 +210,59 @@ public class MainActivity extends AppCompatActivity {
                     filePathCallback.onReceiveValue(null);
                 }
                 filePathCallback = callback;
-                try {
-                    startActivityForResult(params.createIntent(), REQUEST_FILE_CHOOSER);
-                } catch (Exception e) {
-                    filePathCallback = null;
-                    Toast.makeText(MainActivity.this, "无法打开文件选择器", Toast.LENGTH_SHORT).show();
-                    return false;
+                pendingChooserParams = null;
+                if (wantsImageCapture(params)) {
+                    // 课堂「拍照」按钮对应 <input accept="image/*" capture>。params.createIntent()
+                    // 只会打开文件选择器（仅能上传已有照片）；这里改为启动系统相机。声明了
+                    // CAMERA 权限的应用必须先取得运行时授权，否则相机 Intent 会被拒绝。
+                    if (ContextCompat.checkSelfPermission(MainActivity.this,
+                            Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        if (launchCamera()) {
+                            return true;
+                        }
+                        Toast.makeText(MainActivity.this, R.string.camera_unavailable,
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        pendingChooserParams = params;
+                        ActivityCompat.requestPermissions(MainActivity.this,
+                                new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
+                        return true;
+                    }
                 }
-                return true;
+                if (launchFileChooser(params)) {
+                    return true;
+                }
+                filePathCallback = null;
+                return false;
             }
 
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
+                // 页面 getUserMedia：麦克风（课堂录音）与摄像头分别映射到 RECORD_AUDIO / CAMERA
+                List<String> missing = new ArrayList<>();
+                boolean supported = false;
                 for (String res : request.getResources()) {
-                    if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)) {
-                        if (ContextCompat.checkSelfPermission(MainActivity.this,
-                                Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                            request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-                        } else {
-                            pendingWebPermission = request;
-                            ActivityCompat.requestPermissions(MainActivity.this,
-                                    new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_RECORD_AUDIO);
-                        }
-                        return;
+                    String permission = androidPermissionFor(res);
+                    if (permission == null) {
+                        continue;
+                    }
+                    supported = true;
+                    if (ContextCompat.checkSelfPermission(MainActivity.this, permission)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        missing.add(permission);
                     }
                 }
-                super.onPermissionRequest(request);
+                if (!supported) {
+                    super.onPermissionRequest(request);
+                    return;
+                }
+                if (missing.isEmpty()) {
+                    request.grant(grantableWebResources(request));
+                    return;
+                }
+                pendingWebPermission = request;
+                ActivityCompat.requestPermissions(MainActivity.this,
+                        missing.toArray(new String[0]), REQUEST_WEB_PERMISSION);
             }
         });
 
@@ -270,6 +314,97 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** 页面权限资源 → Android 运行时权限；不支持的资源返回 null。 */
+    private static String androidPermissionFor(String resource) {
+        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) {
+            return Manifest.permission.RECORD_AUDIO;
+        }
+        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
+            return Manifest.permission.CAMERA;
+        }
+        return null;
+    }
+
+    /** 请求中已经取得对应 Android 权限、可以授予页面的资源。 */
+    private String[] grantableWebResources(PermissionRequest request) {
+        List<String> granted = new ArrayList<>();
+        for (String res : request.getResources()) {
+            String permission = androidPermissionFor(res);
+            if (permission != null && ContextCompat.checkSelfPermission(this, permission)
+                    == PackageManager.PERMISSION_GRANTED) {
+                granted.add(res);
+            }
+        }
+        return granted.toArray(new String[0]);
+    }
+
+    /** &lt;input type="file" accept="image/*" capture&gt;：页面要求直接拍照。 */
+    private static boolean wantsImageCapture(WebChromeClient.FileChooserParams params) {
+        if (params == null || !params.isCaptureEnabled()) {
+            return false;
+        }
+        String[] types = params.getAcceptTypes();
+        if (types == null || types.length == 0) {
+            return true;
+        }
+        for (String type : types) {
+            String t = type == null ? "" : type.trim();
+            if (t.isEmpty() || t.startsWith("image/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean launchFileChooser(WebChromeClient.FileChooserParams params) {
+        try {
+            startActivityForResult(params.createIntent(), REQUEST_FILE_CHOOSER);
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "open file chooser failed", e);
+            Toast.makeText(this, R.string.file_chooser_unavailable, Toast.LENGTH_SHORT).show();
+            return false;
+        }
+    }
+
+    /** 启动系统相机，照片写入应用缓存目录并经 FileProvider 授权；成功返回 true。 */
+    private boolean launchCamera() {
+        try {
+            File dir = new File(getCacheDir(), CAMERA_CACHE_DIR);
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                return false;
+            }
+            cleanupCameraCache(dir);
+            File photo = new File(dir, "IMG_"
+                    + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".jpg");
+            Uri output = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", photo);
+            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, output);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            cameraOutputUri = output;
+            startActivityForResult(intent, REQUEST_CAMERA_CAPTURE);
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "launch camera failed", e);
+            cameraOutputUri = null;
+            return false;
+        }
+    }
+
+    /** 页面读取完照片后文件仍留在缓存目录；启动相机前清掉一天前的旧照片。 */
+    private static void cleanupCameraCache(File dir) {
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return;
+        }
+        long cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000;
+        for (File f : files) {
+            if (f.isFile() && f.lastModified() < cutoff && !f.delete()) {
+                Log.w(TAG, "could not delete stale camera file " + f);
+            }
+        }
+    }
+
     private static long parseLongQuery(Uri uri, String key, long fallback) {
         try {
             String value = uri.getQueryParameter(key);
@@ -304,19 +439,51 @@ public class MainActivity extends AppCompatActivity {
             filePathCallback.onReceiveValue(
                     WebChromeClient.FileChooserParams.parseResult(resultCode, data));
             filePathCallback = null;
+            return;
+        }
+        if (requestCode == REQUEST_CAMERA_CAPTURE) {
+            Uri[] result = (resultCode == RESULT_OK && cameraOutputUri != null)
+                    ? new Uri[]{cameraOutputUri} : null;
+            cameraOutputUri = null;
+            if (filePathCallback != null) {
+                filePathCallback.onReceiveValue(result);
+                filePathCallback = null;
+            }
         }
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
                                            @NonNull int[] grantResults) {
-        if (requestCode == REQUEST_RECORD_AUDIO && pendingWebPermission != null) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                pendingWebPermission.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-            } else {
-                pendingWebPermission.deny();
-            }
+        if (requestCode == REQUEST_WEB_PERMISSION && pendingWebPermission != null) {
+            PermissionRequest request = pendingWebPermission;
             pendingWebPermission = null;
+            String[] grantable = grantableWebResources(request);
+            if (grantable.length > 0) {
+                request.grant(grantable);
+            } else {
+                request.deny();
+            }
+            return;
+        }
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            WebChromeClient.FileChooserParams params = pendingChooserParams;
+            pendingChooserParams = null;
+            if (filePathCallback == null) {
+                return;
+            }
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted && launchCamera()) {
+                return;
+            }
+            Toast.makeText(this, granted ? R.string.camera_unavailable : R.string.camera_permission_denied,
+                    Toast.LENGTH_LONG).show();
+            // 未授权或无法启动相机：退回系统文件选择器，仍可上传已有照片
+            if (params == null || !launchFileChooser(params)) {
+                filePathCallback.onReceiveValue(null);
+                filePathCallback = null;
+            }
             return;
         }
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);

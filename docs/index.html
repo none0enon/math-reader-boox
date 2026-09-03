@@ -4534,6 +4534,21 @@
             flex-direction: column;
         }
         .nb-editor.show { display: flex; }
+        /* iPadOS 笔记编辑器禁用原生选区；聚焦的编辑控件在下方恢复 */
+        #nbEditor.show,
+        #nbEditor.show * {
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+        #nbEditor.show input:focus,
+        #nbEditor.show select:focus,
+        #nbEditor.show .nb-textbox-inner:focus,
+        #nbEditor.show .nb-textbox-inner:focus * {
+            -webkit-user-select: text;
+            user-select: text;
+            -webkit-touch-callout: default;
+        }
         .nb-topbar {
             height: 52px; flex-shrink: 0;
             background: var(--bg-primary);

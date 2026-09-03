@@ -371,8 +371,6 @@ GitHub Actions 在同仓库 PR 和 `main` 更新后自动构建。默认分支�
 
 `versionCode` 随 `Build APK` workflow run 自动递增，版本号基数保存在仓库变量 `APK_VERSION_CODE_BASE`。不要降低该变量；重建 workflow 导致 run number 重新计数时，应先提高基数。
 
-来自 fork 的 PR 读不到仓库变量，`Build APK` 会改用占位基数 0 计算版本号，只用于验证构建能否通过；这类产物不会被 `Sign APK` 签名。
-
 本地构建需要 Android SDK，并能访问 `repo.boox.com`：
 
 ```bash

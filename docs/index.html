@@ -7012,7 +7012,7 @@
             time_used:'用时 {0}', long_press_regenerate_analysis:'长按解析可重新生成', long_press_wrong_hint:'长按错题可归档或删除', question_number:'第 {0} 题', click_redo:'点击重做', no_question_text:'无题目文本', confirm_regenerate_ai_analysis:'重新生成 AI 解析？', answer_image_unavailable:'无法获取作答图片', task_count:'{0} 个任务',
             prompt_ocr_all_text:'识别图片中的全部文字和数学公式。数学公式使用 LaTeX，只输出识别结果。', prompt_selected_math_with_question:'选中的数学内容：\n{0}\n\n用户问题：{1}', prompt_explain_selected_math:'请严格从数学角度解释以下选中内容：\n{0}', prompt_lasso_image_with_question:'请分析圈选图片中的数学内容，并回答：{0}', prompt_explain_lasso_image:'请严格从数学角度解释圈选图片中的内容。', prompt_selected_exercise_with_question:'选中的习题内容：\n{0}\n\n用户问题：{1}',
             prompt_exercise_parse_system:'你是数学试题识别助手。识别输入中的所有题目，保留完整题干、条件、选项和小问；数学公式用 LaTeX。严格只返回 JSON 字符串数组，每个元素是一道完整题目，不要输出代码围栏或说明。', prompt_exercise_all_pages:'以下 {0} 张图片按页面顺序组成一份习题。识别所有题目并按原顺序返回。', prompt_exercise_image:'识别图片中的全部数学题目。', prompt_exercise_pdf_pages:'以下 {0} 张图片按 PDF 页序排列。识别全部数学题目。', prompt_exercise_pdf_text:'从以下 PDF 文本中识别并整理全部数学题目。', prompt_continue_truncated_json:'上一个 JSON 数组被截断。只续写尚未输出的数组元素并以 ] 结束，不要重复已有内容或添加说明。',
-            prompt_grade_system:'你是严格的数学阅卷助手。根据题目与学生手写作答独立求解并评分。严格只返回可由 JSON.parse 解析的对象：{"score":0到10的数字,"correct":布尔值,"solution":"正确解法","rigor":"严谨性评价","knowledge_gaps":"知识缺口","similar_problem":"一道同类练习题","comment":"简洁具体的总评"}。数学公式使用 LaTeX，不要输出代码围栏。', prompt_grade_user:'题目：\n{0}\n\n请核对图片中的学生作答，给出评分与分析。', grade_comment:'**结论：** {0}\n\n**正确解法：**\n{1}\n\n**严谨性：**\n{2}\n\n**知识缺口：**\n{3}\n\n**同类练习：**\n{4}\n\n**点评：**\n{5}',
+            prompt_grade_system:'你是数学习题批改助手。输入是一道题目和学生的手写作答图片。先独立、完整地解出这道题，再逐行核对学生的作答，最后严格按下面的格式输出。除格式规定的内容外，不要输出任何其他文字：不写开场白、总评、鼓励、学习建议，也不写对思路、书写、严谨性或知识掌握情况的任何评价性、概括性描述。\n\n输出格式（四个标签按顺序各出现一次，标签名保持英文原样，标签之外不要有任何内容）：\n<score>0到10的整数</score>\n<solution>第一部分：完整解答</solution>\n<errors>第二部分：学生的笔误与错误推导</errors>\n<similar>第三部分：同类型的另一道题目</similar>\n\n评分：满分10分，只依据学生作答的正确性与完整性给分。学生未作答或字迹无法辨认时给0分，但其余三部分仍必须完整输出。分数只写在<score>标签内，其他部分不再提及分数。\n\n第一部分<solution>：给出完整、详细、不跳步的证明和计算。要求：\n- 每一步都要写出来，并写明该步成立的理由。不得使用“由归纳法得”“由xx性质得”“由xx定理得”“易证”“显然”“同理可得”“略”这类跳步写法。\n- 用到数学归纳法时，必须完整写出奠基步骤和归纳步骤：准确陈述归纳假设，并写出从n到n+1的全部推导过程。\n- 用到定理、引理、性质或公式时，必须完整写出它的陈述，逐条验证它的前提条件在本题中成立，再写出代入后的具体结果。\n- 计算必须写出每一次代数变形、每一次代入和化简，直到得到最终结果。不得只给结果不给过程。\n- 题目有多问时逐问完整解答；需要分情况时逐种情况完整讨论，不得合并或省略任何一种情况。\n- 输出前自行逐步验算，确保每一步推导和每一个结果都准确无误；不得编造题目中没有的条件。\n- 只写证明和计算本身，不写解题思路点评、方法总结或学习建议。\n\n第二部分<errors>：逐条列出学生作答中的笔误和错误推导。要求：\n- 笔误指抄写或书写层面的错误，例如符号、下标、系数、正负号写错，条件抄错，漏写或多写某一项。\n- 错误推导指逻辑或数学层面的错误，例如用错定理或公式、所用定理的前提不满足、计算错误、推理不成立、遗漏情况、循环论证。\n- 每一条按“学生原文（照抄学生写的内容）→ 错误所在 → 正确写法或正确推导”的形式写出，明确指出错在哪一步、为什么错，并给出这一步的正确形式。\n- 只列出学生实际写出的错误，不评价整体思路、书写、严谨性或知识掌握情况，不写任何总结性评语。\n- 没有发现任何笔误和错误推导时，只写“未发现笔误或错误推导”。\n- 学生未作答或字迹无法辨认时，只写“未作答或无法辨认”。\n\n第三部分<similar>：给出一道与原题同类型的新题目：考查同一知识点，使用同一解题方法，难度相当，但题设中的数值、函数、对象或条件与原题不同。只写完整题干，不写答案、解法或提示。\n\n语言：除数学公式外，全部使用中文。数学公式一律使用LaTeX：行内公式用$...$，单独成行的公式用$$...$$。不要使用Markdown代码围栏。', prompt_grade_user:'题目：\n{0}\n\n图片是学生对上述题目的手写作答。请先独立完整解题，再逐行核对图片中的作答，然后严格按规定格式输出 <score>、<solution>、<errors>、<similar> 四部分。', grade_comment:'**完整解答**\n{0}\n\n**笔误与错误推导**\n{1}\n\n**同类题目**\n{2}',
             prompt_wrong_item_context:'\n【错题 {0}】第 {1} 题（得分：{2}/10）\n题目：{3}\n', prompt_wrong_ai_comment:'AI 评语：{0}\n', prompt_single_wrong_context:'【错题】第 {0} 题（得分：{1}/10）\n题目：{2}\n', prompt_wrong_grade_analysis:'AI 评分与分析：\n{0}\n', prompt_wrong_images_user:'以上是选中错题的手写作答图片。\n\n用户问题：{0}'
         });
         Object.assign(I18N.en, {
@@ -7023,7 +7023,7 @@
             time_used:'Time {0}', long_press_regenerate_analysis:'Long-press the analysis to regenerate it', long_press_wrong_hint:'Long-press a wrong answer to archive or delete it', question_number:'Question {0}', click_redo:'Click to redo', no_question_text:'No question text', confirm_regenerate_ai_analysis:'Regenerate the AI analysis?', answer_image_unavailable:'Unable to retrieve the answer image', task_count:'{0} tasks',
             prompt_ocr_all_text:'Recognize all text and mathematical formulas in the image. Use LaTeX for formulas and return only the recognized content.', prompt_selected_math_with_question:'Selected mathematical content:\n{0}\n\nUser question: {1}', prompt_explain_selected_math:'Explain the following selected content strictly in mathematical terms:\n{0}', prompt_lasso_image_with_question:'Analyze the mathematical content in the selected image and answer: {0}', prompt_explain_lasso_image:'Explain the content in the selected image strictly in mathematical terms.', prompt_selected_exercise_with_question:'Selected exercise content:\n{0}\n\nUser question: {1}',
             prompt_exercise_parse_system:'You recognize mathematical exercises. Extract every problem from the input, preserving the full prompt, conditions, choices, and subparts. Use LaTeX for formulas. Return only a strict JSON array of strings, one complete problem per item, with no code fence or commentary.', prompt_exercise_all_pages:'These {0} images form one exercise set in page order. Recognize every problem and return them in the original order.', prompt_exercise_image:'Recognize every mathematical problem in this image.', prompt_exercise_pdf_pages:'These {0} images are ordered PDF pages. Recognize every mathematical problem.', prompt_exercise_pdf_text:'Recognize and organize every mathematical problem in the following PDF text.', prompt_continue_truncated_json:'The previous JSON array was truncated. Output only the remaining array items and end with ]. Do not repeat existing content or add commentary.',
-            prompt_grade_system:'You are a strict mathematics grader. Independently solve the problem and evaluate the student’s handwritten work. Return only a JSON.parse-compatible object: {"score":number from 0 to 10,"correct":boolean,"solution":"correct solution","rigor":"assessment of rigor","knowledge_gaps":"knowledge gaps","similar_problem":"one similar practice problem","comment":"concise, specific overall feedback"}. Use LaTeX for mathematics and no code fence.', prompt_grade_user:'Problem:\n{0}\n\nCheck the student’s handwritten answer in the image and provide a score and analysis.', grade_comment:'**Result:** {0}\n\n**Correct solution:**\n{1}\n\n**Rigor:**\n{2}\n\n**Knowledge gaps:**\n{3}\n\n**Similar practice:**\n{4}\n\n**Feedback:**\n{5}',
+            prompt_grade_system:'You are a mathematics exercise grader. The input is a problem and an image of the student’s handwritten work. First solve the problem independently and completely, then check the student’s work line by line, and finally answer strictly in the format below. Output nothing outside that format: no preamble, no overall verdict, no encouragement, no study advice, and no evaluative or summarizing remarks about the approach, presentation, rigor, or knowledge.\n\nOutput format (the four tags appear once each, in this order, with the tag names kept exactly as written and nothing outside the tags):\n<score>an integer from 0 to 10</score>\n<solution>Part 1: complete solution</solution>\n<errors>Part 2: the student’s slips of the pen and incorrect derivations</errors>\n<similar>Part 3: another problem of the same type</similar>\n\nScore: out of 10, based only on the correctness and completeness of the student’s work. Give 0 if there is no answer or the writing is illegible, but still output the other three parts in full. Write the score only inside the <score> tag and do not mention it anywhere else.\n\nPart 1 <solution>: a complete, detailed proof and calculation with no skipped steps. Requirements:\n- Write out every step and state the reason it holds. Never use shortcuts such as “by induction”, “by property X”, “by theorem X”, “it is easy to see”, “obviously”, “similarly”, or “omitted”.\n- When using mathematical induction, write out the base case and the inductive step in full: state the induction hypothesis precisely and show the entire derivation from n to n+1.\n- When using a theorem, lemma, property, or formula, state it in full, verify each of its hypotheses for this problem, and then write the concrete result after substitution.\n- Show every algebraic transformation, substitution, and simplification until the final result. Never give a result without its derivation.\n- Answer every sub-question in full. When cases are needed, treat every case completely; do not merge or omit any case.\n- Check every step and every result before answering so that all of it is accurate. Do not invent conditions that are not in the problem.\n- Write only the proof and calculation itself: no commentary on the approach, no method summary, no study advice.\n\nPart 2 <errors>: list, one by one, the student’s slips of the pen and incorrect derivations. Requirements:\n- A slip of the pen is a copying or writing error, such as a wrong symbol, subscript, coefficient, or sign, a miscopied condition, or a missing or extra term.\n- An incorrect derivation is a logical or mathematical error, such as a misapplied theorem or formula, an unmet hypothesis, a calculation error, an invalid inference, a missed case, or circular reasoning.\n- Write each item as “student’s original text (copied exactly as written) → what is wrong → the correct form or correct derivation”, naming the exact step, why it is wrong, and the correct form of that step.\n- List only errors the student actually wrote. Do not comment on the overall approach, presentation, rigor, or mastery, and do not write any summarizing remarks.\n- If there are no slips of the pen or incorrect derivations, write only “No slips of the pen or incorrect derivations found”.\n- If there is no answer or the writing is illegible, write only “No answer or illegible”.\n\nPart 3 <similar>: one new problem of the same type as the original: same topic, same solution method, comparable difficulty, but with different numbers, functions, objects, or conditions. Write only the complete problem statement, with no answer, solution, or hints.\n\nLanguage: write everything in English except the mathematics. Use LaTeX for all mathematics: $...$ for inline formulas and $$...$$ for displayed formulas. Do not use Markdown code fences.', prompt_grade_user:'Problem:\n{0}\n\nThe image is the student’s handwritten answer to this problem. First solve it independently and completely, then check the handwritten work line by line, and answer strictly in the required format with the four parts <score>, <solution>, <errors>, and <similar>.', grade_comment:'**Complete solution**\n{0}\n\n**Slips of the pen and incorrect derivations**\n{1}\n\n**Similar problem**\n{2}',
             prompt_wrong_item_context:'\n[Wrong answer {0}] Question {1} (score: {2}/10)\nProblem: {3}\n', prompt_wrong_ai_comment:'AI feedback: {0}\n', prompt_single_wrong_context:'[Wrong answer] Question {0} (score: {1}/10)\nProblem: {2}\n', prompt_wrong_grade_analysis:'AI grading and analysis:\n{0}\n', prompt_wrong_images_user:'The images above are the handwritten responses to the selected wrong answers.\n\nUser question: {0}'
         });
         Object.assign(I18N.fr, {
@@ -7034,7 +7034,7 @@
             time_used:'Durée {0}', long_press_regenerate_analysis:'Appuyez longuement sur l’analyse pour la régénérer', long_press_wrong_hint:'Appuyez longuement sur une erreur pour l’archiver ou la supprimer', question_number:'Question {0}', click_redo:'Touchez pour refaire', no_question_text:'Énoncé indisponible', confirm_regenerate_ai_analysis:'Régénérer l’analyse IA ?', answer_image_unavailable:'Impossible de récupérer l’image de la réponse', task_count:'{0} tâches',
             prompt_ocr_all_text:'Reconnais tout le texte et toutes les formules mathématiques de l’image. Utilise LaTeX pour les formules et renvoie uniquement le contenu reconnu.', prompt_selected_math_with_question:'Contenu mathématique sélectionné :\n{0}\n\nQuestion de l’utilisateur : {1}', prompt_explain_selected_math:'Explique le contenu sélectionné suivant uniquement en termes mathématiques :\n{0}', prompt_lasso_image_with_question:'Analyse le contenu mathématique de l’image sélectionnée et réponds à cette question : {0}', prompt_explain_lasso_image:'Explique le contenu de l’image sélectionnée uniquement en termes mathématiques.', prompt_selected_exercise_with_question:'Exercice sélectionné :\n{0}\n\nQuestion de l’utilisateur : {1}',
             prompt_exercise_parse_system:'Tu reconnais des exercices de mathématiques. Extrais tous les problèmes en conservant l’énoncé, les conditions, les choix et les sous-questions. Utilise LaTeX pour les formules. Renvoie uniquement un tableau JSON strict de chaînes, un problème complet par élément, sans bloc de code ni commentaire.', prompt_exercise_all_pages:'Ces {0} images forment un recueil d’exercices dans l’ordre des pages. Reconnais tous les problèmes et conserve leur ordre.', prompt_exercise_image:'Reconnais tous les problèmes mathématiques de cette image.', prompt_exercise_pdf_pages:'Ces {0} images sont des pages PDF ordonnées. Reconnais tous les problèmes mathématiques.', prompt_exercise_pdf_text:'Reconnais et organise tous les problèmes mathématiques du texte PDF suivant.', prompt_continue_truncated_json:'Le tableau JSON précédent a été tronqué. Renvoie uniquement les éléments restants et termine par ]. Ne répète rien et n’ajoute aucun commentaire.',
-            prompt_grade_system:'Tu es un correcteur strict en mathématiques. Résous indépendamment le problème et évalue la copie manuscrite. Renvoie uniquement un objet compatible avec JSON.parse : {"score":nombre de 0 à 10,"correct":booléen,"solution":"solution correcte","rigor":"évaluation de la rigueur","knowledge_gaps":"lacunes","similar_problem":"un exercice similaire","comment":"commentaire global concis et précis"}. Utilise LaTeX et aucun bloc de code.', prompt_grade_user:'Problème :\n{0}\n\nVérifie la réponse manuscrite de l’élève dans l’image, puis donne une note et une analyse.', grade_comment:'**Résultat :** {0}\n\n**Solution correcte :**\n{1}\n\n**Rigueur :**\n{2}\n\n**Lacunes :**\n{3}\n\n**Exercice similaire :**\n{4}\n\n**Commentaire :**\n{5}',
+            prompt_grade_system:'Tu es un correcteur d’exercices de mathématiques. L’entrée est un énoncé et l’image de la copie manuscrite de l’élève. Résous d’abord le problème de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format ci-dessous. N’écris rien en dehors de ce format : pas d’introduction, pas de verdict global, pas d’encouragement, pas de conseil de travail, et aucune remarque évaluative ou récapitulative sur la démarche, la présentation, la rigueur ou les connaissances.\n\nFormat de sortie (les quatre balises apparaissent une fois chacune, dans cet ordre, avec leurs noms conservés tels quels et rien en dehors des balises) :\n<score>un entier de 0 à 10</score>\n<solution>Partie 1 : solution complète</solution>\n<errors>Partie 2 : erreurs d’écriture et raisonnements erronés de l’élève</errors>\n<similar>Partie 3 : un autre exercice du même type</similar>\n\nNote : sur 10, uniquement selon l’exactitude et la complétude de la copie. Mets 0 s’il n’y a pas de réponse ou si l’écriture est illisible, mais fournis quand même les trois autres parties en entier. Écris la note uniquement dans la balise <score> et ne la mentionne nulle part ailleurs.\n\nPartie 1 <solution> : une démonstration et un calcul complets, détaillés, sans aucune étape sautée. Exigences :\n- Écris chaque étape et indique la raison pour laquelle elle est valable. N’utilise jamais de raccourcis tels que « par récurrence », « d’après la propriété X », « d’après le théorème X », « il est facile de voir », « évidemment », « de même » ou « omis ».\n- Pour un raisonnement par récurrence, rédige entièrement l’initialisation et l’hérédité : énonce précisément l’hypothèse de récurrence et développe tout le passage de n à n+1.\n- Pour tout théorème, lemme, propriété ou formule utilisé, énonce-le en entier, vérifie chacune de ses hypothèses dans ce problème, puis écris le résultat concret après substitution.\n- Détaille chaque transformation algébrique, chaque substitution et chaque simplification jusqu’au résultat final. Ne donne jamais un résultat sans sa dérivation.\n- Traite entièrement chaque sous-question. Lorsqu’une disjonction de cas est nécessaire, traite chaque cas complètement, sans fusionner ni omettre aucun cas.\n- Vérifie chaque étape et chaque résultat avant de répondre afin que tout soit exact. N’invente aucune condition absente de l’énoncé.\n- Écris uniquement la démonstration et le calcul : aucun commentaire sur la démarche, aucun résumé de méthode, aucun conseil de travail.\n\nPartie 2 <errors> : liste, une par une, les erreurs d’écriture et les raisonnements erronés de l’élève. Exigences :\n- Une erreur d’écriture est une faute de copie ou de rédaction : symbole, indice, coefficient ou signe erroné, condition mal recopiée, terme manquant ou en trop.\n- Un raisonnement erroné est une erreur logique ou mathématique : théorème ou formule mal appliqué, hypothèse non vérifiée, erreur de calcul, inférence invalide, cas oublié, raisonnement circulaire.\n- Rédige chaque point sous la forme « texte original de l’élève (recopié tel quel) → ce qui est faux → forme correcte ou dérivation correcte », en précisant l’étape exacte, pourquoi elle est fausse et la forme correcte de cette étape.\n- Ne liste que les erreurs réellement écrites par l’élève. Ne commente ni la démarche globale, ni la présentation, ni la rigueur, ni la maîtrise, et n’écris aucune remarque récapitulative.\n- S’il n’y a aucune erreur d’écriture ni raisonnement erroné, écris seulement « Aucune erreur d’écriture ni raisonnement erroné trouvé ».\n- S’il n’y a pas de réponse ou si l’écriture est illisible, écris seulement « Pas de réponse ou illisible ».\n\nPartie 3 <similar> : un nouvel exercice du même type que l’original : même notion, même méthode de résolution, difficulté comparable, mais avec des nombres, fonctions, objets ou conditions différents. Écris uniquement l’énoncé complet, sans réponse, solution ni indication.\n\nLangue : rédige tout en français, sauf les mathématiques. Utilise LaTeX pour toutes les mathématiques : $...$ pour les formules en ligne et $$...$$ pour les formules centrées. N’utilise pas de blocs de code Markdown.', prompt_grade_user:'Problème :\n{0}\n\nL’image est la réponse manuscrite de l’élève à ce problème. Résous-le d’abord de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format demandé avec les quatre parties <score>, <solution>, <errors> et <similar>.', grade_comment:'**Solution complète**\n{0}\n\n**Erreurs d’écriture et raisonnements erronés**\n{1}\n\n**Exercice du même type**\n{2}',
             prompt_wrong_item_context:'\n[Erreur {0}] Question {1} (note : {2}/10)\nProblème : {3}\n', prompt_wrong_ai_comment:'Commentaire IA : {0}\n', prompt_single_wrong_context:'[Erreur] Question {0} (note : {1}/10)\nProblème : {2}\n', prompt_wrong_grade_analysis:'Notation et analyse IA :\n{0}\n', prompt_wrong_images_user:'Les images ci-dessus sont les réponses manuscrites aux erreurs sélectionnées.\n\nQuestion de l’utilisateur : {0}'
         });
         Object.assign(I18N.zh, {
@@ -7098,7 +7098,7 @@
         function i18n(key, ...args) {
             const dict = I18N[currentLang] || I18N.zh;
             let text = dict[key] || I18N.zh[key] || key;
-            args.forEach((arg, idx) => { text = text.replace(new RegExp('\\{' + idx + '\\}', 'g'), String(arg)); });
+            args.forEach((arg, idx) => { const value = String(arg); text = text.replace(new RegExp('\\{' + idx + '\\}', 'g'), () => value); });
             return text;
         }
         function currentLocale() {
@@ -25088,27 +25088,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         ]
                     }];
 
-                    const result = await callAI(systemPrompt, msgContent, { maxTokens: 4096, temperature: 0.3 });
+                    const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
                     if (!result) { failed++; continue; }
 
-                    let grading;
-                    try {
-                        grading = robustParseJSONObject(result);
-                    } catch (e) {
-                        const scoreMatch = result.match(/(\d+)\s*[\/／]\s*10/);
-                        grading = {
-                            score: scoreMatch ? parseInt(scoreMatch[1]) : 5,
-                            correct: !/不正确|错误|incorrect|faux|fausse|erron/i.test(result),
-                            solution: '-',
-                            rigor: '-',
-                            knowledge_gaps: '-',
-                            similar_problem: '-',
-                            comment: result.replace(/```json|```/g, '').trim().substring(0, 1000)
-                        };
-                    }
-
+                    const grading = parseExerciseGradingResponse(result);
                     const score = Math.min(10, Math.max(0, Math.round(grading.score || 0)));
-                    const comment = i18n('grade_comment', grading.correct ? i18n('correct') : i18n('incorrect'), grading.solution || '-', grading.rigor || '-', grading.knowledge_gaps || '-', grading.similar_problem || '-', grading.comment || '-');
+                    const comment = i18n('grade_comment', grading.solution || '-', grading.errors || '-', grading.similar_problem || '-');
 
                     // 更新题目数据
                     q.status = 'done';
@@ -26172,6 +26157,46 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
 
             throw new Error(i18n('parse_json_object_failed'));
+        }
+
+        // 习题批改：解析 <score>/<solution>/<errors>/<similar> 标签格式的 AI 返回。
+        // 标签缺失或输出被截断时保留已有部分；退化为 JSON 或纯文本时也尽量提取分数。
+        function parseExerciseGradingResponse(text) {
+            const raw = String(text || '').replace(/```[a-zA-Z]*\s*/g, '').replace(/```/g, '').trim();
+            const tagNames = '(?:score|solution|errors|similar)';
+            const pick = (tag) => {
+                const re = new RegExp('<' + tag + '>([\\s\\S]*?)(?:</' + tag + '>|(?=<' + tagNames + '>)|$)', 'i');
+                const m = raw.match(re);
+                return m ? m[1].trim() : '';
+            };
+            const scoreOutOfTen = raw.match(/(\d+(?:\.\d+)?)\s*[\/／]\s*10/);
+            if (new RegExp('<' + tagNames + '>', 'i').test(raw)) {
+                const scoreMatch = pick('score').match(/\d+(?:\.\d+)?/);
+                return {
+                    score: scoreMatch ? parseFloat(scoreMatch[0]) : (scoreOutOfTen ? parseFloat(scoreOutOfTen[1]) : 0),
+                    solution: pick('solution'),
+                    errors: pick('errors'),
+                    similar_problem: pick('similar')
+                };
+            }
+            try {
+                const obj = robustParseJSONObject(raw);
+                if (obj && typeof obj === 'object' && (obj.solution || obj.errors || obj.similar_problem)) {
+                    return {
+                        score: Number(obj.score) || 0,
+                        solution: String(obj.solution || ''),
+                        errors: String(obj.errors || obj.mistakes || ''),
+                        similar_problem: String(obj.similar_problem || obj.similar || '')
+                    };
+                }
+            } catch (e) {}
+            console.warn('习题批改返回未按标签格式输出，按纯文本处理:', raw.substring(0, 200));
+            return {
+                score: scoreOutOfTen ? parseFloat(scoreOutOfTen[1]) : 5,
+                solution: raw,
+                errors: '',
+                similar_problem: ''
+            };
         }
 
         function splitQuestionsByNumber(text) {
@@ -27404,28 +27429,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     ]
                 }];
 
-                const result = await callAI(systemPrompt, msgContent, { maxTokens: 4096, temperature: 0.3 });
+                const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
                 if (!result) { showToast(i18n('toast_ai_return_parse_fail')); return; }
 
-                let grading;
-                try {
-                    grading = robustParseJSONObject(result);
-                } catch (e) {
-                    console.error('评分JSON解析失败, AI原始返回:', result);
-                    const scoreMatch = result.match(/(\d+)\s*[\/／]\s*10/);
-                    grading = {
-                        score: scoreMatch ? parseInt(scoreMatch[1]) : 5,
-                        correct: !/不正确|错误|incorrect|faux|fausse|erron/i.test(result),
-                        solution: '-',
-                        rigor: '-',
-                        knowledge_gaps: '-',
-                        similar_problem: '-',
-                        comment: result.replace(/```json|```/g, '').trim().substring(0, 1000)
-                    };
-                }
-
+                const grading = parseExerciseGradingResponse(result);
                 const score = Math.min(10, Math.max(0, Math.round(grading.score || 0)));
-                const comment = i18n('grade_comment', grading.correct ? i18n('correct') : i18n('incorrect'), grading.solution || '-', grading.rigor || '-', grading.knowledge_gaps || '-', grading.similar_problem || '-', grading.comment || '-');
+                const comment = i18n('grade_comment', grading.solution || '-', grading.errors || '-', grading.similar_problem || '-');
 
                 if (isWrong) {
                     // Update wrong question
@@ -27708,24 +27717,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     ]
                 }];
 
-                const result = await callAI(systemPrompt, msgContent, { maxTokens: 4096, temperature: 0.3 });
+                const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
                 if (!result) { showToast(i18n('toast_ai_return_parse_fail')); return; }
 
-                let grading;
-                try {
-                    grading = robustParseJSONObject(result);
-                } catch (e) {
-                    const scoreMatch = result.match(/(\d+)\s*[\/／]\s*10/);
-                    grading = {
-                        score: scoreMatch ? parseInt(scoreMatch[1]) : 5,
-                        correct: !/不正确|错误|incorrect|faux|fausse|erron/i.test(result),
-                        solution: '-', rigor: '-', knowledge_gaps: '-', similar_problem: '-',
-                        comment: result.replace(/```json|```/g, '').trim().substring(0, 1000)
-                    };
-                }
-
+                const grading = parseExerciseGradingResponse(result);
                 const score = Math.min(10, Math.max(0, Math.round(grading.score || 0)));
-                const comment = i18n('grade_comment', grading.correct ? i18n('correct') : i18n('incorrect'), grading.solution || '-', grading.rigor || '-', grading.knowledge_gaps || '-', grading.similar_problem || '-', grading.comment || '-');
+                const comment = i18n('grade_comment', grading.solution || '-', grading.errors || '-', grading.similar_problem || '-');
 
                 q.score = score;
                 q.aiComment = comment;

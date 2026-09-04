@@ -4609,6 +4609,22 @@
         #nbTextLayer > * { pointer-events: auto; }
         body.nb-text-mode #nbTextLayer { cursor: text; }
 
+        /* iOS PWA may start WebKit's native selection/callout gesture before
+           the canvas pointer stream. Keep the writing surface non-selectable;
+           a focused text box explicitly opts back into native text selection. */
+        #nbCanvasWrap,
+        #nbCanvasWrap * {
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+        #nbTextLayer .nb-textbox-inner:focus,
+        #nbTextLayer .nb-textbox-inner:focus * {
+            -webkit-user-select: text;
+            user-select: text;
+            -webkit-touch-callout: default;
+        }
+
         .nb-textbox {
             position: absolute;
             min-width: 40px; min-height: 24px; max-width: 900px;
@@ -28907,6 +28923,52 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return null;
         }
 
+        function nbSelectionNodeElement(node) {
+            if (!node) return null;
+            return node.nodeType === 1 ? node : node.parentElement;
+        }
+
+        function nbNodeIsInFocusedTextEditor(node) {
+            const active = document.activeElement;
+            const el = nbSelectionNodeElement(node);
+            return !!(active && active.matches && active.matches('#nbTextLayer .nb-textbox-inner')
+                && el && (el === active || active.contains(el)));
+        }
+
+        function nbWritingSurfaceOwnsTarget(target) {
+            const wrap = document.getElementById('nbCanvasWrap');
+            const el = nbSelectionNodeElement(target);
+            return !!(wrap && el && (el === wrap || wrap.contains(el))
+                && !nbNodeIsInFocusedTextEditor(el));
+        }
+
+        function nbBlockNativeSelection(e) {
+            const editor = document.getElementById('nbEditor');
+            if (!editor?.classList.contains('show') || !nbWritingSurfaceOwnsTarget(e.target)) return;
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function nbClearNativeSelection() {
+            const editor = document.getElementById('nbEditor');
+            const wrap = document.getElementById('nbCanvasWrap');
+            const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+            if (!editor?.classList.contains('show') || !wrap || !selection?.rangeCount) return;
+            if (nbNodeIsInFocusedTextEditor(selection.anchorNode)
+                    && nbNodeIsInFocusedTextEditor(selection.focusNode)) return;
+            const anchor = nbSelectionNodeElement(selection.anchorNode);
+            const focus = nbSelectionNodeElement(selection.focusNode);
+            if ((anchor && wrap.contains(anchor)) || (focus && wrap.contains(focus))) {
+                selection.removeAllRanges();
+            }
+        }
+
+        // Capture before WebKit's default long-press/Pencil handlers.
+        ['selectstart', 'dragstart', 'contextmenu'].forEach(type => {
+            document.addEventListener(type, nbBlockNativeSelection, true);
+        });
+        document.addEventListener('selectionchange', nbClearNativeSelection, true);
+
         function nbInitCanvasEvents() {
             const c = document.getElementById('nbCanvas');
             if (c._nbBound) return;
@@ -28916,6 +28978,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             c.addEventListener('pointerup', nbPointerUp);
             c.addEventListener('pointercancel', nbPointerUp);
             c.addEventListener('contextmenu', e => e.preventDefault());
+            // Some iOS PWA versions still begin a native selection from the
+            // legacy touch stream even after pointerdown.preventDefault().
+            c.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
         }
 
         function nbPointerDown(e) {

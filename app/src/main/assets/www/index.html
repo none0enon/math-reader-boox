@@ -18670,26 +18670,119 @@
             throw new Error(i18n('configure_api_first'));
         }
         
+        function isNativeAnthropicEndpoint(url) {
+            const value = String(url || '');
+            try {
+                if (new URL(value).hostname.toLowerCase() === 'api.anthropic.com') return true;
+            } catch (e) {}
+            return /\/messages(?:[/?#]|$)/i.test(value);
+        }
+
+        function extractOpenAIResponseText(data) {
+            const message = data?.choices?.[0]?.message;
+            if (!message) return null;
+
+            let content = message.content;
+            let hasThinking = !!(message.reasoning_content || message.reasoning);
+            if (Array.isArray(content)) {
+                const textParts = [];
+                content.forEach(part => {
+                    const type = String(part?.type || '').toLowerCase();
+                    const text = typeof part?.text === 'string'
+                        ? part.text
+                        : (typeof part?.content === 'string' ? part.content : '');
+                    if (type === 'thinking' || type === 'reasoning' || type === 'analysis') {
+                        if (text) hasThinking = true;
+                    } else if (text) {
+                        textParts.push(text);
+                    }
+                });
+                content = textParts.join('');
+            }
+
+            if (typeof content === 'string') {
+                content = content.replace(/<(?:think|thinking)>[\s\S]*?<\/(?:think|thinking)>/gi, () => {
+                    hasThinking = true;
+                    return '';
+                });
+                if (/<(?:think|thinking)>/i.test(content)) {
+                    hasThinking = true;
+                    content = content.replace(/<(?:think|thinking)>[\s\S]*$/i, '');
+                }
+                if (content.trim()) return content;
+            }
+
+            if (hasThinking) throw new Error(i18n('toast_content_gen_failed'));
+            return null;
+        }
+
+        const booxAiHttpPending = new Map();
+        let booxAiHttpSequence = 0;
+        window.__booxAiHttpComplete = function(requestId, resultJson) {
+            const pending = booxAiHttpPending.get(requestId);
+            if (!pending) return;
+            booxAiHttpPending.delete(requestId);
+            clearTimeout(pending.timer);
+            try {
+                const result = JSON.parse(resultJson || '{}');
+                if (result.error) throw new Error(result.error);
+                const responseBody = String(result.body || '');
+                const status = Number(result.status) || 0;
+                pending.resolve({
+                    ok: status >= 200 && status < 300,
+                    status,
+                    text: async () => responseBody,
+                    json: async () => JSON.parse(responseBody)
+                });
+            } catch (error) {
+                pending.reject(error);
+            }
+        };
+
+        function postOpenAIRequest(url, requestOptions) {
+            const bridge = window.BooxAiHttpNative;
+            if (!bridge || typeof bridge.post !== 'function') {
+                return fetch(url, requestOptions);
+            }
+            return new Promise((resolve, reject) => {
+                const requestId = `ai-${Date.now()}-${++booxAiHttpSequence}`;
+                const timer = setTimeout(() => {
+                    booxAiHttpPending.delete(requestId);
+                    reject(new Error('AI request timed out'));
+                }, 13 * 60 * 1000);
+                booxAiHttpPending.set(requestId, { resolve, reject, timer });
+                try {
+                    bridge.post(requestId, url, JSON.stringify(requestOptions.headers || {}),
+                        String(requestOptions.body || ''));
+                } catch (error) {
+                    clearTimeout(timer);
+                    booxAiHttpPending.delete(requestId);
+                    reject(error);
+                }
+            });
+        }
+
         async function doAIRequest(config, systemPrompt, messages, options = {}) {
-            // Gemini 原生渠道，或用户指定的"自定义"渠道都走 Gemini 协议（按用户要求）
-            const useGemini = isGeminiUrl(config.url) || config.provider === 'custom';
-            if (useGemini) {
+            // 协议只由明确端点决定。自定义 OpenAI 兼容 Claude 不能因为模型或
+            // 下拉框名称而切换成原生 Anthropic 请求头。
+            const nativeAnthropic = isNativeAnthropicEndpoint(config.url);
+            if (isGeminiUrl(config.url)) {
                 return await doGeminiRequest(config, systemPrompt, messages, options);
             }
 
+            if (nativeAnthropic) {
+                const claudeMessages = options.pdfAttachment
+                    ? await embedPdfForClaude(messages, options.pdfAttachment)
+                    : messages;
+                return await doClaudeRequest(config, systemPrompt, claudeMessages, options);
+            }
+
             // OpenAI / DeepSeek / Claude / 其他 OpenAI 兼容：用 chat/completions 协议
-            // 这些渠道中只有 Claude 支持原生 PDF，其他需要靠文本预提取兜底
+            // Chat Completions 没有统一的 PDF 块格式，先提取页面正文再发送。
             let finalMessages = messages;
             if (options.pdfAttachment) {
-                if (config.provider === 'claude' || /anthropic\.com/.test(config.url)) {
-                    // Claude Messages API: document 块
-                    finalMessages = await embedPdfForClaude(messages, options.pdfAttachment);
-                    return await doClaudeRequest(config, systemPrompt, finalMessages, options);
-                } else {
-                    // OpenAI / DeepSeek / 其他：不支持 PDF，回退文本提取
-                    const extractedText = await extractPdfTextAsFallback(options.pdfAttachment);
-                    finalMessages = injectPdfTextIntoLastUser(messages, extractedText);
-                }
+                const extractedText = await extractPdfTextAsFallback(options.pdfAttachment);
+                finalMessages = injectPdfTextIntoLastUser(messages, extractedText);
             }
 
             // 把内部统一的 audio 内容块转换为 OpenAI 的 input_audio 格式
@@ -18728,14 +18821,17 @@
                 stream: options.stream || false
             };
             
-            const response = await fetch(config.url, {
+            const requestOptions = {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': 'Bearer ' + config.key
                 },
                 body: JSON.stringify(requestBody)
-            });
+            };
+            const response = options.stream
+                ? await fetch(config.url, requestOptions)
+                : await postOpenAIRequest(config.url, requestOptions);
             
             if (!response.ok) {
                 const errText = await response.text().catch(() => '');
@@ -18747,7 +18843,7 @@
             }
             
             const data = await response.json();
-            return data.choices?.[0]?.message?.content || null;
+            return extractOpenAIResponseText(data);
         }
 
         // 把 PDF 文本提取，作为"附件文本"拼到 messages 最后一条 user 内容前
@@ -18764,24 +18860,30 @@
                     const pageText = tc.items.map(it => it.str).join(' ');
                     parts.push(`--- Page ${i} ---\n${pageText}`);
                 }
-                return parts.join('\n\n');
+                const text = parts.join('\n\n');
+                if (!parts.some(part => /\n\s*\S/.test(part))) {
+                    throw new Error(i18n('pdf_text_extraction_failed'));
+                }
+                return text;
             } catch (e) {
                 console.error('PDF 文本提取失败:', e);
-                return i18n('pdf_text_extraction_failed');
+                throw new Error(i18n('pdf_text_extraction_failed'));
             }
         }
 
         function injectPdfTextIntoLastUser(messages, extractedText) {
-            if (!messages || messages.length === 0) {
-                return [{ role: 'user', content: i18n('attached_pdf_text') + '\n' + extractedText }];
+            const out = Array.isArray(messages) ? messages.slice() : [];
+            let lastIdx = -1;
+            for (let i = out.length - 1; i >= 0; i--) {
+                if (out[i]?.role === 'user') { lastIdx = i; break; }
             }
-            const out = messages.slice();
-            const lastIdx = out.length - 1;
+            const prefix = i18n('attached_pdf_text', extractedText);
+            if (lastIdx < 0) return [...out, { role: 'user', content: prefix }];
+
             const last = out[lastIdx];
-            out[lastIdx] = {
-                role: last.role,
-                content: i18n('attached_pdf_text') + '\n' + extractedText + '\n\n---\n\n' + String(last.content || '')
-            };
+            out[lastIdx] = Array.isArray(last.content)
+                ? { ...last, content: [{ type: 'text', text: prefix }, ...last.content] }
+                : { ...last, content: prefix + '\n\n---\n\n' + String(last.content || '') };
             return out;
         }
 
@@ -19605,11 +19707,14 @@ ${i18n('prompt_lecture_gen')}`;
                 }
 
                 const result = await callAI(systemPrompt, [{ role: 'user', content: userMessage }], {
-                    maxTokens: 8192,
+                    maxTokens: 16000,
                     pdfAttachment
                 });
 
-                const contentText = result || i18n('toast_content_gen_failed');
+                if (!result || !String(result).trim()) {
+                    throw new Error(i18n('toast_content_gen_failed'));
+                }
+                const contentText = result;
                 chapter.status = 'ready';
                 chapter.generatedAt = new Date().toISOString();
                 chapter.updatedAt = chapter.generatedAt;

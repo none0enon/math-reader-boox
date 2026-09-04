@@ -6343,6 +6343,7 @@
     <script src="recording-storage.js"></script>
     <script src="classroom-storage.js"></script>
     <script src="recording-ai.js"></script>
+    <script src="exercise-upload.js"></script>
     <script>
         // ==================== Data Store ====================
         let appData = {
@@ -7006,6 +7007,7 @@
         });
         Object.assign(I18N.zh, {
             back:'返回', new:'新建', skip:'跳过', discard:'丢弃', edit:'编辑', rename:'重命名', grade_all:'全部评分', export_assignment:'导出作业', correct:'正确', incorrect:'不正确', answer:'作答', completed:'已完成', deleted:'已删除', unknown:'未知',
+            invalid_pdf_file:'该文件不是有效 PDF，实际内容可能是登录页或下载错误页。请登录原网站后重新下载作业 PDF。', toast_ai_no_valid_questions:'AI 未识别到有效题目',
             new_course_name_prompt:'课程名称：', new_seminar_name_prompt:'讲座名称：', click_new_subfolder:'点击空白处新建子目录', material_count:'{0} 个素材', note_count:'{0} 篇讲义', rename_prompt:'输入新名称：', default_session_title:'{0} 第 {1} 次', ai_notes:'AI 讲义', source_material_deleted:'源素材已删除', source_materials_count:'源素材（{0}）', no_materials_upload:'暂无素材，请使用下方按钮上传', download_note:'下载讲义', delete_note:'删除讲义',
             recovered_class_materials:'已恢复的课堂素材', recovered_recordings:'已恢复的录音', recovered_after_crash:'异常退出后恢复', class_not_found:'课堂不存在', recording_material_not_found:'录音素材不存在', source_material_not_found:'源素材不存在', photo_content_missing:'照片内容缺失', native_recording_read_failed:'读取原生录音失败（HTTP {0}）', native_recording_chunk_length_failed:'原生录音分块长度校验失败', no_persistent_storage:'没有可用的持久化存储', recording_storage_partial_export:'录音仅部分保存，已导出可恢复部分', recording_filename:'录音', ai_no_valid_note_content:'AI 未返回有效讲义内容', source_deleted_note_not_saved:'源素材已删除，讲义未保存', recording_duration_unreadable:'无法读取录音时长', recording_container_decode_failed:'无法解码录音容器', local_audio_split_unsupported:'当前环境不支持本地音频分段', local_audio_split_decode_failed:'本地音频分段解码失败', ai_temp_segment:'AI 临时分段', create_local_segment_cache_failed:'创建本地分段缓存失败：{0}', allocate_local_segment_cache_failed:'无法分配本地分段缓存', recording_chunk_missing:'录音分块 {0} 缺失', write_local_segment_cache_failed:'写入本地分段缓存失败：{0}', local_segment_cache_length_failed:'本地分段缓存长度校验失败', commit_local_segment_cache_failed:'提交本地分段缓存失败：{0}', local_recording_split_failed:'本地录音分段失败：{0}', read_local_recording_segment_failed:'读取本地录音分段失败（HTTP {0}）', local_recording_segment_length_failed:'本地录音分段长度校验失败', local_recording_segment_too_large:'本地录音分段过大', long_recording_not_fully_saved:'长录音尚未完整保存', recording_content_missing:'录音内容缺失', recording_split_module_not_loaded:'录音分段模块未加载', recording_split_empty:'录音分段结果为空', local_recording_segment_empty:'本地录音分段为空', prompt_recording_segment:'这是录音的第 {0}/{1} 段。请转写并生成本段的结构化纪要。', prompt_local_segment_label:'本地录音分段 {0}/{1}',
             task_question_progress:'{0} 个任务 · 已完成 {1}/{2} 题', wrong_count:'{0} 道错题', archived_count_suffix:' · 已归档 {0}', new_exercise_folder_prompt:'习题文件夹名称：', rename_task_prompt:'重命名任务：', rename_file_prompt:'重命名文件：', exercise_tasks:'习题任务', exercise_files_count:'习题文件（{0}）', click_upload_exercise_files:'点击右下角上传习题文件', exercise_group:'习题 {0}', select_exercise_group_first:'请先选择一个习题分组', question_short:'题 {0}', batch_summary:'已分配 {0}/{1} 页', assign_pages_to_groups:'请将页面分配到习题分组', batch_file_label:'{0}-习题{1}-第{2}-{3}页', batch_processing_failed:'习题 {0} 处理失败：', no_page_images:'没有可识别的页面图片', empty_text:'文本为空', parse_json_array_failed:'无法解析 JSON 数组', parse_json_object_failed:'无法解析 JSON 对象', parse_completed:'解析完成', pdf_lib_not_loaded:'pdf-lib 未加载',
@@ -7017,6 +7019,7 @@
         });
         Object.assign(I18N.en, {
             back:'Back', new:'New', skip:'Skip', discard:'Discard', edit:'Edit', rename:'Rename', grade_all:'Grade all', export_assignment:'Export assignment', correct:'Correct', incorrect:'Incorrect', answer:'Answer', completed:'Completed', deleted:'Deleted', unknown:'Unknown',
+            invalid_pdf_file:'This is not a valid PDF. It may be a login or download error page. Sign in to the source site and download the assignment PDF again.', toast_ai_no_valid_questions:'AI did not recognize any valid questions',
             new_course_name_prompt:'Course name:', new_seminar_name_prompt:'Seminar name:', click_new_subfolder:'Click the empty area to create a subfolder', material_count:'{0} materials', note_count:'{0} lectures', rename_prompt:'Enter a new name:', default_session_title:'{0} · Session {1}', ai_notes:'AI lectures', source_material_deleted:'Source material deleted', source_materials_count:'Source materials ({0})', no_materials_upload:'No materials yet. Use the buttons below to upload some.', download_note:'Download lecture', delete_note:'Delete lecture',
             recovered_class_materials:'Recovered class materials', recovered_recordings:'Recovered recordings', recovered_after_crash:'Recovered after an unexpected exit', class_not_found:'Class not found', recording_material_not_found:'Recording material not found', source_material_not_found:'Source material not found', photo_content_missing:'Photo content is missing', native_recording_read_failed:'Failed to read native recording (HTTP {0})', native_recording_chunk_length_failed:'Native recording chunk length verification failed', no_persistent_storage:'Persistent storage is unavailable', recording_storage_partial_export:'Only part of the recording was saved; the recoverable portion was exported', recording_filename:'recording', ai_no_valid_note_content:'The AI returned no valid lecture content', source_deleted_note_not_saved:'The source was deleted, so the lecture was not saved', recording_duration_unreadable:'Unable to read recording duration', recording_container_decode_failed:'Unable to decode the recording container', local_audio_split_unsupported:'Local audio splitting is not supported in this environment', local_audio_split_decode_failed:'Failed to decode audio for local splitting', ai_temp_segment:'AI temporary segment', create_local_segment_cache_failed:'Failed to create local segment cache: {0}', allocate_local_segment_cache_failed:'Unable to allocate local segment cache', recording_chunk_missing:'Recording chunk {0} is missing', write_local_segment_cache_failed:'Failed to write local segment cache: {0}', local_segment_cache_length_failed:'Local segment cache length verification failed', commit_local_segment_cache_failed:'Failed to commit local segment cache: {0}', local_recording_split_failed:'Local recording split failed: {0}', read_local_recording_segment_failed:'Failed to read local recording segment (HTTP {0})', local_recording_segment_length_failed:'Local recording segment length verification failed', local_recording_segment_too_large:'Local recording segment is too large', long_recording_not_fully_saved:'The long recording has not been fully saved', recording_content_missing:'Recording content is missing', recording_split_module_not_loaded:'Recording split module is not loaded', recording_split_empty:'Recording split returned no segments', local_recording_segment_empty:'Local recording segment is empty', prompt_recording_segment:'This is recording segment {0} of {1}. Transcribe it and create structured notes for this segment.', prompt_local_segment_label:'Local recording segment {0}/{1}',
             task_question_progress:'{0} tasks · {1}/{2} questions completed', wrong_count:'{0} wrong answers', archived_count_suffix:' · {0} archived', new_exercise_folder_prompt:'Exercise folder name:', rename_task_prompt:'Rename task:', rename_file_prompt:'Rename file:', exercise_tasks:'Exercise tasks', exercise_files_count:'Exercise files ({0})', click_upload_exercise_files:'Use the lower-right button to upload exercise files', exercise_group:'Exercise {0}', select_exercise_group_first:'Select an exercise group first', question_short:'Q{0}', batch_summary:'{0}/{1} pages assigned', assign_pages_to_groups:'Assign pages to exercise groups', batch_file_label:'{0}-exercise-{1}-pages-{2}-{3}', batch_processing_failed:'Failed to process exercise {0}: ', no_page_images:'No page images are available for recognition', empty_text:'Text is empty', parse_json_array_failed:'Unable to parse JSON array', parse_json_object_failed:'Unable to parse JSON object', parse_completed:'Parsing complete', pdf_lib_not_loaded:'pdf-lib is not loaded',
@@ -7028,6 +7031,7 @@
         });
         Object.assign(I18N.fr, {
             back:'Retour', new:'Nouveau', skip:'Ignorer', discard:'Écarter', edit:'Modifier', rename:'Renommer', grade_all:'Tout noter', export_assignment:'Exporter le devoir', correct:'Correct', incorrect:'Incorrect', answer:'Réponse', completed:'Terminé', deleted:'Supprimé', unknown:'Inconnu',
+            invalid_pdf_file:'Ce fichier n’est pas un PDF valide. Il peut s’agir d’une page de connexion ou d’une erreur de téléchargement. Reconnectez-vous au site source et téléchargez de nouveau le devoir PDF.', toast_ai_no_valid_questions:'L’IA n’a reconnu aucun exercice valide',
             new_course_name_prompt:'Nom du cours :', new_seminar_name_prompt:'Nom du séminaire :', click_new_subfolder:'Touchez la zone vide pour créer un sous-dossier', material_count:'{0} supports', note_count:'{0} cours', rename_prompt:'Saisissez un nouveau nom :', default_session_title:'{0} · Séance {1}', ai_notes:'Cours générés par l’IA', source_material_deleted:'Support source supprimé', source_materials_count:'Supports sources ({0})', no_materials_upload:'Aucun support. Utilisez les boutons ci-dessous pour en importer.', download_note:'Télécharger le cours', delete_note:'Supprimer le cours',
             recovered_class_materials:'Supports de cours récupérés', recovered_recordings:'Enregistrements récupérés', recovered_after_crash:'Récupéré après une fermeture inattendue', class_not_found:'Cours introuvable', recording_material_not_found:'Enregistrement introuvable', source_material_not_found:'Support source introuvable', photo_content_missing:'Le contenu de la photo manque', native_recording_read_failed:'Échec de lecture de l’enregistrement natif (HTTP {0})', native_recording_chunk_length_failed:'Échec de vérification de la longueur du segment natif', no_persistent_storage:'Stockage persistant indisponible', recording_storage_partial_export:'Seule une partie de l’enregistrement a été sauvegardée ; la partie récupérable a été exportée', recording_filename:'enregistrement', ai_no_valid_note_content:'L’IA n’a renvoyé aucun contenu de cours valide', source_deleted_note_not_saved:'La source a été supprimée ; le cours n’a pas été sauvegardé', recording_duration_unreadable:'Impossible de lire la durée de l’enregistrement', recording_container_decode_failed:'Impossible de décoder le conteneur audio', local_audio_split_unsupported:'Le découpage audio local n’est pas pris en charge', local_audio_split_decode_failed:'Échec du décodage pour le découpage local', ai_temp_segment:'Segment temporaire IA', create_local_segment_cache_failed:'Échec de création du cache de segment : {0}', allocate_local_segment_cache_failed:'Impossible d’allouer le cache de segment', recording_chunk_missing:'Le segment audio {0} manque', write_local_segment_cache_failed:'Échec d’écriture du cache de segment : {0}', local_segment_cache_length_failed:'Échec de vérification de la longueur du cache', commit_local_segment_cache_failed:'Échec de validation du cache de segment : {0}', local_recording_split_failed:'Échec du découpage local : {0}', read_local_recording_segment_failed:'Échec de lecture du segment local (HTTP {0})', local_recording_segment_length_failed:'Échec de vérification de la longueur du segment local', local_recording_segment_too_large:'Le segment local est trop volumineux', long_recording_not_fully_saved:'L’enregistrement long n’est pas entièrement sauvegardé', recording_content_missing:'Le contenu de l’enregistrement manque', recording_split_module_not_loaded:'Le module de découpage audio n’est pas chargé', recording_split_empty:'Le découpage n’a produit aucun segment', local_recording_segment_empty:'Le segment local est vide', prompt_recording_segment:'Voici le segment {0} sur {1} de l’enregistrement. Transcris-le et produis un compte rendu structuré de ce segment.', prompt_local_segment_label:'Segment local {0}/{1}',
             task_question_progress:'{0} tâches · {1}/{2} questions terminées', wrong_count:'{0} réponses erronées', archived_count_suffix:' · {0} archivées', new_exercise_folder_prompt:'Nom du dossier d’exercices :', rename_task_prompt:'Renommer la tâche :', rename_file_prompt:'Renommer le fichier :', exercise_tasks:'Tâches d’exercices', exercise_files_count:'Fichiers d’exercices ({0})', click_upload_exercise_files:'Utilisez le bouton en bas à droite pour importer des exercices', exercise_group:'Exercice {0}', select_exercise_group_first:'Sélectionnez d’abord un groupe d’exercices', question_short:'Q{0}', batch_summary:'{0}/{1} pages attribuées', assign_pages_to_groups:'Attribuez les pages aux groupes d’exercices', batch_file_label:'{0}-exercice-{1}-pages-{2}-{3}', batch_processing_failed:'Échec du traitement de l’exercice {0} : ', no_page_images:'Aucune image de page à reconnaître', empty_text:'Le texte est vide', parse_json_array_failed:'Impossible d’analyser le tableau JSON', parse_json_object_failed:'Impossible d’analyser l’objet JSON', parse_completed:'Analyse terminée', pdf_lib_not_loaded:'pdf-lib n’est pas chargé',
@@ -25640,6 +25644,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 showToast(i18n('processing_file', file.name));
 
                 try {
+                    if (isPdf) await validateExercisePdfFile(file);
                     const dataUrl = await readFileAsDataURL(file);
                     const fileId = 'exfile_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
 
@@ -25693,6 +25698,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             });
         }
 
+        async function validateExercisePdfFile(file) {
+            const header = await file.slice(0, 1024).arrayBuffer();
+            if (!ExerciseUpload.hasPdfHeader(header)) {
+                throw new Error(i18n('invalid_pdf_file'));
+            }
+        }
+
         // ==================== Exercise Batch Upload ====================
         let batchState = {
             pdfBytes: null,
@@ -25718,6 +25730,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             showToast(i18n('loading_pdf'));
             try {
+                await validateExercisePdfFile(file);
                 const dataUrl = await readFileAsDataURL(file);
                 const base64 = dataUrl.split(',')[1];
                 const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
@@ -25977,12 +25990,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     }
                 }
 
-                if (!Array.isArray(questions) || questions.length === 0) {
-                    showToast(i18n('toast_ai_no_valid_outline'));
+                questions = ExerciseUpload.validQuestionStrings(questions);
+                if (questions.length === 0) {
+                    showToast(i18n('toast_ai_no_valid_questions'));
                     return;
                 }
-
-                questions = questions.filter(q => typeof q === 'string' && q.trim().length > 2);
 
                 const data = getExercisesData();
                 const folder = data.folders.find(f => f.id === folderId);
@@ -26264,6 +26276,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     // PDF: 将每页渲染为图片发送（文本提取对数学公式效果极差）
                     const base64 = dataUrl.split(',')[1];
                     const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+                    if (!ExerciseUpload.hasPdfHeader(bytes)) {
+                        throw new Error(i18n('invalid_pdf_file'));
+                    }
                     let pageImages = [];
                     try {
                         pageImages = await renderPdfPagesToImages(bytes, 1.5);
@@ -26289,7 +26304,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                                 const tc = await page.getTextContent();
                                 pdfText += tc.items.map(it => it.str).join(' ') + '\n';
                             }
-                        } catch (e) { pdfText = i18n('pdf_text_extraction_failed'); }
+                        } catch (e) {
+                            throw new Error(i18n('invalid_pdf_file'));
+                        }
+                        if (!pdfText.trim()) throw new Error(i18n('invalid_pdf_file'));
                         msgContent = [{
                             role: 'user',
                             content: i18n('prompt_exercise_pdf_text') + '\n\n' + pdfText
@@ -26318,13 +26336,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     }
                 }
 
-                if (!Array.isArray(questions) || questions.length === 0) {
-                    showToast(i18n('toast_ai_no_valid_outline'));
+                // 过滤无效项（太短的可能是解析残留）
+                questions = ExerciseUpload.validQuestionStrings(questions);
+                if (questions.length === 0) {
+                    showToast(i18n('toast_ai_no_valid_questions'));
                     return;
                 }
-
-                // 过滤无效项（太短的可能是解析残留）
-                questions = questions.filter(q => typeof q === 'string' && q.trim().length > 2);
 
                 // Update task
                 const data = getExercisesData();

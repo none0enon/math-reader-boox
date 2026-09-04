@@ -27,11 +27,12 @@ jobs:
       - name: Run Node regression tests
         run: node --test tests/*.test.js
 
-      - name: Verify shared classroom and recording assets match
+      - name: Verify shared web assets match
         run: |
           cmp app/src/main/assets/www/recording-storage.js docs/recording-storage.js
           cmp app/src/main/assets/www/classroom-storage.js docs/classroom-storage.js
           cmp app/src/main/assets/www/recording-ai.js docs/recording-ai.js
+          cmp app/src/main/assets/www/exercise-upload.js docs/exercise-upload.js
 
       - name: Calculate APK version
         id: version

@@ -2055,6 +2055,26 @@
             pointer-events: none;
         }
 
+        /* 多页作答：工具栏项目变多时窄屏横向滚动而不换行，避免画布高度随之变化 */
+        .exercise-doing-toolbar { overflow-x: auto; }
+        .exercise-doing-toolbar > * { flex-shrink: 0; }
+        .exercise-doing-toolbar .ex-page-nav {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+        .exercise-doing-toolbar .ex-page-nav-btn { width: 22px; }
+        .exercise-doing-toolbar .ex-page-indicator {
+            min-width: 30px;
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
+        }
+        @media (max-width: 420px) {
+            .exercise-doing-toolbar { gap: 4px; padding-left: 8px; padding-right: 8px; }
+        }
+
         .exercise-doing-toolbar .clear-canvas-btn {
             margin-left: auto;
             padding: 4px 10px;
@@ -5204,6 +5224,19 @@
             <button class="ex-tool-btn" id="exRedoBtn" onclick="exRedo()" title="重做" data-i18n="redo" data-i18n-attr="title">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10"/></svg>
             </button>
+            <!-- 多页作答：添加一页 + 页码切换（只有一页时隐藏页码） -->
+            <button class="ex-tool-btn" id="exAddPageBtn" onclick="exAddPage()" title="添加一页" data-i18n="add_page" data-i18n-attr="title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            </button>
+            <div class="ex-page-nav" id="exPageNav" style="display:none;">
+                <button class="ex-tool-btn ex-page-nav-btn" id="exPrevPageBtn" onclick="exPrevPage()" title="上一页" data-i18n="prev_page" data-i18n-attr="title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+                <span class="ex-page-indicator" id="exPageIndicator">1/1</span>
+                <button class="ex-tool-btn ex-page-nav-btn" id="exNextPageBtn" onclick="exNextPage()" title="下一页" data-i18n="next_page" data-i18n-attr="title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+            </div>
             <button class="clear-canvas-btn" onclick="clearExCanvas()" data-i18n="clear_btn">清除</button>
         </div>
         <div class="exercise-doing-canvas-wrap">
@@ -6561,7 +6594,7 @@
                 seminar:'讲座',click_new_seminar:'点击空白处新建讲座',
                 exercises_tab:'习题',archive_tab:'归档',new_questions:'新题',
                 click_new_folder:'点击空白处新建文件夹',wrong_tab:'错题',
-                questions:'题目',clear_btn:'清除',prev_q:'上一题',done:'完成',next_q:'下一题',
+                questions:'题目',clear_btn:'清除',prev_q:'上一题',done:'完成',next_q:'下一题',add_page:'添加一页',
                 eraser:'橡皮擦',insert_image:'插入图片',search_document_placeholder:'搜索文档内容...',page_number_placeholder:'输入页码',
                 pen:'画笔',undo:'撤销',clear_canvas:'清空画布',bold:'加粗',italic:'斜体',strikethrough:'删除线',todo:'待办',draft_placeholder:'在这里写草稿...',
                 upload_file:'上传文件',take_photo:'拍照',batch_upload:'习题集上传',upload_exercises:'上传习题',quick_cut_every:'快速裁切：每',pages_per_exercise:'页一份习题',apply:'应用',confirm_generate:'确认生成',ask_ai:'问 AI',optional_description:'补充描述（可为空）',
@@ -6748,7 +6781,7 @@
                 seminar:'Seminar',click_new_seminar:'Tap to create a seminar',
                 exercises_tab:'Exercises',archive_tab:'Archive',new_questions:'New',
                 click_new_folder:'Tap to create a folder',wrong_tab:'Wrong',
-                questions:'Questions',clear_btn:'Clear',prev_q:'Prev',done:'Done',next_q:'Next',
+                questions:'Questions',clear_btn:'Clear',prev_q:'Prev',done:'Done',next_q:'Next',add_page:'Add page',
                 eraser:'Eraser',insert_image:'Insert image',search_document_placeholder:'Search document...',page_number_placeholder:'Enter page number',
                 pen:'Pen',undo:'Undo',clear_canvas:'Clear canvas',bold:'Bold',italic:'Italic',strikethrough:'Strikethrough',todo:'To-do',draft_placeholder:'Write your draft here...',
                 upload_file:'Upload file',take_photo:'Take photo',batch_upload:'Upload exercise set',upload_exercises:'Upload exercises',quick_cut_every:'Quick split: every',pages_per_exercise:'page(s) per exercise',apply:'Apply',confirm_generate:'Generate',ask_ai:'Ask AI',optional_description:'Additional details (optional)',
@@ -6935,7 +6968,7 @@
                 seminar:'Séminaire',click_new_seminar:'Toucher pour créer un séminaire',
                 exercises_tab:'Exercices',archive_tab:'Archives',new_questions:'Nouveau',
                 click_new_folder:'Toucher pour créer un dossier',wrong_tab:'Erreurs',
-                questions:'Questions',clear_btn:'Effacer',prev_q:'Préc',done:'Terminé',next_q:'Suiv',
+                questions:'Questions',clear_btn:'Effacer',prev_q:'Préc',done:'Terminé',next_q:'Suiv',add_page:'Ajouter une page',
                 eraser:'Gomme',insert_image:'Insérer une image',search_document_placeholder:'Rechercher dans le document...',page_number_placeholder:'Saisir le numéro de page',
                 pen:'Stylo',undo:'Annuler',clear_canvas:'Effacer la zone de dessin',bold:'Gras',italic:'Italique',strikethrough:'Barré',todo:'À faire',draft_placeholder:'Écrivez votre brouillon ici...',
                 upload_file:'Importer un fichier',take_photo:'Prendre une photo',batch_upload:'Importer un recueil d’exercices',upload_exercises:'Importer des exercices',quick_cut_every:'Découpe rapide : tous les',pages_per_exercise:'page(s) par exercice',apply:'Appliquer',confirm_generate:'Générer',ask_ai:'Demander à l’IA',optional_description:'Précisions supplémentaires (facultatif)',
@@ -7012,7 +7045,7 @@
             time_used:'用时 {0}', long_press_regenerate_analysis:'长按解析可重新生成', long_press_wrong_hint:'长按错题可归档或删除', question_number:'第 {0} 题', click_redo:'点击重做', no_question_text:'无题目文本', confirm_regenerate_ai_analysis:'重新生成 AI 解析？', answer_image_unavailable:'无法获取作答图片', task_count:'{0} 个任务',
             prompt_ocr_all_text:'识别图片中的全部文字和数学公式。数学公式使用 LaTeX，只输出识别结果。', prompt_selected_math_with_question:'选中的数学内容：\n{0}\n\n用户问题：{1}', prompt_explain_selected_math:'请严格从数学角度解释以下选中内容：\n{0}', prompt_lasso_image_with_question:'请分析圈选图片中的数学内容，并回答：{0}', prompt_explain_lasso_image:'请严格从数学角度解释圈选图片中的内容。', prompt_selected_exercise_with_question:'选中的习题内容：\n{0}\n\n用户问题：{1}',
             prompt_exercise_parse_system:'你是数学试题识别助手。识别输入中的所有题目，保留完整题干、条件、选项和小问；数学公式用 LaTeX。严格只返回 JSON 字符串数组，每个元素是一道完整题目，不要输出代码围栏或说明。', prompt_exercise_all_pages:'以下 {0} 张图片按页面顺序组成一份习题。识别所有题目并按原顺序返回。', prompt_exercise_image:'识别图片中的全部数学题目。', prompt_exercise_pdf_pages:'以下 {0} 张图片按 PDF 页序排列。识别全部数学题目。', prompt_exercise_pdf_text:'从以下 PDF 文本中识别并整理全部数学题目。', prompt_continue_truncated_json:'上一个 JSON 数组被截断。只续写尚未输出的数组元素并以 ] 结束，不要重复已有内容或添加说明。',
-            prompt_grade_system:'你是数学习题批改助手。输入是一道题目和学生的手写作答图片。先独立、完整地解出这道题，再逐行核对学生的作答，最后严格按下面的格式输出。除格式规定的内容外，不要输出任何其他文字：不写开场白、总评、鼓励、学习建议，也不写对思路、书写、严谨性或知识掌握情况的任何评价性、概括性描述。\n\n输出格式（四个标签按顺序各出现一次，标签名保持英文原样，标签之外不要有任何内容）：\n<score>0到10的整数</score>\n<solution>第一部分：完整解答</solution>\n<errors>第二部分：学生的笔误与错误推导</errors>\n<similar>第三部分：同类型的另一道题目</similar>\n\n评分：满分10分，只依据学生作答的正确性与完整性给分。学生未作答或字迹无法辨认时给0分，但其余三部分仍必须完整输出。分数只写在<score>标签内，其他部分不再提及分数。\n\n第一部分<solution>：给出完整、详细、不跳步的证明和计算。要求：\n- 每一步都要写出来，并写明该步成立的理由。不得使用“由归纳法得”“由xx性质得”“由xx定理得”“易证”“显然”“同理可得”“略”这类跳步写法。\n- 用到数学归纳法时，必须完整写出奠基步骤和归纳步骤：准确陈述归纳假设，并写出从n到n+1的全部推导过程。\n- 用到定理、引理、性质或公式时，必须完整写出它的陈述，逐条验证它的前提条件在本题中成立，再写出代入后的具体结果。\n- 计算必须写出每一次代数变形、每一次代入和化简，直到得到最终结果。不得只给结果不给过程。\n- 题目有多问时逐问完整解答；需要分情况时逐种情况完整讨论，不得合并或省略任何一种情况。\n- 输出前自行逐步验算，确保每一步推导和每一个结果都准确无误；不得编造题目中没有的条件。\n- 只写证明和计算本身，不写解题思路点评、方法总结或学习建议。\n\n第二部分<errors>：逐条列出学生作答中的笔误和错误推导。要求：\n- 笔误指抄写或书写层面的错误，例如符号、下标、系数、正负号写错，条件抄错，漏写或多写某一项。\n- 错误推导指逻辑或数学层面的错误，例如用错定理或公式、所用定理的前提不满足、计算错误、推理不成立、遗漏情况、循环论证。\n- 每一条按“学生原文（照抄学生写的内容）→ 错误所在 → 正确写法或正确推导”的形式写出，明确指出错在哪一步、为什么错，并给出这一步的正确形式。其中的箭头直接写“→”字符，不要写成LaTeX命令。\n- 只列出学生实际写出的错误，不评价整体思路、书写、严谨性或知识掌握情况，不写任何总结性评语。\n- 没有发现任何笔误和错误推导时，只写“未发现笔误或错误推导”。\n- 学生未作答或字迹无法辨认时，只写“未作答或无法辨认”。\n\n第三部分<similar>：给出一道与原题同类型的新题目：考查同一知识点，使用同一解题方法，难度相当，但题设中的数值、函数、对象或条件与原题不同。只写完整题干，不写答案、解法或提示。\n\n语言：除数学公式外，全部使用中文。数学公式一律使用LaTeX，并且只用美元符号作定界符：行内公式用$...$，单独成行的公式用$$...$$。公式之外不要出现任何LaTeX命令，箭头等符号直接写字符。不要使用Markdown代码围栏。', prompt_grade_user:'题目：\n{0}\n\n图片是学生对上述题目的手写作答。请先独立完整解题，再逐行核对图片中的作答，然后严格按规定格式输出 <score>、<solution>、<errors>、<similar> 四部分。', grade_comment:'**完整解答**\n{0}\n\n**笔误与错误推导**\n{1}\n\n**同类题目**\n{2}',
+            prompt_grade_system:'你是数学习题批改助手。输入是一道题目和学生的手写作答图片。先独立、完整地解出这道题，再逐行核对学生的作答，最后严格按下面的格式输出。除格式规定的内容外，不要输出任何其他文字：不写开场白、总评、鼓励、学习建议，也不写对思路、书写、严谨性或知识掌握情况的任何评价性、概括性描述。\n\n输出格式（四个标签按顺序各出现一次，标签名保持英文原样，标签之外不要有任何内容）：\n<score>0到10的整数</score>\n<solution>第一部分：完整解答</solution>\n<errors>第二部分：学生的笔误与错误推导</errors>\n<similar>第三部分：同类型的另一道题目</similar>\n\n评分：满分10分，只依据学生作答的正确性与完整性给分。学生未作答或字迹无法辨认时给0分，但其余三部分仍必须完整输出。分数只写在<score>标签内，其他部分不再提及分数。\n\n第一部分<solution>：给出完整、详细、不跳步的证明和计算。要求：\n- 每一步都要写出来，并写明该步成立的理由。不得使用“由归纳法得”“由xx性质得”“由xx定理得”“易证”“显然”“同理可得”“略”这类跳步写法。\n- 用到数学归纳法时，必须完整写出奠基步骤和归纳步骤：准确陈述归纳假设，并写出从n到n+1的全部推导过程。\n- 用到定理、引理、性质或公式时，必须完整写出它的陈述，逐条验证它的前提条件在本题中成立，再写出代入后的具体结果。\n- 计算必须写出每一次代数变形、每一次代入和化简，直到得到最终结果。不得只给结果不给过程。\n- 题目有多问时逐问完整解答；需要分情况时逐种情况完整讨论，不得合并或省略任何一种情况。\n- 输出前自行逐步验算，确保每一步推导和每一个结果都准确无误；不得编造题目中没有的条件。\n- 只写证明和计算本身，不写解题思路点评、方法总结或学习建议。\n\n第二部分<errors>：逐条列出学生作答中的笔误和错误推导。要求：\n- 笔误指抄写或书写层面的错误，例如符号、下标、系数、正负号写错，条件抄错，漏写或多写某一项。\n- 错误推导指逻辑或数学层面的错误，例如用错定理或公式、所用定理的前提不满足、计算错误、推理不成立、遗漏情况、循环论证。\n- 每一条按“学生原文（照抄学生写的内容）→ 错误所在 → 正确写法或正确推导”的形式写出，明确指出错在哪一步、为什么错，并给出这一步的正确形式。其中的箭头直接写“→”字符，不要写成LaTeX命令。\n- 只列出学生实际写出的错误，不评价整体思路、书写、严谨性或知识掌握情况，不写任何总结性评语。\n- 没有发现任何笔误和错误推导时，只写“未发现笔误或错误推导”。\n- 学生未作答或字迹无法辨认时，只写“未作答或无法辨认”。\n\n第三部分<similar>：给出一道与原题同类型的新题目：考查同一知识点，使用同一解题方法，难度相当，但题设中的数值、函数、对象或条件与原题不同。只写完整题干，不写答案、解法或提示。\n\n语言：除数学公式外，全部使用中文。数学公式一律使用LaTeX，并且只用美元符号作定界符：行内公式用$...$，单独成行的公式用$$...$$。公式之外不要出现任何LaTeX命令，箭头等符号直接写字符。不要使用Markdown代码围栏。', prompt_grade_user:'题目：\n{0}\n\n图片是学生对上述题目的手写作答。请先独立完整解题，再逐行核对图片中的作答，然后严格按规定格式输出 <score>、<solution>、<errors>、<similar> 四部分。', prompt_grade_pages:'学生的作答共 {0} 页，以上图片按页序排列，请把它们合起来当作一份完整作答核对。', grade_comment:'**完整解答**\n{0}\n\n**笔误与错误推导**\n{1}\n\n**同类题目**\n{2}',
             prompt_wrong_item_context:'\n【错题 {0}】第 {1} 题（得分：{2}/10）\n题目：{3}\n', prompt_wrong_ai_comment:'AI 评语：{0}\n', prompt_single_wrong_context:'【错题】第 {0} 题（得分：{1}/10）\n题目：{2}\n', prompt_wrong_grade_analysis:'AI 评分与分析：\n{0}\n', prompt_wrong_images_user:'以上是选中错题的手写作答图片。\n\n用户问题：{0}'
         });
         Object.assign(I18N.en, {
@@ -7023,7 +7056,7 @@
             time_used:'Time {0}', long_press_regenerate_analysis:'Long-press the analysis to regenerate it', long_press_wrong_hint:'Long-press a wrong answer to archive or delete it', question_number:'Question {0}', click_redo:'Click to redo', no_question_text:'No question text', confirm_regenerate_ai_analysis:'Regenerate the AI analysis?', answer_image_unavailable:'Unable to retrieve the answer image', task_count:'{0} tasks',
             prompt_ocr_all_text:'Recognize all text and mathematical formulas in the image. Use LaTeX for formulas and return only the recognized content.', prompt_selected_math_with_question:'Selected mathematical content:\n{0}\n\nUser question: {1}', prompt_explain_selected_math:'Explain the following selected content strictly in mathematical terms:\n{0}', prompt_lasso_image_with_question:'Analyze the mathematical content in the selected image and answer: {0}', prompt_explain_lasso_image:'Explain the content in the selected image strictly in mathematical terms.', prompt_selected_exercise_with_question:'Selected exercise content:\n{0}\n\nUser question: {1}',
             prompt_exercise_parse_system:'You recognize mathematical exercises. Extract every problem from the input, preserving the full prompt, conditions, choices, and subparts. Use LaTeX for formulas. Return only a strict JSON array of strings, one complete problem per item, with no code fence or commentary.', prompt_exercise_all_pages:'These {0} images form one exercise set in page order. Recognize every problem and return them in the original order.', prompt_exercise_image:'Recognize every mathematical problem in this image.', prompt_exercise_pdf_pages:'These {0} images are ordered PDF pages. Recognize every mathematical problem.', prompt_exercise_pdf_text:'Recognize and organize every mathematical problem in the following PDF text.', prompt_continue_truncated_json:'The previous JSON array was truncated. Output only the remaining array items and end with ]. Do not repeat existing content or add commentary.',
-            prompt_grade_system:'You are a mathematics exercise grader. The input is a problem and an image of the student’s handwritten work. First solve the problem independently and completely, then check the student’s work line by line, and finally answer strictly in the format below. Output nothing outside that format: no preamble, no overall verdict, no encouragement, no study advice, and no evaluative or summarizing remarks about the approach, presentation, rigor, or knowledge.\n\nOutput format (the four tags appear once each, in this order, with the tag names kept exactly as written and nothing outside the tags):\n<score>an integer from 0 to 10</score>\n<solution>Part 1: complete solution</solution>\n<errors>Part 2: the student’s slips of the pen and incorrect derivations</errors>\n<similar>Part 3: another problem of the same type</similar>\n\nScore: out of 10, based only on the correctness and completeness of the student’s work. Give 0 if there is no answer or the writing is illegible, but still output the other three parts in full. Write the score only inside the <score> tag and do not mention it anywhere else.\n\nPart 1 <solution>: a complete, detailed proof and calculation with no skipped steps. Requirements:\n- Write out every step and state the reason it holds. Never use shortcuts such as “by induction”, “by property X”, “by theorem X”, “it is easy to see”, “obviously”, “similarly”, or “omitted”.\n- When using mathematical induction, write out the base case and the inductive step in full: state the induction hypothesis precisely and show the entire derivation from n to n+1.\n- When using a theorem, lemma, property, or formula, state it in full, verify each of its hypotheses for this problem, and then write the concrete result after substitution.\n- Show every algebraic transformation, substitution, and simplification until the final result. Never give a result without its derivation.\n- Answer every sub-question in full. When cases are needed, treat every case completely; do not merge or omit any case.\n- Check every step and every result before answering so that all of it is accurate. Do not invent conditions that are not in the problem.\n- Write only the proof and calculation itself: no commentary on the approach, no method summary, no study advice.\n\nPart 2 <errors>: list, one by one, the student’s slips of the pen and incorrect derivations. Requirements:\n- A slip of the pen is a copying or writing error, such as a wrong symbol, subscript, coefficient, or sign, a miscopied condition, or a missing or extra term.\n- An incorrect derivation is a logical or mathematical error, such as a misapplied theorem or formula, an unmet hypothesis, a calculation error, an invalid inference, a missed case, or circular reasoning.\n- Write each item as “student’s original text (copied exactly as written) → what is wrong → the correct form or correct derivation”, naming the exact step, why it is wrong, and the correct form of that step. Write the arrows as the plain “→” character, not as a LaTeX command.\n- List only errors the student actually wrote. Do not comment on the overall approach, presentation, rigor, or mastery, and do not write any summarizing remarks.\n- If there are no slips of the pen or incorrect derivations, write only “No slips of the pen or incorrect derivations found”.\n- If there is no answer or the writing is illegible, write only “No answer or illegible”.\n\nPart 3 <similar>: one new problem of the same type as the original: same topic, same solution method, comparable difficulty, but with different numbers, functions, objects, or conditions. Write only the complete problem statement, with no answer, solution, or hints.\n\nLanguage: write everything in English except the mathematics. Use LaTeX for all mathematics, with dollar signs as the only delimiters: $...$ for inline formulas and $$...$$ for displayed formulas. Do not use any LaTeX command outside a formula; write arrows and other symbols as plain characters. Do not use Markdown code fences.', prompt_grade_user:'Problem:\n{0}\n\nThe image is the student’s handwritten answer to this problem. First solve it independently and completely, then check the handwritten work line by line, and answer strictly in the required format with the four parts <score>, <solution>, <errors>, and <similar>.', grade_comment:'**Complete solution**\n{0}\n\n**Slips of the pen and incorrect derivations**\n{1}\n\n**Similar problem**\n{2}',
+            prompt_grade_system:'You are a mathematics exercise grader. The input is a problem and an image of the student’s handwritten work. First solve the problem independently and completely, then check the student’s work line by line, and finally answer strictly in the format below. Output nothing outside that format: no preamble, no overall verdict, no encouragement, no study advice, and no evaluative or summarizing remarks about the approach, presentation, rigor, or knowledge.\n\nOutput format (the four tags appear once each, in this order, with the tag names kept exactly as written and nothing outside the tags):\n<score>an integer from 0 to 10</score>\n<solution>Part 1: complete solution</solution>\n<errors>Part 2: the student’s slips of the pen and incorrect derivations</errors>\n<similar>Part 3: another problem of the same type</similar>\n\nScore: out of 10, based only on the correctness and completeness of the student’s work. Give 0 if there is no answer or the writing is illegible, but still output the other three parts in full. Write the score only inside the <score> tag and do not mention it anywhere else.\n\nPart 1 <solution>: a complete, detailed proof and calculation with no skipped steps. Requirements:\n- Write out every step and state the reason it holds. Never use shortcuts such as “by induction”, “by property X”, “by theorem X”, “it is easy to see”, “obviously”, “similarly”, or “omitted”.\n- When using mathematical induction, write out the base case and the inductive step in full: state the induction hypothesis precisely and show the entire derivation from n to n+1.\n- When using a theorem, lemma, property, or formula, state it in full, verify each of its hypotheses for this problem, and then write the concrete result after substitution.\n- Show every algebraic transformation, substitution, and simplification until the final result. Never give a result without its derivation.\n- Answer every sub-question in full. When cases are needed, treat every case completely; do not merge or omit any case.\n- Check every step and every result before answering so that all of it is accurate. Do not invent conditions that are not in the problem.\n- Write only the proof and calculation itself: no commentary on the approach, no method summary, no study advice.\n\nPart 2 <errors>: list, one by one, the student’s slips of the pen and incorrect derivations. Requirements:\n- A slip of the pen is a copying or writing error, such as a wrong symbol, subscript, coefficient, or sign, a miscopied condition, or a missing or extra term.\n- An incorrect derivation is a logical or mathematical error, such as a misapplied theorem or formula, an unmet hypothesis, a calculation error, an invalid inference, a missed case, or circular reasoning.\n- Write each item as “student’s original text (copied exactly as written) → what is wrong → the correct form or correct derivation”, naming the exact step, why it is wrong, and the correct form of that step. Write the arrows as the plain “→” character, not as a LaTeX command.\n- List only errors the student actually wrote. Do not comment on the overall approach, presentation, rigor, or mastery, and do not write any summarizing remarks.\n- If there are no slips of the pen or incorrect derivations, write only “No slips of the pen or incorrect derivations found”.\n- If there is no answer or the writing is illegible, write only “No answer or illegible”.\n\nPart 3 <similar>: one new problem of the same type as the original: same topic, same solution method, comparable difficulty, but with different numbers, functions, objects, or conditions. Write only the complete problem statement, with no answer, solution, or hints.\n\nLanguage: write everything in English except the mathematics. Use LaTeX for all mathematics, with dollar signs as the only delimiters: $...$ for inline formulas and $$...$$ for displayed formulas. Do not use any LaTeX command outside a formula; write arrows and other symbols as plain characters. Do not use Markdown code fences.', prompt_grade_user:'Problem:\n{0}\n\nThe image is the student’s handwritten answer to this problem. First solve it independently and completely, then check the handwritten work line by line, and answer strictly in the required format with the four parts <score>, <solution>, <errors>, and <similar>.', prompt_grade_pages:'The student’s answer spans {0} pages; the images above are in page order and must be read together as one continuous answer.', grade_comment:'**Complete solution**\n{0}\n\n**Slips of the pen and incorrect derivations**\n{1}\n\n**Similar problem**\n{2}',
             prompt_wrong_item_context:'\n[Wrong answer {0}] Question {1} (score: {2}/10)\nProblem: {3}\n', prompt_wrong_ai_comment:'AI feedback: {0}\n', prompt_single_wrong_context:'[Wrong answer] Question {0} (score: {1}/10)\nProblem: {2}\n', prompt_wrong_grade_analysis:'AI grading and analysis:\n{0}\n', prompt_wrong_images_user:'The images above are the handwritten responses to the selected wrong answers.\n\nUser question: {0}'
         });
         Object.assign(I18N.fr, {
@@ -7034,7 +7067,7 @@
             time_used:'Durée {0}', long_press_regenerate_analysis:'Appuyez longuement sur l’analyse pour la régénérer', long_press_wrong_hint:'Appuyez longuement sur une erreur pour l’archiver ou la supprimer', question_number:'Question {0}', click_redo:'Touchez pour refaire', no_question_text:'Énoncé indisponible', confirm_regenerate_ai_analysis:'Régénérer l’analyse IA ?', answer_image_unavailable:'Impossible de récupérer l’image de la réponse', task_count:'{0} tâches',
             prompt_ocr_all_text:'Reconnais tout le texte et toutes les formules mathématiques de l’image. Utilise LaTeX pour les formules et renvoie uniquement le contenu reconnu.', prompt_selected_math_with_question:'Contenu mathématique sélectionné :\n{0}\n\nQuestion de l’utilisateur : {1}', prompt_explain_selected_math:'Explique le contenu sélectionné suivant uniquement en termes mathématiques :\n{0}', prompt_lasso_image_with_question:'Analyse le contenu mathématique de l’image sélectionnée et réponds à cette question : {0}', prompt_explain_lasso_image:'Explique le contenu de l’image sélectionnée uniquement en termes mathématiques.', prompt_selected_exercise_with_question:'Exercice sélectionné :\n{0}\n\nQuestion de l’utilisateur : {1}',
             prompt_exercise_parse_system:'Tu reconnais des exercices de mathématiques. Extrais tous les problèmes en conservant l’énoncé, les conditions, les choix et les sous-questions. Utilise LaTeX pour les formules. Renvoie uniquement un tableau JSON strict de chaînes, un problème complet par élément, sans bloc de code ni commentaire.', prompt_exercise_all_pages:'Ces {0} images forment un recueil d’exercices dans l’ordre des pages. Reconnais tous les problèmes et conserve leur ordre.', prompt_exercise_image:'Reconnais tous les problèmes mathématiques de cette image.', prompt_exercise_pdf_pages:'Ces {0} images sont des pages PDF ordonnées. Reconnais tous les problèmes mathématiques.', prompt_exercise_pdf_text:'Reconnais et organise tous les problèmes mathématiques du texte PDF suivant.', prompt_continue_truncated_json:'Le tableau JSON précédent a été tronqué. Renvoie uniquement les éléments restants et termine par ]. Ne répète rien et n’ajoute aucun commentaire.',
-            prompt_grade_system:'Tu es un correcteur d’exercices de mathématiques. L’entrée est un énoncé et l’image de la copie manuscrite de l’élève. Résous d’abord le problème de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format ci-dessous. N’écris rien en dehors de ce format : pas d’introduction, pas de verdict global, pas d’encouragement, pas de conseil de travail, et aucune remarque évaluative ou récapitulative sur la démarche, la présentation, la rigueur ou les connaissances.\n\nFormat de sortie (les quatre balises apparaissent une fois chacune, dans cet ordre, avec leurs noms conservés tels quels et rien en dehors des balises) :\n<score>un entier de 0 à 10</score>\n<solution>Partie 1 : solution complète</solution>\n<errors>Partie 2 : erreurs d’écriture et raisonnements erronés de l’élève</errors>\n<similar>Partie 3 : un autre exercice du même type</similar>\n\nNote : sur 10, uniquement selon l’exactitude et la complétude de la copie. Mets 0 s’il n’y a pas de réponse ou si l’écriture est illisible, mais fournis quand même les trois autres parties en entier. Écris la note uniquement dans la balise <score> et ne la mentionne nulle part ailleurs.\n\nPartie 1 <solution> : une démonstration et un calcul complets, détaillés, sans aucune étape sautée. Exigences :\n- Écris chaque étape et indique la raison pour laquelle elle est valable. N’utilise jamais de raccourcis tels que « par récurrence », « d’après la propriété X », « d’après le théorème X », « il est facile de voir », « évidemment », « de même » ou « omis ».\n- Pour un raisonnement par récurrence, rédige entièrement l’initialisation et l’hérédité : énonce précisément l’hypothèse de récurrence et développe tout le passage de n à n+1.\n- Pour tout théorème, lemme, propriété ou formule utilisé, énonce-le en entier, vérifie chacune de ses hypothèses dans ce problème, puis écris le résultat concret après substitution.\n- Détaille chaque transformation algébrique, chaque substitution et chaque simplification jusqu’au résultat final. Ne donne jamais un résultat sans sa dérivation.\n- Traite entièrement chaque sous-question. Lorsqu’une disjonction de cas est nécessaire, traite chaque cas complètement, sans fusionner ni omettre aucun cas.\n- Vérifie chaque étape et chaque résultat avant de répondre afin que tout soit exact. N’invente aucune condition absente de l’énoncé.\n- Écris uniquement la démonstration et le calcul : aucun commentaire sur la démarche, aucun résumé de méthode, aucun conseil de travail.\n\nPartie 2 <errors> : liste, une par une, les erreurs d’écriture et les raisonnements erronés de l’élève. Exigences :\n- Une erreur d’écriture est une faute de copie ou de rédaction : symbole, indice, coefficient ou signe erroné, condition mal recopiée, terme manquant ou en trop.\n- Un raisonnement erroné est une erreur logique ou mathématique : théorème ou formule mal appliqué, hypothèse non vérifiée, erreur de calcul, inférence invalide, cas oublié, raisonnement circulaire.\n- Rédige chaque point sous la forme « texte original de l’élève (recopié tel quel) → ce qui est faux → forme correcte ou dérivation correcte », en précisant l’étape exacte, pourquoi elle est fausse et la forme correcte de cette étape. Écris les flèches avec le caractère « → », pas avec une commande LaTeX.\n- Ne liste que les erreurs réellement écrites par l’élève. Ne commente ni la démarche globale, ni la présentation, ni la rigueur, ni la maîtrise, et n’écris aucune remarque récapitulative.\n- S’il n’y a aucune erreur d’écriture ni raisonnement erroné, écris seulement « Aucune erreur d’écriture ni raisonnement erroné trouvé ».\n- S’il n’y a pas de réponse ou si l’écriture est illisible, écris seulement « Pas de réponse ou illisible ».\n\nPartie 3 <similar> : un nouvel exercice du même type que l’original : même notion, même méthode de résolution, difficulté comparable, mais avec des nombres, fonctions, objets ou conditions différents. Écris uniquement l’énoncé complet, sans réponse, solution ni indication.\n\nLangue : rédige tout en français, sauf les mathématiques. Utilise LaTeX pour toutes les mathématiques, avec les signes dollar comme seuls délimiteurs : $...$ pour les formules en ligne et $$...$$ pour les formules centrées. N’utilise aucune commande LaTeX en dehors d’une formule ; écris les flèches et autres symboles directement en caractères. N’utilise pas de blocs de code Markdown.', prompt_grade_user:'Problème :\n{0}\n\nL’image est la réponse manuscrite de l’élève à ce problème. Résous-le d’abord de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format demandé avec les quatre parties <score>, <solution>, <errors> et <similar>.', grade_comment:'**Solution complète**\n{0}\n\n**Erreurs d’écriture et raisonnements erronés**\n{1}\n\n**Exercice du même type**\n{2}',
+            prompt_grade_system:'Tu es un correcteur d’exercices de mathématiques. L’entrée est un énoncé et l’image de la copie manuscrite de l’élève. Résous d’abord le problème de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format ci-dessous. N’écris rien en dehors de ce format : pas d’introduction, pas de verdict global, pas d’encouragement, pas de conseil de travail, et aucune remarque évaluative ou récapitulative sur la démarche, la présentation, la rigueur ou les connaissances.\n\nFormat de sortie (les quatre balises apparaissent une fois chacune, dans cet ordre, avec leurs noms conservés tels quels et rien en dehors des balises) :\n<score>un entier de 0 à 10</score>\n<solution>Partie 1 : solution complète</solution>\n<errors>Partie 2 : erreurs d’écriture et raisonnements erronés de l’élève</errors>\n<similar>Partie 3 : un autre exercice du même type</similar>\n\nNote : sur 10, uniquement selon l’exactitude et la complétude de la copie. Mets 0 s’il n’y a pas de réponse ou si l’écriture est illisible, mais fournis quand même les trois autres parties en entier. Écris la note uniquement dans la balise <score> et ne la mentionne nulle part ailleurs.\n\nPartie 1 <solution> : une démonstration et un calcul complets, détaillés, sans aucune étape sautée. Exigences :\n- Écris chaque étape et indique la raison pour laquelle elle est valable. N’utilise jamais de raccourcis tels que « par récurrence », « d’après la propriété X », « d’après le théorème X », « il est facile de voir », « évidemment », « de même » ou « omis ».\n- Pour un raisonnement par récurrence, rédige entièrement l’initialisation et l’hérédité : énonce précisément l’hypothèse de récurrence et développe tout le passage de n à n+1.\n- Pour tout théorème, lemme, propriété ou formule utilisé, énonce-le en entier, vérifie chacune de ses hypothèses dans ce problème, puis écris le résultat concret après substitution.\n- Détaille chaque transformation algébrique, chaque substitution et chaque simplification jusqu’au résultat final. Ne donne jamais un résultat sans sa dérivation.\n- Traite entièrement chaque sous-question. Lorsqu’une disjonction de cas est nécessaire, traite chaque cas complètement, sans fusionner ni omettre aucun cas.\n- Vérifie chaque étape et chaque résultat avant de répondre afin que tout soit exact. N’invente aucune condition absente de l’énoncé.\n- Écris uniquement la démonstration et le calcul : aucun commentaire sur la démarche, aucun résumé de méthode, aucun conseil de travail.\n\nPartie 2 <errors> : liste, une par une, les erreurs d’écriture et les raisonnements erronés de l’élève. Exigences :\n- Une erreur d’écriture est une faute de copie ou de rédaction : symbole, indice, coefficient ou signe erroné, condition mal recopiée, terme manquant ou en trop.\n- Un raisonnement erroné est une erreur logique ou mathématique : théorème ou formule mal appliqué, hypothèse non vérifiée, erreur de calcul, inférence invalide, cas oublié, raisonnement circulaire.\n- Rédige chaque point sous la forme « texte original de l’élève (recopié tel quel) → ce qui est faux → forme correcte ou dérivation correcte », en précisant l’étape exacte, pourquoi elle est fausse et la forme correcte de cette étape. Écris les flèches avec le caractère « → », pas avec une commande LaTeX.\n- Ne liste que les erreurs réellement écrites par l’élève. Ne commente ni la démarche globale, ni la présentation, ni la rigueur, ni la maîtrise, et n’écris aucune remarque récapitulative.\n- S’il n’y a aucune erreur d’écriture ni raisonnement erroné, écris seulement « Aucune erreur d’écriture ni raisonnement erroné trouvé ».\n- S’il n’y a pas de réponse ou si l’écriture est illisible, écris seulement « Pas de réponse ou illisible ».\n\nPartie 3 <similar> : un nouvel exercice du même type que l’original : même notion, même méthode de résolution, difficulté comparable, mais avec des nombres, fonctions, objets ou conditions différents. Écris uniquement l’énoncé complet, sans réponse, solution ni indication.\n\nLangue : rédige tout en français, sauf les mathématiques. Utilise LaTeX pour toutes les mathématiques, avec les signes dollar comme seuls délimiteurs : $...$ pour les formules en ligne et $$...$$ pour les formules centrées. N’utilise aucune commande LaTeX en dehors d’une formule ; écris les flèches et autres symboles directement en caractères. N’utilise pas de blocs de code Markdown.', prompt_grade_user:'Problème :\n{0}\n\nL’image est la réponse manuscrite de l’élève à ce problème. Résous-le d’abord de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format demandé avec les quatre parties <score>, <solution>, <errors> et <similar>.', prompt_grade_pages:'La réponse de l’élève s’étend sur {0} pages ; les images ci-dessus sont dans l’ordre des pages et doivent être lues ensemble comme une seule réponse continue.', grade_comment:'**Solution complète**\n{0}\n\n**Erreurs d’écriture et raisonnements erronés**\n{1}\n\n**Exercice du même type**\n{2}',
             prompt_wrong_item_context:'\n[Erreur {0}] Question {1} (note : {2}/10)\nProblème : {3}\n', prompt_wrong_ai_comment:'Commentaire IA : {0}\n', prompt_single_wrong_context:'[Erreur] Question {0} (note : {1}/10)\nProblème : {2}\n', prompt_wrong_grade_analysis:'Notation et analyse IA :\n{0}\n', prompt_wrong_images_user:'Les images ci-dessus sont les réponses manuscrites aux erreurs sélectionnées.\n\nQuestion de l’utilisateur : {0}'
         });
         Object.assign(I18N.zh, {
@@ -8453,22 +8486,22 @@
                 // 剔除 userDrawing / sourceFiles.data 等大字段再存 IDB
                 (exercisesToIDB.folders || []).forEach(folder => {
                     (folder.tasks || []).forEach(task => {
-                        (task.questions || []).forEach(q => { delete q.userDrawing; });
+                        (task.questions || []).forEach(q => { delete q.userDrawing; delete q.userDrawingExtra; });
                         (task.sourceFiles || []).forEach(sf => { delete sf.data; });
                     });
                 });
                 Object.values(exercisesToIDB.wrongByFolder || {}).forEach(wrongTasks => {
                     (wrongTasks || []).forEach(wt => {
                         (wt.questions || []).forEach(q => {
-                            delete q.userDrawing;
-                            (q.redoDrawings || []).forEach(rd => { delete rd.drawing; });
+                            delete q.userDrawing; delete q.userDrawingExtra;
+                            (q.redoDrawings || []).forEach(rd => { delete rd.drawing; delete rd.extra; });
                         });
                     });
                 });
                 Object.values(exercisesToIDB.archivedWrong || {}).forEach(items => {
                     (items || []).forEach(item => {
-                        delete item.userDrawing;
-                        (item.redoDrawings || []).forEach(rd => { delete rd.drawing; });
+                        delete item.userDrawing; delete item.userDrawingExtra;
+                        (item.redoDrawings || []).forEach(rd => { delete rd.drawing; delete rd.extra; });
                     });
                 });
                 saveFileData('__exercises_data__', JSON.stringify(exercisesToIDB)).catch(e => {
@@ -14075,46 +14108,52 @@
                                 }
                             }
                         }
-                        // 同步用户作答drawings（本地有云端没有 → 上传，本地没有云端有 → 拉取）
+                        // 同步用户作答drawings（本地有云端没有 → 上传，本地没有云端有 → 拉取），多页作答逐页同步
                         for (const q of (task.questions || [])) {
                             if (q.status === 'done') {
-                                const drawKey = `exercise_drawing_${task.id}_${q.index}`;
-                                const localDraw = await getFileData(drawKey).catch(() => null);
-                                if (localDraw) {
-                                    try { await r2PutObject('exercises/drawings/' + drawKey, localDraw, 'image/png'); } catch(e) {}
-                                } else {
-                                    try {
-                                        const cd = await r2GetObject('exercises/drawings/' + drawKey);
-                                        if (cd) await saveFileData(drawKey, cd);
-                                    } catch(e) {}
+                                for (const drawKey of exGradedPageKeys(`exercise_drawing_${task.id}_${q.index}`, q.userDrawingPages)) {
+                                    const localDraw = await getFileData(drawKey).catch(() => null);
+                                    if (localDraw) {
+                                        try { await r2PutObject('exercises/drawings/' + drawKey, localDraw, 'image/png'); } catch(e) {}
+                                    } else {
+                                        try {
+                                            const cd = await r2GetObject('exercises/drawings/' + drawKey);
+                                            if (cd) await saveFileData(drawKey, cd);
+                                        } catch(e) {}
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                // 同步错题和重做drawings
+                // 同步错题和重做drawings（多页作答逐页同步）
                 for (const fId of Object.keys(appData.exercises?.wrongByFolder || {})) {
                     for (const wt of (appData.exercises.wrongByFolder[fId] || [])) {
                         for (const q of (wt.questions || [])) {
-                            const wrongDrawKey = `exercise_drawing_${wt.taskId}_${q.questionIndex}`;
-                            const localWD = await getFileData(wrongDrawKey).catch(() => null);
-                            if (localWD) {
-                                try { await r2PutObject('exercises/drawings/' + wrongDrawKey, localWD, 'image/png'); } catch(e) {}
-                            } else {
-                                try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
+                            for (const wrongDrawKey of exGradedPageKeys(`exercise_drawing_${wt.taskId}_${q.questionIndex}`, q.userDrawingPages)) {
+                                const localWD = await getFileData(wrongDrawKey).catch(() => null);
+                                if (localWD) {
+                                    try { await r2PutObject('exercises/drawings/' + wrongDrawKey, localWD, 'image/png'); } catch(e) {}
+                                } else {
+                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
+                                }
                             }
                             for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
                                 const rd = q.redoDrawings[ri];
-                                const redoKey = `exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`;
-                                if (rd && rd.drawing) {
-                                    await saveFileData(redoKey, rd.drawing);
-                                    try { await r2PutObject('exercises/drawings/' + redoKey, rd.drawing, 'image/png'); } catch(e) {}
-                                } else {
-                                    const localRD = await getFileData(redoKey).catch(() => null);
-                                    if (localRD) {
-                                        try { await r2PutObject('exercises/drawings/' + redoKey, localRD, 'image/png'); } catch(e) {}
+                                const redoKeys = exGradedPageKeys(`exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`, rd && rd.pages);
+                                for (let p = 0; p < redoKeys.length; p++) {
+                                    const redoKey = redoKeys[p];
+                                    const memRD = rd ? exPageImageOf(rd.drawing, rd.extra, p) : null;
+                                    if (memRD) {
+                                        await saveFileData(redoKey, memRD);
+                                        try { await r2PutObject('exercises/drawings/' + redoKey, memRD, 'image/png'); } catch(e) {}
                                     } else {
-                                        try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                        const localRD = await getFileData(redoKey).catch(() => null);
+                                        if (localRD) {
+                                            try { await r2PutObject('exercises/drawings/' + redoKey, localRD, 'image/png'); } catch(e) {}
+                                        } else {
+                                            try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                        }
                                     }
                                 }
                             }
@@ -14758,23 +14797,23 @@
             const e = JSON.parse(JSON.stringify(exercises));
             (e.folders || []).forEach(folder => {
                 (folder.tasks || []).forEach(task => {
-                    (task.questions || []).forEach(q => { delete q.userDrawing; });
+                    (task.questions || []).forEach(q => { delete q.userDrawing; delete q.userDrawingExtra; });
                     (task.sourceFiles || []).forEach(sf => { delete sf.data; });
                 });
             });
             Object.values(e.wrongByFolder || {}).forEach(wrongTasks => {
                 (wrongTasks || []).forEach(wt => {
                     (wt.questions || []).forEach(q => {
-                        delete q.userDrawing;
-                        (q.redoDrawings || []).forEach(rd => { delete rd.drawing; });
+                        delete q.userDrawing; delete q.userDrawingExtra;
+                        (q.redoDrawings || []).forEach(rd => { delete rd.drawing; delete rd.extra; });
                     });
                 });
             });
             // 剔除归档错题中的 base64 数据
             Object.values(e.archivedWrong || {}).forEach(items => {
                 (items || []).forEach(item => {
-                    delete item.userDrawing;
-                    (item.redoDrawings || []).forEach(rd => { delete rd.drawing; });
+                    delete item.userDrawing; delete item.userDrawingExtra;
+                    (item.redoDrawings || []).forEach(rd => { delete rd.drawing; delete rd.extra; });
                 });
             });
             return e;
@@ -15997,13 +16036,14 @@
                                 uploadedExFiles++;
                             }
                         }
-                        // Upload user drawings
+                        // Upload user drawings（多页作答逐页上传）
                         for (const q of (task.questions || [])) {
                             if (q.status === 'done') {
-                                const drawKey = `exercise_drawing_${task.id}_${q.index}`;
-                                const drawData = await getFileData(drawKey).catch(() => null);
-                                if (drawData) {
-                                    await r2PutObject('exercises/drawings/' + drawKey, drawData, 'image/png');
+                                for (const drawKey of exGradedPageKeys(`exercise_drawing_${task.id}_${q.index}`, q.userDrawingPages)) {
+                                    const drawData = await getFileData(drawKey).catch(() => null);
+                                    if (drawData) {
+                                        await r2PutObject('exercises/drawings/' + drawKey, drawData, 'image/png');
+                                    }
                                 }
                             }
                         }
@@ -16016,18 +16056,22 @@
                     for (const wt of (exData.wrongByFolder[fId] || [])) {
                         for (const q of (wt.questions || [])) {
                             // 上传错题的原始作答drawing
-                            const wrongDrawKey = `exercise_drawing_${wt.taskId}_${q.questionIndex}`;
-                            const wrongDrawData = await getFileData(wrongDrawKey).catch(() => null);
-                            if (wrongDrawData) {
-                                await r2PutObject('exercises/drawings/' + wrongDrawKey, wrongDrawData, 'image/png');
+                            for (const wrongDrawKey of exGradedPageKeys(`exercise_drawing_${wt.taskId}_${q.questionIndex}`, q.userDrawingPages)) {
+                                const wrongDrawData = await getFileData(wrongDrawKey).catch(() => null);
+                                if (wrongDrawData) {
+                                    await r2PutObject('exercises/drawings/' + wrongDrawKey, wrongDrawData, 'image/png');
+                                }
                             }
                             // 上传重做drawings
                             for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
                                 const rd = q.redoDrawings[ri];
-                                if (rd.drawing) {
-                                    const redoKey = `exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`;
-                                    await saveFileData(redoKey, rd.drawing);
-                                    await r2PutObject('exercises/drawings/' + redoKey, rd.drawing, 'image/png');
+                                const redoKeys = exGradedPageKeys(`exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`, rd.pages);
+                                for (let p = 0; p < redoKeys.length; p++) {
+                                    const memRD = exPageImageOf(rd.drawing, rd.extra, p);
+                                    if (memRD) {
+                                        await saveFileData(redoKeys[p], memRD);
+                                        await r2PutObject('exercises/drawings/' + redoKeys[p], memRD, 'image/png');
+                                    }
                                 }
                             }
                         }
@@ -16036,17 +16080,21 @@
                 // 上传归档错题的drawings
                 for (const fId of Object.keys(exData.archivedWrong || {})) {
                     for (const item of (exData.archivedWrong[fId] || [])) {
-                        const archDrawKey = `exercise_drawing_${item.taskId}_${item.questionIndex}`;
-                        const archDrawData = await getFileData(archDrawKey).catch(() => null);
-                        if (archDrawData) {
-                            await r2PutObject('exercises/drawings/' + archDrawKey, archDrawData, 'image/png');
+                        for (const archDrawKey of exGradedPageKeys(`exercise_drawing_${item.taskId}_${item.questionIndex}`, item.userDrawingPages)) {
+                            const archDrawData = await getFileData(archDrawKey).catch(() => null);
+                            if (archDrawData) {
+                                await r2PutObject('exercises/drawings/' + archDrawKey, archDrawData, 'image/png');
+                            }
                         }
                         for (let ri = 0; ri < (item.redoDrawings || []).length; ri++) {
                             const rd = item.redoDrawings[ri];
-                            if (rd.drawing) {
-                                const redoKey = `exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`;
-                                await saveFileData(redoKey, rd.drawing);
-                                await r2PutObject('exercises/drawings/' + redoKey, rd.drawing, 'image/png');
+                            const redoKeys = exGradedPageKeys(`exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`, rd.pages);
+                            for (let p = 0; p < redoKeys.length; p++) {
+                                const memRD = exPageImageOf(rd.drawing, rd.extra, p);
+                                if (memRD) {
+                                    await saveFileData(redoKeys[p], memRD);
+                                    await r2PutObject('exercises/drawings/' + redoKeys[p], memRD, 'image/png');
+                                }
                             }
                         }
                     }
@@ -16787,13 +16835,14 @@
                         }
                         for (const q of (task.questions || [])) {
                             if (q.status === 'done') {
-                                const drawKey = `exercise_drawing_${task.id}_${q.index}`;
-                                const localDraw = await getFileData(drawKey).catch(() => null);
-                                if (!localDraw) {
-                                    try {
-                                        const cloudDraw = await r2GetObject('exercises/drawings/' + drawKey);
-                                        if (cloudDraw) await saveFileData(drawKey, cloudDraw);
-                                    } catch(e) {}
+                                for (const drawKey of exGradedPageKeys(`exercise_drawing_${task.id}_${q.index}`, q.userDrawingPages)) {
+                                    const localDraw = await getFileData(drawKey).catch(() => null);
+                                    if (!localDraw) {
+                                        try {
+                                            const cloudDraw = await r2GetObject('exercises/drawings/' + drawKey);
+                                            if (cloudDraw) await saveFileData(drawKey, cloudDraw);
+                                        } catch(e) {}
+                                    }
                                 }
                             }
                         }
@@ -16802,16 +16851,19 @@
                 for (const fId of Object.keys(appData.exercises?.wrongByFolder || {})) {
                     for (const wt of (appData.exercises.wrongByFolder[fId] || [])) {
                         for (const q of (wt.questions || [])) {
-                            const wrongDrawKey = `exercise_drawing_${wt.taskId}_${q.questionIndex}`;
-                            const localWD = await getFileData(wrongDrawKey).catch(() => null);
-                            if (!localWD) {
-                                try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
+                            for (const wrongDrawKey of exGradedPageKeys(`exercise_drawing_${wt.taskId}_${q.questionIndex}`, q.userDrawingPages)) {
+                                const localWD = await getFileData(wrongDrawKey).catch(() => null);
+                                if (!localWD) {
+                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
+                                }
                             }
                             for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
-                                const redoKey = `exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`;
-                                const localRD = await getFileData(redoKey).catch(() => null);
-                                if (!localRD) {
-                                    try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                const rd = q.redoDrawings[ri];
+                                for (const redoKey of exGradedPageKeys(`exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`, rd && rd.pages)) {
+                                    const localRD = await getFileData(redoKey).catch(() => null);
+                                    if (!localRD) {
+                                        try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                    }
                                 }
                             }
                         }
@@ -16819,16 +16871,19 @@
                 }
                 for (const fId of Object.keys(appData.exercises?.archivedWrong || {})) {
                     for (const item of (appData.exercises.archivedWrong[fId] || [])) {
-                        const archDrawKey = `exercise_drawing_${item.taskId}_${item.questionIndex}`;
-                        const localAD = await getFileData(archDrawKey).catch(() => null);
-                        if (!localAD) {
-                            try { const cd = await r2GetObject('exercises/drawings/' + archDrawKey); if (cd) await saveFileData(archDrawKey, cd); } catch(e) {}
+                        for (const archDrawKey of exGradedPageKeys(`exercise_drawing_${item.taskId}_${item.questionIndex}`, item.userDrawingPages)) {
+                            const localAD = await getFileData(archDrawKey).catch(() => null);
+                            if (!localAD) {
+                                try { const cd = await r2GetObject('exercises/drawings/' + archDrawKey); if (cd) await saveFileData(archDrawKey, cd); } catch(e) {}
+                            }
                         }
                         for (let ri = 0; ri < (item.redoDrawings || []).length; ri++) {
-                            const redoKey = `exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`;
-                            const localRD = await getFileData(redoKey).catch(() => null);
-                            if (!localRD) {
-                                try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                            const rd = item.redoDrawings[ri];
+                            for (const redoKey of exGradedPageKeys(`exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`, rd && rd.pages)) {
+                                const localRD = await getFileData(redoKey).catch(() => null);
+                                if (!localRD) {
+                                    try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                }
                             }
                         }
                     }
@@ -17100,14 +17155,15 @@
                                 console.warn('Failed to download exercise file:', sf.id, e);
                             }
                         }
-                        // 下载用户作答drawings
+                        // 下载用户作答drawings（多页作答逐页下载）
                         for (const q of (task.questions || [])) {
                             if (q.status === 'done') {
-                                const drawKey = `exercise_drawing_${task.id}_${q.index}`;
-                                try {
-                                    const drawData = await r2GetObject('exercises/drawings/' + drawKey);
-                                    if (drawData) await saveFileData(drawKey, drawData);
-                                } catch (e) {}
+                                for (const drawKey of exGradedPageKeys(`exercise_drawing_${task.id}_${q.index}`, q.userDrawingPages)) {
+                                    try {
+                                        const drawData = await r2GetObject('exercises/drawings/' + drawKey);
+                                        if (drawData) await saveFileData(drawKey, drawData);
+                                    } catch (e) {}
+                                }
                             }
                         }
                     }
@@ -17117,17 +17173,20 @@
                 for (const fId of Object.keys(restoredExData.wrongByFolder || {})) {
                     for (const wt of (restoredExData.wrongByFolder[fId] || [])) {
                         for (const q of (wt.questions || [])) {
-                            const wrongDrawKey = `exercise_drawing_${wt.taskId}_${q.questionIndex}`;
-                            try {
-                                const d = await r2GetObject('exercises/drawings/' + wrongDrawKey);
-                                if (d) await saveFileData(wrongDrawKey, d);
-                            } catch (e) {}
-                            for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
-                                const redoKey = `exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`;
+                            for (const wrongDrawKey of exGradedPageKeys(`exercise_drawing_${wt.taskId}_${q.questionIndex}`, q.userDrawingPages)) {
                                 try {
-                                    const rd = await r2GetObject('exercises/drawings/' + redoKey);
-                                    if (rd) await saveFileData(redoKey, rd);
+                                    const d = await r2GetObject('exercises/drawings/' + wrongDrawKey);
+                                    if (d) await saveFileData(wrongDrawKey, d);
                                 } catch (e) {}
+                            }
+                            for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
+                                const rdEntry = q.redoDrawings[ri];
+                                for (const redoKey of exGradedPageKeys(`exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`, rdEntry && rdEntry.pages)) {
+                                    try {
+                                        const rd = await r2GetObject('exercises/drawings/' + redoKey);
+                                        if (rd) await saveFileData(redoKey, rd);
+                                    } catch (e) {}
+                                }
                             }
                         }
                     }
@@ -17135,17 +17194,20 @@
                 // 下载归档错题的drawings
                 for (const fId of Object.keys(restoredExData.archivedWrong || {})) {
                     for (const item of (restoredExData.archivedWrong[fId] || [])) {
-                        const archDrawKey = `exercise_drawing_${item.taskId}_${item.questionIndex}`;
-                        try {
-                            const d = await r2GetObject('exercises/drawings/' + archDrawKey);
-                            if (d) await saveFileData(archDrawKey, d);
-                        } catch (e) {}
-                        for (let ri = 0; ri < (item.redoDrawings || []).length; ri++) {
-                            const redoKey = `exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`;
+                        for (const archDrawKey of exGradedPageKeys(`exercise_drawing_${item.taskId}_${item.questionIndex}`, item.userDrawingPages)) {
                             try {
-                                const rd = await r2GetObject('exercises/drawings/' + redoKey);
-                                if (rd) await saveFileData(redoKey, rd);
+                                const d = await r2GetObject('exercises/drawings/' + archDrawKey);
+                                if (d) await saveFileData(archDrawKey, d);
                             } catch (e) {}
+                        }
+                        for (let ri = 0; ri < (item.redoDrawings || []).length; ri++) {
+                            const rdEntry = item.redoDrawings[ri];
+                            for (const redoKey of exGradedPageKeys(`exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`, rdEntry && rdEntry.pages)) {
+                                try {
+                                    const rd = await r2GetObject('exercises/drawings/' + redoKey);
+                                    if (rd) await saveFileData(redoKey, rd);
+                                } catch (e) {}
+                            }
                         }
                     }
                 }
@@ -24697,6 +24759,110 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         let exDrawingCache = {};
         // 每道题的矢量笔画缓存: key 同上, value = JSON 字符串
         let exStrokesCache = {};
+        // 多页作答：每题可添加多张"纸"。当前页的数据实时放在 exStrokes 等全局变量里，
+        // 其余页放在 exPages 槽位中，切页时互换；第 1 页沿用原缓存 key，后续页追加 _p 序号
+        let exPages = [];              // [{ strokes, baseImage, opHistory, redoStack, dirtyLocal, dirtyCloud }]
+        let exPageIndex = 0;
+
+        // ---- 多页作答通用工具 ----
+        // 第 p 页的缓存/存储 key：第 1 页沿用原 key（兼容旧数据），后续页追加 _p 序号
+        function exPageKey(baseKey, p) {
+            return p ? `${baseKey}_p${p}` : baseKey;
+        }
+
+        // 一次作答（已评分图片或重做记录）全部页面的 IndexedDB key
+        function exGradedPageKeys(baseKey, pageCount) {
+            const keys = [];
+            for (let p = 0; p < Math.max(1, pageCount || 1); p++) keys.push(exPageKey(baseKey, p));
+            return keys;
+        }
+
+        // 作答对象里第 p 页的内存图片：第 1 页在 userDrawing/drawing 字段，其余在 extra 数组里
+        function exPageImageOf(first, extra, p) {
+            return (p === 0 ? first : (extra && extra[p - 1])) || null;
+        }
+
+        // 读取一次作答的全部页面图片：内存里有整套就直接用（评分时整套写入），
+        // 否则按页数从 IndexedDB 读取（落盘/同步后 base64 已被剔除）
+        async function exLoadDrawingPages(baseKey, first, extra, pageCount) {
+            if (first) return [first].concat(extra || []);
+            const pages = [];
+            for (const key of exGradedPageKeys(baseKey, pageCount)) {
+                const d = await getFileData(key).catch(() => null);
+                if (d) pages.push(d);
+            }
+            return pages;
+        }
+
+        // 把评分用的各页图片写入 IndexedDB 并触发云同步；比上次页数多出的旧 key 一并清理
+        async function exSaveGradedPages(baseKey, pages, prevPageCount) {
+            for (let p = 0; p < pages.length; p++) {
+                const key = exPageKey(baseKey, p);
+                await saveFileData(key, pages[p]);
+                triggerSyncOnFileChange(key, 'exercise_drawing_upload');
+            }
+            for (let p = pages.length; p < (prevPageCount || 1); p++) {
+                const key = exPageKey(baseKey, p);
+                deleteFileData(key).catch(e => {});
+                triggerSyncOnFileChange(key, 'exercise_drawing_delete');
+            }
+        }
+
+        // 评分请求的多模态内容：各页图片按页序排列，多页时补充说明
+        function exGradingContent(pages, latex) {
+            const content = pages.map(url => ({ type: 'image_url', image_url: { url } }));
+            let text = i18n('prompt_grade_user', latex);
+            if (pages.length > 1) text += '\n' + i18n('prompt_grade_pages', pages.length);
+            content.push({ type: 'text', text });
+            return content;
+        }
+
+        // 收集某题全部页面的书写图片（跳过空白页）：
+        // 先看未评分的书写缓存（内存 → IndexedDB），任一页有内容即以整套缓存为准；
+        // 否则退回已评分的作答图片（题目对象 → IndexedDB）
+        async function exCollectQuestionDrawings(taskId, i, q) {
+            const pickNonBlank = async (candidates) => {
+                const kept = [];
+                for (const d of candidates) {
+                    if (d && !isCanvasBlank(d) && !(await isCanvasBlankAsync(d))) kept.push(d);
+                }
+                return kept;
+            };
+            const cached = [];
+            for (let p = 0; p < (q.pageCount || 1); p++) {
+                const cacheKey = exPageKey(`${taskId}_${i}`, p);
+                let d = exDrawingCache[cacheKey] || null;
+                if (!d) { try { d = await getFileData(`exercise_drawing_cache_${cacheKey}`); } catch(e) {} }
+                cached.push(d);
+            }
+            const fromCache = await pickNonBlank(cached);
+            if (fromCache.length) return fromCache;
+            const graded = [];
+            for (let p = 0; p < (q.userDrawingPages || 1); p++) {
+                let d = exPageImageOf(q.userDrawing, q.userDrawingExtra, p);
+                if (!d) { try { d = await getFileData(exPageKey(`exercise_drawing_${taskId}_${i}`, p)); } catch(e) {} }
+                graded.push(d);
+            }
+            return pickNonBlank(graded);
+        }
+
+        // 删除一道题的全部本地/云端书写数据（书写缓存、计时、已评分图片，含多页）
+        function exPurgeQuestionDrawings(taskId, i, q) {
+            const pageCount = Math.max((q && q.pageCount) || 1, (q && q.userDrawingPages) || 1);
+            for (let p = 0; p < pageCount; p++) {
+                const cacheKey = exPageKey(`${taskId}_${i}`, p);
+                deleteFileData(`exercise_drawing_cache_${cacheKey}`).catch(e => {});
+                deleteFileData(`exercise_strokes_cache_${cacheKey}`).catch(e => {});
+                delete exDrawingCache[cacheKey];
+                delete exStrokesCache[cacheKey];
+                exDeleteDrawingFromCloud(`exercise_drawing_cache_${cacheKey}`);
+                exDeleteDrawingFromCloud(`exercise_strokes_cache_${cacheKey}`);
+                const drawKey = exPageKey(`exercise_drawing_${taskId}_${i}`, p);
+                deleteFileData(drawKey).catch(e => {});
+                triggerSyncOnFileChange(drawKey, 'exercise_drawing_delete');
+            }
+            deleteFileData(`exercise_timer_${taskId}_${i}`).catch(e => {});
+        }
 
         function getExercisesData() {
             if (!appData.exercises) appData.exercises = { folders: [], wrongByFolder: {}, archivedWrong: {} };
@@ -24867,21 +25033,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         try { deleteFileData('exercise_' + sf.id); } catch(e) {}
                         triggerSyncOnFileChange(sf.id, 'exercise_delete');
                     });
-                    // 清理每道题的IndexedDB缓存
-                    (task.questions || []).forEach((q, i) => {
-                        deleteFileData(`exercise_drawing_cache_${task.id}_${i}`).catch(e => {});
-                        deleteFileData(`exercise_strokes_cache_${task.id}_${i}`).catch(e => {});
-                        deleteFileData(`exercise_timer_${task.id}_${i}`).catch(e => {});
-                        deleteFileData(`exercise_drawing_${task.id}_${i}`).catch(e => {});
-                        triggerSyncOnFileChange(`exercise_drawing_${task.id}_${i}`, 'exercise_drawing_delete');
-                        exDeleteDrawingFromCloud(`exercise_drawing_cache_${task.id}_${i}`);
-                        exDeleteDrawingFromCloud(`exercise_strokes_cache_${task.id}_${i}`);
-                    });
-                    // 清理内存缓存
-                    (task.questions || []).forEach((q, i) => {
-                        delete exDrawingCache[`${task.id}_${i}`];
-                        delete exStrokesCache[`${task.id}_${i}`];
-                    });
+                    // 清理每道题的IndexedDB缓存与内存缓存（含多页）
+                    (task.questions || []).forEach((q, i) => exPurgeQuestionDrawings(task.id, i, q));
                 });
                 data.folders.splice(idx, 1);
                 delete data.wrongByFolder[folderId];
@@ -24980,18 +25133,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 showToast(i18n('toast_file_read_failed'));
                 return;
             }
-            // 清理每道题的IndexedDB缓存
-            (task.questions || []).forEach((q, i) => {
-                deleteFileData(`exercise_drawing_cache_${taskId}_${i}`).catch(e => {});
-                deleteFileData(`exercise_strokes_cache_${taskId}_${i}`).catch(e => {});
-                deleteFileData(`exercise_timer_${taskId}_${i}`).catch(e => {});
-                deleteFileData(`exercise_drawing_${taskId}_${i}`).catch(e => {});
-                delete exDrawingCache[`${taskId}_${i}`];
-                delete exStrokesCache[`${taskId}_${i}`];
-                triggerSyncOnFileChange(`exercise_drawing_${taskId}_${i}`, 'exercise_drawing_delete');
-                exDeleteDrawingFromCloud(`exercise_drawing_cache_${taskId}_${i}`);
-                exDeleteDrawingFromCloud(`exercise_strokes_cache_${taskId}_${i}`);
-            });
+            // 清理每道题的IndexedDB缓存与内存缓存（含多页）
+            (task.questions || []).forEach((q, i) => exPurgeQuestionDrawings(taskId, i, q));
             // Clear existing questions
             task.questions = [];
             saveData();
@@ -25023,21 +25166,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 try { deleteFileData('exercise_' + sf.id); } catch(e) {}
                 triggerSyncOnFileChange(sf.id, 'exercise_delete');
             });
-            // 清理每道题的IndexedDB缓存（书写、计时、drawing）
-            (task.questions || []).forEach((q, i) => {
-                deleteFileData(`exercise_drawing_cache_${taskId}_${i}`).catch(e => {});
-                deleteFileData(`exercise_strokes_cache_${taskId}_${i}`).catch(e => {});
-                deleteFileData(`exercise_timer_${taskId}_${i}`).catch(e => {});
-                deleteFileData(`exercise_drawing_${taskId}_${i}`).catch(e => {});
-                triggerSyncOnFileChange(`exercise_drawing_${taskId}_${i}`, 'exercise_drawing_delete');
-                exDeleteDrawingFromCloud(`exercise_drawing_cache_${taskId}_${i}`);
-                exDeleteDrawingFromCloud(`exercise_strokes_cache_${taskId}_${i}`);
-            });
-            // 清理内存缓存
-            (task.questions || []).forEach((q, i) => {
-                delete exDrawingCache[`${taskId}_${i}`];
-                delete exStrokesCache[`${taskId}_${i}`];
-            });
+            // 清理每道题的IndexedDB缓存与内存缓存（书写、计时、drawing，含多页）
+            (task.questions || []).forEach((q, i) => exPurgeQuestionDrawings(taskId, i, q));
             folder.tasks.splice(taskIdx, 1);
             // Also clean wrong questions for this task
             const wrongTasks = data.wrongByFolder[folderId] || [];
@@ -25061,32 +25191,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 return;
             }
 
-            // 收集有书写内容的题目（多层查找 + 异步像素检测）
+            // 收集有书写内容的题目（书写缓存 → 已评分图片 + 异步像素检测），多页作答收集全部非空页
             const toGrade = [];
             for (let i = 0; i < task.questions.length; i++) {
                 const q = task.questions[i];
-                const cacheKey = `${taskId}_${i}`;
-                let drawing = null;
-
-                const memDraw = exDrawingCache[cacheKey];
-                if (memDraw && !isCanvasBlank(memDraw)) drawing = memDraw;
-
-                if (!drawing) {
-                    try { const d = await getFileData(`exercise_drawing_cache_${cacheKey}`); if (d && !isCanvasBlank(d)) drawing = d; } catch(e) {}
-                }
-                if (!drawing && q.userDrawing && !isCanvasBlank(q.userDrawing)) {
-                    drawing = q.userDrawing;
-                }
-                if (!drawing) {
-                    try { const d = await getFileData(`exercise_drawing_${taskId}_${i}`); if (d && !isCanvasBlank(d)) drawing = d; } catch(e) {}
-                }
-
-                if (drawing) {
-                    const blank = await isCanvasBlankAsync(drawing);
-                    if (!blank) {
-                        toGrade.push({ index: i, question: q, drawing });
-                    }
-                }
+                const pages = await exCollectQuestionDrawings(taskId, i, q);
+                if (pages.length) toGrade.push({ index: i, question: q, pages });
             }
 
             if (toGrade.length === 0) {
@@ -25102,17 +25212,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             let failed = 0;
 
             for (const item of toGrade) {
-                const { index: qIdx, question: q, drawing } = item;
+                const { index: qIdx, question: q, pages } = item;
                 showToast(i18n('grading_progress', graded + 1, toGrade.length, qIdx + 1));
 
                 try {
-                    const msgContent = [{
-                        role: 'user',
-                        content: [
-                            { type: 'image_url', image_url: { url: drawing } },
-                            { type: 'text', text: i18n('prompt_grade_user', q.latex) }
-                        ]
-                    }];
+                    const msgContent = [{ role: 'user', content: exGradingContent(pages, q.latex) }];
 
                     const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
                     if (!result) { failed++; continue; }
@@ -25121,16 +25225,17 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     const score = Math.min(10, Math.max(0, Math.round(grading.score || 0)));
                     const comment = i18n('grade_comment', grading.solution || '-', grading.errors || '-', grading.similar_problem || '-');
 
-                    // 更新题目数据
+                    // 更新题目数据（多页作答：第 1 页在 userDrawing，其余在 userDrawingExtra）
+                    const prevPages = q.userDrawingPages || 1;
                     q.status = 'done';
                     q.score = score;
-                    q.userDrawing = drawing;
+                    q.userDrawing = pages[0];
+                    q.userDrawingExtra = pages.slice(1);
+                    q.userDrawingPages = pages.length;
                     q.aiComment = comment;
 
-                    // Save drawing to IDB
-                    const drawKey = `exercise_drawing_${taskId}_${qIdx}`;
-                    await saveFileData(drawKey, drawing);
-                    triggerSyncOnFileChange(drawKey, 'exercise_drawing_upload');
+                    // Save drawings to IDB（逐页）
+                    await exSaveGradedPages(`exercise_drawing_${taskId}_${qIdx}`, pages, prevPages);
 
                     // Add to wrong folder
                     if (!data.wrongByFolder[folderId]) data.wrongByFolder[folderId] = [];
@@ -25145,7 +25250,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                             questionIndex: qIdx,
                             latex: q.latex,
                             score,
-                            userDrawing: drawing,
+                            userDrawing: pages[0],
+                            userDrawingExtra: pages.slice(1),
+                            userDrawingPages: pages.length,
                             aiComment: comment,
                             timeUsedSeconds: q.timeUsedSeconds || 0,
                             redoDrawings: []
@@ -25180,47 +25287,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             showToast(i18n('toast_processing'));
 
-            // 收集有手写内容的题目——三层查找 + 异步像素检测
+            // 收集有手写内容的题目（书写缓存 → 已评分图片 + 异步像素检测），多页作答收集全部非空页
             const toExport = [];
             for (let i = 0; i < task.questions.length; i++) {
                 const q = task.questions[i];
-                const cacheKey = `${taskId}_${i}`;
-
-                // 按优先级查找drawing数据
-                let drawing = null;
-
-                // 1) 内存缓存
-                const memDraw = exDrawingCache[cacheKey];
-                if (memDraw && !isCanvasBlank(memDraw)) drawing = memDraw;
-
-                // 2) IndexedDB 书写缓存（未评分但已作答）
-                if (!drawing) {
-                    try {
-                        const dbDraw = await getFileData(`exercise_drawing_cache_${cacheKey}`);
-                        if (dbDraw && !isCanvasBlank(dbDraw)) drawing = dbDraw;
-                    } catch(e) {}
-                }
-
-                // 3) 题目对象上的 userDrawing（评分后保存的）
-                if (!drawing && q.userDrawing && !isCanvasBlank(q.userDrawing)) {
-                    drawing = q.userDrawing;
-                }
-
-                // 4) IndexedDB 已评分drawing
-                if (!drawing) {
-                    try {
-                        const dbDraw = await getFileData(`exercise_drawing_${taskId}_${i}`);
-                        if (dbDraw && !isCanvasBlank(dbDraw)) drawing = dbDraw;
-                    } catch(e) {}
-                }
-
-                // 最终用异步像素检测确认不是空白画布
-                if (drawing) {
-                    const blank = await isCanvasBlankAsync(drawing);
-                    if (!blank) {
-                        toExport.push({ index: i, question: q, drawing });
-                    }
-                }
+                const pages = await exCollectQuestionDrawings(taskId, i, q);
+                if (pages.length) toExport.push({ index: i, question: q, pages });
             }
 
             if (toExport.length === 0) {
@@ -25243,7 +25315,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const font = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
 
                 for (let itemIdx = 0; itemIdx < toExport.length; itemIdx++) {
-                    const { index: qIdx, question: q, drawing } = toExport[itemIdx];
+                    const { index: qIdx, question: q, pages: drawPages } = toExport[itemIdx];
                     showToast(i18n('rendering_q', itemIdx + 1, toExport.length));
 
                     const page = pdfDoc.addPage([595, 842]); // A4
@@ -25290,29 +25362,44 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     });
                     yPos -= 10;
 
-                    // 嵌入手写内容图片
-                    try {
-                        const imgBytes = Uint8Array.from(atob(drawing.split(',')[1]), c => c.charCodeAt(0));
-                        const img = await pdfDoc.embedPng(imgBytes);
-                        const imgDims = img.scale(1);
-                        const maxW = contentWidth;
-                        const maxH = yPos - margin;
-                        let drawW = imgDims.width;
-                        let drawH = imgDims.height;
-                        if (drawW > maxW) {
-                            drawH = drawH * (maxW / drawW);
-                            drawW = maxW;
+                    // 嵌入手写内容图片：第 1 页跟在题目下方，后续页各占一张新的 PDF 页
+                    const embedDrawing = async (target, drawing, yTop) => {
+                        try {
+                            const imgBytes = Uint8Array.from(atob(drawing.split(',')[1]), c => c.charCodeAt(0));
+                            const img = await pdfDoc.embedPng(imgBytes);
+                            const imgDims = img.scale(1);
+                            const maxW = contentWidth;
+                            const maxH = yTop - margin;
+                            let drawW = imgDims.width;
+                            let drawH = imgDims.height;
+                            if (drawW > maxW) {
+                                drawH = drawH * (maxW / drawW);
+                                drawW = maxW;
+                            }
+                            if (drawH > maxH) {
+                                drawW = drawW * (maxH / drawH);
+                                drawH = maxH;
+                            }
+                            target.drawImage(img, {
+                                x: margin, y: yTop - drawH,
+                                width: drawW, height: drawH
+                            });
+                        } catch (imgErr) {
+                            console.warn('嵌入手写图片失败:', imgErr);
                         }
-                        if (drawH > maxH) {
-                            drawW = drawW * (maxH / drawH);
-                            drawH = maxH;
-                        }
-                        page.drawImage(img, {
-                            x: margin, y: yPos - drawH,
-                            width: drawW, height: drawH
-                        });
-                    } catch (imgErr) {
-                        console.warn('嵌入手写图片失败:', imgErr);
+                    };
+                    await embedDrawing(page, drawPages[0], yPos);
+                    for (let p = 1; p < drawPages.length; p++) {
+                        const contPage = pdfDoc.addPage([595, 842]);
+                        let contY = height - margin;
+                        // 续页角标（Helvetica 只能画 ASCII）：Q3 (2/3)
+                        try {
+                            contPage.drawText(`Q${qIdx + 1} (${p + 1}/${drawPages.length})`, {
+                                x: margin, y: contY - 10, size: 10, font, color: PDFLib.rgb(0.45, 0.45, 0.45)
+                            });
+                        } catch (txtErr) {}
+                        contY -= 18;
+                        await embedDrawing(contPage, drawPages[p], contY);
                     }
 
                     // 纯作业导出，不显示评分
@@ -26564,11 +26651,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             if (isWrong && !q._redoing) {
                 // 错题模式：未点重做前，只显示题目和之前的作答结果，隐藏画布
-                // 如果 userDrawing 被 strip 了（云同步后），从 IndexedDB 恢复
-                if (!q.userDrawing) {
-                    const drawKey = `exercise_drawing_${taskId}_${q.questionIndex}`;
-                    const idbDraw = await getFileData(drawKey).catch(() => null);
-                    if (idbDraw) q.userDrawing = idbDraw;
+                // 如果 userDrawing 被 strip 了（云同步后），从 IndexedDB 恢复（多页作答含后续页）
+                const answerPages = await exLoadDrawingPages(`exercise_drawing_${taskId}_${q.questionIndex}`, q.userDrawing, q.userDrawingExtra, q.userDrawingPages);
+                if (!q.userDrawing && answerPages.length) {
+                    q.userDrawing = answerPages[0];
+                    q.userDrawingExtra = answerPages.slice(1);
                 }
                 const scoreColor = q.score >= 8 ? '#22c55e' : q.score >= 6 ? '#eab308' : '#ef4444';
                 const timeUsedStr = q.timeUsedSeconds ? formatExTime(q.timeUsedSeconds) : '';
@@ -26578,9 +26665,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (timeUsedStr) {
                     html += `<span style="font-size:12px;color:var(--text-muted);margin-left:8px;">⏱ ${i18n('time_used', timeUsedStr)}</span>`;
                 }
-                if (q.userDrawing) {
-                    html += `<img class="wrong-exercise-user-drawing" src="${q.userDrawing}" alt="${i18n('answer')}">`;
-                }
+                answerPages.forEach(src => {
+                    html += `<img class="wrong-exercise-user-drawing" src="${src}" alt="${i18n('answer')}">`;
+                });
                 if (q.aiComment) {
                     html += `<div class="ex-ai-comment" id="exAiCommentBlock" style="margin-top:6px;line-height:1.6;font-size:14px;">${renderChatMarkdownLatex(q.aiComment)}</div>`;
                     html += `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${i18n('long_press_regenerate_analysis')}</div>`;
@@ -26640,10 +26727,14 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             // 更新左下角评分徽标
             updateExScoreBadge(q, isWrong, folderId, taskId, questionIndex);
 
-            // Setup canvas and restore drawing
+            // Setup canvas and restore drawing（按题目记录的页数准备多页槽位）
             if (!isWrong || q._redoing) {
                 initExCanvas();
+                exInitPages(q.pageCount || 1);
                 restoreDrawingFromCache();
+            } else {
+                exPages = [];
+                exPageIndex = 0;
             }
 
             // Start timer (only for non-wrong mode)
@@ -26694,7 +26785,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             r2DeleteObject('exercises/drawings/' + dbKey).catch(e => {});
         }
 
-        // 保存当前题目书写到IndexedDB持久化；syncToCloud=true（返回/切题/完成时）同步到云端
+        // 保存当前题目全部页面的书写到IndexedDB持久化；syncToCloud=true（返回/切题/完成时）同步到云端
         function saveCurrentDrawingToCache(syncToCloud = true) {
             if (!exDoingState) return;
             const { taskId, questionIndex, isWrong, questions } = exDoingState;
@@ -26703,45 +26794,62 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!canvas || !exCanvasCtx) return;
             // 保存瞬间笔还没抬（切题/切后台）：先把进行中的笔画落账
             if (exDrawing) exStrokeEnd();
-            const key = `${taskId}_${questionIndex}`;
-            const dbKey = `exercise_drawing_cache_${key}`;
-            const strokesDbKey = `exercise_strokes_cache_${key}`;
-            if (exDirtyLocal) {
-                exDirtyLocal = false;
-                const dataUrl = canvas.toDataURL('image/png');
-                exDrawingCache[key] = dataUrl;
-                saveFileData(dbKey, dataUrl).catch(e => console.warn('保存书写缓存失败:', e));
-                if (exBaseImage) {
-                    // 底图（旧版PNG）已合入新PNG，矢量数据不含底图，删除避免恢复时丢内容
-                    delete exStrokesCache[key];
-                    deleteFileData(strokesDbKey).catch(e => {});
-                } else {
-                    const strokesJson = JSON.stringify({
-                        v: 2,
-                        strokes: exStrokes.map(s => ({ color: s.color, width: s.width, points: s.points }))
-                    });
-                    exStrokesCache[key] = strokesJson;
-                    saveFileData(strokesDbKey, strokesJson).catch(e => console.warn('保存笔画缓存失败:', e));
+            if (!exPages.length) exInitPages(1);
+            exStoreCurrentPage();
+            const baseKey = `${taskId}_${questionIndex}`;
+            exPages.forEach((page, p) => {
+                const key = exPageKey(baseKey, p);
+                const dbKey = `exercise_drawing_cache_${key}`;
+                const strokesDbKey = `exercise_strokes_cache_${key}`;
+                if (page.dirtyLocal) {
+                    page.dirtyLocal = false;
+                    const dataUrl = p === exPageIndex ? canvas.toDataURL('image/png') : exRenderPageToDataURL(page);
+                    exDrawingCache[key] = dataUrl;
+                    saveFileData(dbKey, dataUrl).catch(e => console.warn('保存书写缓存失败:', e));
+                    if (page.baseImage) {
+                        // 底图（旧版PNG）已合入新PNG，矢量数据不含底图，删除避免恢复时丢内容
+                        delete exStrokesCache[key];
+                        deleteFileData(strokesDbKey).catch(e => {});
+                    } else {
+                        const strokesJson = JSON.stringify({
+                            v: 2,
+                            strokes: page.strokes.map(s => ({ color: s.color, width: s.width, points: s.points }))
+                        });
+                        exStrokesCache[key] = strokesJson;
+                        saveFileData(strokesDbKey, strokesJson).catch(e => console.warn('保存笔画缓存失败:', e));
+                    }
                 }
-            }
-            if (syncToCloud && exDirtyCloud) {
-                exDirtyCloud = false;
-                exUploadDrawingToCloud(dbKey, exDrawingCache[key], 'image/png');
-                if (exStrokesCache[key]) {
-                    exUploadDrawingToCloud(strokesDbKey, exStrokesCache[key], 'application/json');
-                } else {
-                    exDeleteDrawingFromCloud(strokesDbKey);
+                if (syncToCloud && page.dirtyCloud) {
+                    page.dirtyCloud = false;
+                    exUploadDrawingToCloud(dbKey, exDrawingCache[key], 'image/png');
+                    if (exStrokesCache[key]) {
+                        exUploadDrawingToCloud(strokesDbKey, exStrokesCache[key], 'application/json');
+                    } else {
+                        exDeleteDrawingFromCloud(strokesDbKey);
+                    }
                 }
-            }
+            });
+            // 当前页的脏标记以槽位为准（上面已清）
+            exDirtyLocal = exPages[exPageIndex].dirtyLocal;
+            exDirtyCloud = exPages[exPageIndex].dirtyCloud;
         }
 
-        // 恢复书写：优先矢量笔画（支持整笔橡皮），其次旧版PNG缓存；本地没有时尝试云端
+        // 恢复书写：逐页恢复，第 1 页先恢复（用户正看着），其余页恢复到各自槽位
         let exRestoreToken = 0;
         async function restoreDrawingFromCache() {
             if (!exDoingState) return;
             const { taskId, questionIndex } = exDoingState;
-            const key = `${taskId}_${questionIndex}`;
+            const baseKey = `${taskId}_${questionIndex}`;
             const token = ++exRestoreToken;
+            for (let p = 0; p < exPages.length; p++) {
+                await exRestorePageFromCache(baseKey, p, token);
+                if (token !== exRestoreToken) return;
+            }
+        }
+
+        // 恢复单页：优先矢量笔画（支持整笔橡皮），其次旧版PNG缓存；本地没有时尝试云端
+        async function exRestorePageFromCache(baseKey, p, token) {
+            const key = exPageKey(baseKey, p);
             const dbKey = `exercise_drawing_cache_${key}`;
             const strokesDbKey = `exercise_strokes_cache_${key}`;
 
@@ -26761,8 +26869,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (imageData) saveFileData(dbKey, imageData).catch(e => {});
             }
             // 等待期间已切题/关闭则放弃本次恢复
-            if (token !== exRestoreToken || !exDoingState || !exCanvasCtx
-                || `${exDoingState.taskId}_${exDoingState.questionIndex}` !== key) return;
+            const stillValid = () => token === exRestoreToken && exDoingState && exCanvasCtx
+                && `${exDoingState.taskId}_${exDoingState.questionIndex}` === baseKey && p < exPages.length;
+            if (!stillValid()) return;
             if (strokesJson) exStrokesCache[key] = strokesJson;
             if (imageData) exDrawingCache[key] = imageData;
 
@@ -26778,9 +26887,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                                 points: s.points,
                                 bbox: exComputeBBox(s.points)
                             }));
-                        // 恢复等待期间可能已落笔，保留新笔画
-                        exStrokes = restored.concat(exStrokes);
-                        exRedrawCanvas();
+                        exApplyRestoredPage(p, restored, null);
                         return;
                     }
                 } catch(e) { console.warn('恢复笔画缓存失败:', e); }
@@ -26789,12 +26896,24 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 // 旧版PNG缓存：作为底图恢复（整笔橡皮不作用于底图，可用"清除"清空）
                 const img = new Image();
                 img.onload = () => {
-                    if (token !== exRestoreToken || !exDoingState || !exCanvasCtx
-                        || `${exDoingState.taskId}_${exDoingState.questionIndex}` !== key) return;
-                    exBaseImage = img;
-                    exRedrawCanvas();
+                    if (!stillValid()) return;
+                    exApplyRestoredPage(p, null, img);
                 };
                 img.src = imageData;
+            }
+        }
+
+        // 把恢复结果合入第 p 页：当前页直接进全局状态并重绘，其余页进槽位。
+        // 恢复等待期间可能已落笔，保留新笔画
+        function exApplyRestoredPage(p, strokes, baseImage) {
+            if (p === exPageIndex) {
+                if (strokes) exStrokes = strokes.concat(exStrokes);
+                if (baseImage) exBaseImage = baseImage;
+                exRedrawCanvas();
+            } else if (exPages[p]) {
+                const slot = exPages[p];
+                if (strokes) slot.strokes = strokes.concat(slot.strokes);
+                if (baseImage) slot.baseImage = baseImage;
             }
         }
 
@@ -26993,20 +27112,21 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return { minX, minY, maxX, maxY };
         }
 
-        function exDrawStrokePath(s) {
+        // ctx 缺省为可见画布；离屏渲染非当前页时传入离屏上下文
+        function exDrawStrokePath(s, ctx = exCanvasCtx) {
             const pts = s.points;
             if (!pts || pts.length < 2) return;
-            exCanvasCtx.save();
-            exCanvasCtx.globalCompositeOperation = 'source-over';
-            exCanvasCtx.strokeStyle = s.color || '#000000';
-            exCanvasCtx.lineWidth = s.width || 2;
-            exCanvasCtx.beginPath();
-            exCanvasCtx.moveTo(pts[0][0], pts[0][1]);
+            ctx.save();
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.strokeStyle = s.color || '#000000';
+            ctx.lineWidth = s.width || 2;
+            ctx.beginPath();
+            ctx.moveTo(pts[0][0], pts[0][1]);
             for (let i = 1; i < pts.length; i++) {
-                exCanvasCtx.lineTo(pts[i][0], pts[i][1]);
+                ctx.lineTo(pts[i][0], pts[i][1]);
             }
-            exCanvasCtx.stroke();
-            exCanvasCtx.restore();
+            ctx.stroke();
+            ctx.restore();
         }
 
         // 整幅重绘：底图（旧版PNG缓存）+ 全部矢量笔画
@@ -27387,6 +27507,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (canvas) canvas.style.cursor = 'crosshair';
         }
 
+        // 清除只作用于当前页，其余页保持不动
         function clearExCanvas() {
             if (!exCanvasCtx) return;
             if (exStrokes.length || exBaseImage) {
@@ -27397,7 +27518,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 exMarkDirty();
             }
             if (exDoingState) {
-                const key = `${exDoingState.taskId}_${exDoingState.questionIndex}`;
+                const key = exPageKey(`${exDoingState.taskId}_${exDoingState.questionIndex}`, exPageIndex);
                 delete exDrawingCache[key];
                 delete exStrokesCache[key];
                 deleteFileData(`exercise_drawing_cache_${key}`).catch(e => {});
@@ -27407,9 +27528,123 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
-        function getExCanvasDataURL() {
+        // ==================== 多页作答：页面槽位与切换 ====================
+        function exNewPageState() {
+            return { strokes: [], baseImage: null, opHistory: [], redoStack: [], dirtyLocal: false, dirtyCloud: false };
+        }
+
+        // 当前页的全局状态存回槽位（切页/保存/收集图片前调用）
+        function exStoreCurrentPage() {
+            const slot = exPages[exPageIndex];
+            if (!slot) return;
+            slot.strokes = exStrokes;
+            slot.baseImage = exBaseImage;
+            slot.opHistory = exOpHistory;
+            slot.redoStack = exRedoStack;
+            slot.dirtyLocal = exDirtyLocal;
+            slot.dirtyCloud = exDirtyCloud;
+        }
+
+        // 把槽位 p 的状态装入全局变量成为当前页
+        function exLoadPage(p) {
+            const slot = exPages[p];
+            if (!slot) return;
+            exStrokes = slot.strokes;
+            exBaseImage = slot.baseImage;
+            exOpHistory = slot.opHistory;
+            exRedoStack = slot.redoStack;
+            exDirtyLocal = slot.dirtyLocal;
+            exDirtyCloud = slot.dirtyCloud;
+            exCurrentStroke = null;
+            exEraseSession = null;
+            exPageIndex = p;
+        }
+
+        // initExCanvas 之后调用：按页数建槽位，第 1 页对应刚重置的全局状态
+        function exInitPages(count) {
+            exPages = [];
+            for (let p = 0; p < Math.max(1, count || 1); p++) exPages.push(exNewPageState());
+            exPageIndex = 0;
+            exStoreCurrentPage();
+            updateExPageNav();
+        }
+
+        function updateExPageNav() {
+            const nav = document.getElementById('exPageNav');
+            if (!nav) return;
+            const n = exPages.length;
+            nav.style.display = n > 1 ? '' : 'none';
+            const indicator = document.getElementById('exPageIndicator');
+            if (indicator) indicator.textContent = `${exPageIndex + 1}/${n}`;
+            const prevBtn = document.getElementById('exPrevPageBtn');
+            const nextBtn = document.getElementById('exNextPageBtn');
+            if (prevBtn) prevBtn.disabled = exPageIndex <= 0;
+            if (nextBtn) nextBtn.disabled = exPageIndex >= n - 1;
+        }
+
+        function exSwitchPage(p) {
+            if (!exCanvasCtx || p < 0 || p >= exPages.length) return;
+            if (p === exPageIndex) { updateExPageNav(); return; }
+            if (exDrawing) exStrokeEnd();
+            // 先把当前页落到本地缓存（内部会把全局状态存回槽位），再装入目标页
+            saveCurrentDrawingToCache(false);
+            exStoreCurrentPage();
+            exLoadPage(p);
+            exRedrawCanvas();
+            updateExUndoRedoButtons();
+            updateExPageNav();
+            // Boox 原生直渲染层不显示底层画布更新，切页后需重绘
+            if (window.__booxPen && typeof window.__booxPen.refresh === 'function') window.__booxPen.refresh();
+        }
+
+        // 添加一页：新页追加到末尾并切换过去，页数记在题目对象上随元数据持久化/同步
+        function exAddPage() {
+            if (!exDoingState || !exCanvasCtx) return;
+            if (!exPages.length) exInitPages(1);
+            exPages.push(exNewPageState());
+            const q = exDoingState.questions[exDoingState.questionIndex];
+            if (q) q.pageCount = exPages.length;
+            saveData();
+            debouncedChatSync();
+            exSwitchPage(exPages.length - 1);
+        }
+
+        function exPrevPage() { exSwitchPage(exPageIndex - 1); }
+        function exNextPage() { exSwitchPage(exPageIndex + 1); }
+
+        // 把非当前页的笔画离屏渲染成 PNG（尺寸、缩放与可见画布一致）
+        function exRenderPageToDataURL(page) {
             const canvas = document.getElementById('exerciseDoingCanvas');
-            return canvas.toDataURL('image/png');
+            const off = document.createElement('canvas');
+            off.width = canvas.width;
+            off.height = canvas.height;
+            const ctx = off.getContext('2d');
+            if (page.baseImage) {
+                try { ctx.drawImage(page.baseImage, 0, 0); } catch(e) {}
+            }
+            ctx.scale(2, 2);
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            for (let i = 0; i < page.strokes.length; i++) exDrawStrokePath(page.strokes[i], ctx);
+            return off.toDataURL('image/png');
+        }
+
+        // 当前题目全部页面的 PNG（当前页取自可见画布，其余页离屏渲染）
+        function exCollectPageImages() {
+            if (exDrawing) exStrokeEnd();
+            if (!exPages.length) exInitPages(1);
+            exStoreCurrentPage();
+            const canvas = document.getElementById('exerciseDoingCanvas');
+            return exPages.map((page, p) => p === exPageIndex ? canvas.toDataURL('image/png') : exRenderPageToDataURL(page));
+        }
+
+        // 评分时跳过空白页；全部空白则保留第 1 页（与单页时提交空白画布的行为一致）
+        async function exDropBlankPages(images) {
+            const kept = [];
+            for (const img of images) {
+                if (!(await isCanvasBlankAsync(img))) kept.push(img);
+            }
+            return kept.length ? kept : images.slice(0, 1);
         }
 
         function exPrevQuestion() {
@@ -27436,10 +27671,15 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 return;
             }
 
-            const userDrawing = getExCanvasDataURL();
+            // 收集全部页面的作答图片；空白页不参与评分（全空则保留第 1 页）
+            const pageImages = exCollectPageImages();
 
             // 完成时先把当前书写持久化到本地并云同步（评分失败也不丢内容）
             saveCurrentDrawingToCache();
+
+            const gradedPages = await exDropBlankPages(pageImages);
+            const userDrawing = gradedPages[0];
+            const extraDrawings = gradedPages.slice(1);
 
             // Show loading
             showToast(i18n('toast_asking_ai'));
@@ -27447,13 +27687,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const systemPrompt = i18n('prompt_grade_system');
 
             try {
-                const msgContent = [{
-                    role: 'user',
-                    content: [
-                        { type: 'image_url', image_url: { url: userDrawing } },
-                        { type: 'text', text: i18n('prompt_grade_user', q.latex) }
-                    ]
-                }];
+                const msgContent = [{ role: 'user', content: exGradingContent(gradedPages, q.latex) }];
 
                 const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
                 if (!result) { showToast(i18n('toast_ai_return_parse_fail')); return; }
@@ -27463,18 +27697,17 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const comment = i18n('grade_comment', grading.solution || '-', grading.errors || '-', grading.similar_problem || '-');
 
                 if (isWrong) {
-                    // Update wrong question
+                    // Update wrong question（重做只更新内存里的作答图片，IndexedDB 里的原始作答保持不变）
                     q.score = score;
                     q.userDrawing = userDrawing;
+                    q.userDrawingExtra = extraDrawings;
                     q.aiComment = comment;
                     q._redoing = false;
                     if (!q.redoDrawings) q.redoDrawings = [];
-                    q.redoDrawings.push({ drawing: userDrawing, score, comment, time: new Date().toISOString() });
-                    // Save redo drawing to IDB and trigger sync
+                    q.redoDrawings.push({ drawing: userDrawing, extra: extraDrawings, pages: gradedPages.length, score, comment, time: new Date().toISOString() });
+                    // Save redo drawings to IDB and trigger sync（逐页）
                     const redoIdx = q.redoDrawings.length - 1;
-                    const redoKey = `exercise_redo_drawing_${taskId}_${q.questionIndex}_${redoIdx}`;
-                    await saveFileData(redoKey, userDrawing);
-                    triggerSyncOnFileChange(redoKey, 'exercise_drawing_upload');
+                    await exSaveGradedPages(`exercise_redo_drawing_${taskId}_${q.questionIndex}_${redoIdx}`, gradedPages, 1);
                 } else {
                     // Finalize timer: save elapsed time for this question
                     let finalTimeUsed = 0;
@@ -27496,18 +27729,19 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     const task = folder.tasks.find(t => t.id === taskId);
                     if (!task) return;
                     const origQ = task.questions[questionIndex];
+                    const prevPages = origQ ? (origQ.userDrawingPages || 1) : 1;
                     if (origQ) {
                         origQ.status = 'done';
                         origQ.score = score;
                         origQ.userDrawing = userDrawing;
+                        origQ.userDrawingExtra = extraDrawings;
+                        origQ.userDrawingPages = gradedPages.length;
                         origQ.aiComment = comment;
                         origQ.timeUsedSeconds = finalTimeUsed;
                     }
 
-                    // Save user drawing to IDB
-                    const drawKey = `exercise_drawing_${taskId}_${questionIndex}`;
-                    await saveFileData(drawKey, userDrawing);
-                    triggerSyncOnFileChange(drawKey, 'exercise_drawing_upload');
+                    // Save user drawings to IDB（逐页）
+                    await exSaveGradedPages(`exercise_drawing_${taskId}_${questionIndex}`, gradedPages, prevPages);
 
                     // Add to wrong folder
                     if (!data.wrongByFolder[folderId]) data.wrongByFolder[folderId] = [];
@@ -27521,6 +27755,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         latex: origQ.latex,
                         score,
                         userDrawing,
+                        userDrawingExtra: extraDrawings,
+                        userDrawingPages: gradedPages.length,
                         aiComment: comment,
                         timeUsedSeconds: finalTimeUsed,
                         redoDrawings: []
@@ -27662,19 +27898,18 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             window._wrongAIContext = questionsText;
             window._wrongAIChatOverride = true;
 
-            // 收集选中错题的手写图片用于发送（优先内存，fallback IDB）
+            // 收集选中错题的手写图片用于发送（优先内存，fallback IDB），多页作答逐页附带
             const wrongImages = [];
             for (const item of wrongSelectedItems) {
                 const wt = wrongTasks.find(t => t.taskId === item.taskId);
                 if (!wt) continue;
                 const q = wt.questions[item.qIdx];
                 if (!q) continue;
-                let drawing = q.userDrawing;
-                if (!drawing) {
-                    drawing = await getFileData(`exercise_drawing_${item.taskId}_${q.questionIndex}`).catch(() => null);
-                }
-                if (drawing && !isCanvasBlank(drawing)) {
-                    wrongImages.push({ qIndex: q.questionIndex, drawing });
+                const pages = await exLoadDrawingPages(`exercise_drawing_${item.taskId}_${q.questionIndex}`, q.userDrawing, q.userDrawingExtra, q.userDrawingPages);
+                for (const drawing of pages) {
+                    if (drawing && !isCanvasBlank(drawing)) {
+                        wrongImages.push({ qIndex: q.questionIndex, drawing });
+                    }
                 }
             }
             window._wrongAIImages = wrongImages;
@@ -27704,12 +27939,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             window._wrongAIChatOverride = true;
 
             const wrongImages = [];
-            let drawing = q.userDrawing;
-            if (!drawing) {
-                drawing = await getFileData(`exercise_drawing_${taskId}_${q.questionIndex ?? questionIndex}`).catch(() => null);
-            }
-            if (drawing && !isCanvasBlank(drawing)) {
-                wrongImages.push({ qIndex: q.questionIndex ?? questionIndex, drawing });
+            const pages = await exLoadDrawingPages(`exercise_drawing_${taskId}_${q.questionIndex ?? questionIndex}`, q.userDrawing, q.userDrawingExtra, q.userDrawingPages);
+            for (const drawing of pages) {
+                if (drawing && !isCanvasBlank(drawing)) {
+                    wrongImages.push({ qIndex: q.questionIndex ?? questionIndex, drawing });
+                }
             }
             window._wrongAIImages = wrongImages;
 
@@ -27724,24 +27958,15 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const q = questions[questionIndex];
             if (!q) return;
 
-            let drawing = q.userDrawing;
-            if (!drawing) {
-                drawing = await getFileData(`exercise_drawing_${taskId}_${q.questionIndex ?? questionIndex}`).catch(() => null);
-            }
-            if (!drawing) { showToast(i18n('answer_image_unavailable')); return; }
+            const pages = await exLoadDrawingPages(`exercise_drawing_${taskId}_${q.questionIndex ?? questionIndex}`, q.userDrawing, q.userDrawingExtra, q.userDrawingPages);
+            if (!pages.length) { showToast(i18n('answer_image_unavailable')); return; }
 
             showToast(i18n('toast_asking_ai'));
 
             const systemPrompt = i18n('prompt_grade_system');
 
             try {
-                const msgContent = [{
-                    role: 'user',
-                    content: [
-                        { type: 'image_url', image_url: { url: drawing } },
-                        { type: 'text', text: i18n('prompt_grade_user', q.latex) }
-                    ]
-                }];
+                const msgContent = [{ role: 'user', content: exGradingContent(pages, q.latex) }];
 
                 const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
                 if (!result) { showToast(i18n('toast_ai_return_parse_fail')); return; }
@@ -27814,6 +28039,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 taskId, taskName: wt.taskName,
                 questionIndex: q.questionIndex, latex: q.latex,
                 score: q.score, userDrawing: q.userDrawing,
+                userDrawingExtra: q.userDrawingExtra, userDrawingPages: q.userDrawingPages,
                 aiComment: q.aiComment, timeUsedSeconds: q.timeUsedSeconds || 0,
                 redoDrawings: q.redoDrawings || [],
                 archivedAt: new Date().toISOString()
@@ -27845,11 +28071,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const wt = wrongTasks.find(t => t.taskId === taskId);
             if (!wt || !wt.questions || !wt.questions[qIdx]) return;
             const q = wt.questions[qIdx];
-            // Clean up IDB drawings for this wrong question
-            const drawKey = `exercise_drawing_${taskId}_${q.questionIndex}`;
-            deleteFileData(drawKey).catch(e => {});
+            // Clean up IDB drawings for this wrong question（含多页）
+            const drawKeys = exGradedPageKeys(`exercise_drawing_${taskId}_${q.questionIndex}`, q.userDrawingPages);
+            drawKeys.forEach(k => deleteFileData(k).catch(e => {}));
             (q.redoDrawings || []).forEach((rd, ri) => {
-                deleteFileData(`exercise_redo_drawing_${taskId}_${q.questionIndex}_${ri}`).catch(e => {});
+                exGradedPageKeys(`exercise_redo_drawing_${taskId}_${q.questionIndex}_${ri}`, rd && rd.pages)
+                    .forEach(k => deleteFileData(k).catch(e => {}));
             });
             wt.questions.splice(qIdx, 1);
             if (wt.questions.length === 0) {
@@ -27858,7 +28085,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
             saveData();
             debouncedChatSync();
-            triggerSyncOnFileChange(drawKey, 'exercise_drawing_delete');
+            drawKeys.forEach(k => triggerSyncOnFileChange(k, 'exercise_drawing_delete'));
             const folder = data.folders.find(f => f.id === folderId);
             if (folder) {
                 const updatedWrong = data.wrongByFolder[folderId] || [];
@@ -27886,6 +28113,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             wt.questions.push({
                 questionIndex: item.questionIndex, latex: item.latex,
                 score: item.score, userDrawing: item.userDrawing,
+                userDrawingExtra: item.userDrawingExtra, userDrawingPages: item.userDrawingPages,
                 aiComment: item.aiComment, timeUsedSeconds: item.timeUsedSeconds || 0,
                 redoDrawings: item.redoDrawings || []
             });

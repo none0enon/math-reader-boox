@@ -125,7 +125,8 @@
         { name: 'lectureDraft', id: 'lectureDraftCanvas',   cssWidth: 2 },
         { name: 'lectureDraw',  id: 'lectureDrawCanvas',    cssWidth: 2 },
         { name: 'exercise',     id: 'exerciseDoingCanvas',  cssWidth: 2,
-          eraserBtn: 'exEraserBtn',     eraserToggle: 'toggleExEraser' },
+          eraserBtn: 'exEraserBtn',     eraserToggle: 'toggleExEraser',
+          suspendFlag: '__exNativeSuspend' },
         { name: 'annotation',   selector: '.annotation-canvas', cssWidth: 3,
           eraserBtn: 'readerEraserBtn', eraserToggle: 'toggleReaderEraser' }
     ];

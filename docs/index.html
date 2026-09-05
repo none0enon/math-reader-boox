@@ -2005,6 +2005,17 @@
             cursor: crosshair;
         }
 
+        /* 套索覆盖层：只画圈选轨迹与选区框，不接收指针；仅套索模式显示，
+           避免常驻覆盖在 desynchronized 画布上拖慢书写落墨 */
+        .exercise-doing-overlay {
+            position: absolute;
+            left: 0;
+            top: 0;
+            pointer-events: none;
+            display: none;
+        }
+        .exercise-doing-canvas-wrap.ex-lasso-on .exercise-doing-overlay { display: block; }
+
         .exercise-doing-toolbar {
             display: flex;
             align-items: center;
@@ -5218,6 +5229,10 @@
             <button class="ex-tool-btn" id="exEraserBtn" onclick="toggleExEraser()" title="橡皮擦" data-i18n="eraser" data-i18n-attr="title">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H7L3 16c-.8-.8-.8-2 0-2.8L14.6 1.6c.8-.8 2-.8 2.8 0L21.4 5.6c.8.8.8 2 0 2.8L10 20"/><path d="M6 12l5 5"/></svg>
             </button>
+            <!-- 套索：圈选笔迹后可拖动位置、拖角/按钮缩放（与笔记本套索一致） -->
+            <button class="ex-tool-btn" id="exLassoBtn" onclick="toggleExLasso()" title="套索" data-i18n="lasso" data-i18n-attr="title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 3"><ellipse cx="12" cy="10" rx="8" ry="6"/><path d="M7 15.5c-1 1.5-1 3 .5 4.5" stroke-dasharray="none"/></svg>
+            </button>
             <button class="ex-tool-btn" id="exUndoBtn" onclick="exUndo()" title="撤销" data-i18n="undo" data-i18n-attr="title">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
             </button>
@@ -5241,6 +5256,7 @@
         </div>
         <div class="exercise-doing-canvas-wrap">
             <canvas class="exercise-doing-canvas" id="exerciseDoingCanvas"></canvas>
+            <canvas class="exercise-doing-overlay" id="exerciseDoingOverlay"></canvas>
         </div>
         <div class="exercise-doing-footer">
             <span class="ex-score-badge" id="exScoreBadge" style="display:none;" onclick="onExScoreBadgeClick()"></span>
@@ -5249,6 +5265,8 @@
             <button class="exercise-doing-btn" id="exNextBtn" onclick="exNextQuestion()" data-i18n="next_q">下一题</button>
             <button class="exercise-doing-btn" id="exAskAIBtn" onclick="wrongQuestionAskAI()" style="display:none;" data-i18n="ask_ai">问AI</button>
         </div>
+        <!-- 套索选区浮动工具栏（放大/缩小/改色/复制/删除），样式复用笔记本 -->
+        <div class="nb-float-toolbar" id="exSelToolbar"></div>
     </div>
 
     <!-- 习题/错题选择问AI弹出菜单 -->
@@ -24762,6 +24780,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         let exCurrentStroke = null;    // 正在书写的笔画
         let exEraseSession = null;     // 一次橡皮拖动中消除的笔画 [{ index, stroke }]
         let exEraserMode = false;
+        // 套索：圈选整笔笔迹后拖动移动、拖角/按钮缩放；选区直接引用 exStrokes 里的笔画对象，
+        // 变换原地修改点坐标（撤销/重做靠对象身份定位笔画，不能换对象）
+        let exLassoMode = false;
+        let exLassoPath = null;        // 圈选中的轨迹 [[x,y],...]
+        let exSelection = null;        // { strokes: [笔画引用], bbox: {minX,minY,maxX,maxY} }
+        let exSelDrag = null;          // 选区拖动中 { mode:'move'|'resize', ... }
+        window.__exNativeSuspend = false;   // 为真时 boox-pen 挂起习题画布的原生直渲染（套索模式）
         let exDirtyLocal = false;      // 自上次写入本地缓存后内容有改动
         let exDirtyCloud = false;      // 自上次云同步后内容有改动
         // 每道题的书写内容缓存: key = `${taskId}_${questionIndex}`, value = dataURL
@@ -26715,6 +26740,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const toolbar = document.querySelector('.exercise-doing-toolbar');
 
             if (isWrong && !q._redoing) {
+                // 进入只读错题前立即隐藏画布并清掉上一题已圈中的笔迹状态，
+                // 避免上一题的浮动按钮仍能修改笔迹。
+                canvasWrap.style.display = 'none';
+                toolbar.style.display = 'none';
+                if (exLassoMode) exSetLassoMode(false);
+                else exClearSelection();
                 // 错题模式：未点重做前，只显示题目和之前的作答结果，隐藏画布
                 // 当前作答（最近一次重做，否则原始作答）；内存图片被 strip 后从 IndexedDB 恢复，多页含后续页
                 const answerPages = await exWrongAnswerPages(taskId, q, questionIndex);
@@ -26751,9 +26782,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     commentBlock.addEventListener('touchend', clearLp);
                     commentBlock.addEventListener('contextmenu', (e) => { e.preventDefault(); regenerateWrongComment(); });
                 }
-                // 隐藏画布和工具栏
-                canvasWrap.style.display = 'none';
-                toolbar.style.display = 'none';
                 // question区域撑满画布位置，footer保持底部
                 qDiv.style.flex = '1';
                 qDiv.style.maxHeight = 'none';
@@ -27046,6 +27074,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function closeExerciseDoing() {
             saveCurrentDrawingToCache();
             saveCurrentExTimer();
+            if (exLassoMode) exSetLassoMode(false);
             const wasWrong = exDoingState && exDoingState.isWrong;
             const prevFolderId = exDoingState && exDoingState.folderId;
             document.getElementById('exerciseDoingView').classList.remove('show');
@@ -27216,7 +27245,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 exDrawStrokePath(exStrokes[i]);
             }
             // 书写中途重绘（恢复/橡皮）会清掉当前实时路径，重新接上
-            if (exDrawing && !exEraserMode) {
+            if (exDrawing && !exEraserMode && !exLassoMode) {
                 exCanvasCtx.beginPath();
                 exCanvasCtx.moveTo(exLastX, exLastY);
             }
@@ -27311,7 +27340,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             exDrawing = true;
             exLastX = x;
             exLastY = y;
-            if (exEraserMode) {
+            if (exLassoMode) {
+                exLassoBegin(x, y);
+            } else if (exEraserMode) {
                 exEraseSession = [];
                 exEraseAlong(x, y, x, y);
             } else {
@@ -27323,7 +27354,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function exStrokeMove(x, y) {
             if (!isFinite(x) || !isFinite(y)) return;
-            if (exEraserMode) {
+            if (exLassoMode) {
+                exLassoMove(x, y);
+                exLastX = x;
+                exLastY = y;
+            } else if (exEraserMode) {
                 if (exEraseSession) exEraseAlong(exLastX, exLastY, x, y);
                 exLastX = x;
                 exLastY = y;
@@ -27335,7 +27370,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function exStrokeEnd() {
             exDrawing = false;
-            if (exEraserMode) {
+            if (exLassoMode) {
+                exLassoEnd();
+            } else if (exEraserMode) {
                 if (exEraseSession && exEraseSession.length) {
                     exPushOp({ type: 'erase', removed: exEraseSession });
                     exMarkDirty();
@@ -27473,10 +27510,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             updateExUndoRedoButtons();
             const eraserBtn = document.getElementById('exEraserBtn');
             if (eraserBtn) eraserBtn.classList.remove('active');
+            // 套索状态随画布一起重置；覆盖层尺寸跟随主画布
+            exResetLasso();
+            exSizeOverlay();
 
             canvas.onpointerdown = null;
             canvas.onpointermove = null;
             canvas.onpointerup = null;
+            canvas.onpointercancel = null;
+            canvas.onlostpointercapture = null;
+            canvas.onpointerleave = null;
 
             if (lowLatency) {
                 setupLowLatencyExCanvas(canvas);
@@ -27487,26 +27530,32 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 return;
             }
 
+            let activePointerId = null;
+            const finishActivePointer = (e) => {
+                if (activePointerId === null || e.pointerId !== activePointerId) return;
+                activePointerId = null;
+                if (exDrawing) exStrokeEnd();
+            };
+
             canvas.onpointerdown = (e) => {
                 e.preventDefault();
+                if (activePointerId !== null) return;
+                activePointerId = e.pointerId;
                 const rect = canvas.getBoundingClientRect();
                 exStrokeBegin(e.clientX - rect.left, e.clientY - rect.top);
             };
 
             canvas.onpointermove = (e) => {
-                if (!exDrawing) return;
+                if (!exDrawing || e.pointerId !== activePointerId) return;
                 e.preventDefault();
                 const rect = canvas.getBoundingClientRect();
                 exStrokeMove(e.clientX - rect.left, e.clientY - rect.top);
             };
 
-            canvas.onpointerup = (e) => {
-                if (exDrawing) exStrokeEnd();
-            };
-
-            canvas.onpointerleave = () => {
-                if (exDrawing) exStrokeEnd();
-            };
+            canvas.onpointerup = finishActivePointer;
+            canvas.onpointercancel = finishActivePointer;
+            canvas.onlostpointercapture = finishActivePointer;
+            canvas.onpointerleave = finishActivePointer;
 
             canvas.addEventListener('touchstart', (e) => { e.preventDefault(); }, { passive: false });
         }
@@ -27526,8 +27575,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             } else if (op.type === 'clear') {
                 exStrokes = op.strokes.slice();
                 exBaseImage = op.baseImage || null;
+            } else if (op.type === 'xform') {
+                exApplySnapshot(op.strokes, op.before);
+            } else if (op.type === 'add') {
+                for (let i = 0; i < op.strokes.length; i++) {
+                    const idx = exStrokes.indexOf(op.strokes[i]);
+                    if (idx >= 0) exStrokes.splice(idx, 1);
+                }
             }
             exRedoStack.push(op);
+            exClearSelection();
             exRedrawCanvas();
             exMarkDirty();
             updateExUndoRedoButtons();
@@ -27546,14 +27603,21 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             } else if (op.type === 'clear') {
                 exStrokes = [];
                 exBaseImage = null;
+            } else if (op.type === 'xform') {
+                exApplySnapshot(op.strokes, op.after);
+            } else if (op.type === 'add') {
+                exStrokes.push(...op.strokes);
             }
             exOpHistory.push(op);
+            exClearSelection();
             exRedrawCanvas();
             exMarkDirty();
             updateExUndoRedoButtons();
         }
 
         function toggleExEraser() {
+            // 橡皮与套索互斥
+            if (!exEraserMode && exLassoMode) exSetLassoMode(false);
             exEraserMode = !exEraserMode;
             const btn = document.getElementById('exEraserBtn');
             if (btn) btn.classList.toggle('active', exEraserMode);
@@ -27575,6 +27639,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             exEraserMode = false;
             const eraserBtn = document.getElementById('exEraserBtn');
             if (eraserBtn) eraserBtn.classList.remove('active');
+            // 选笔色即回到书写，退出套索
+            if (exLassoMode) exSetLassoMode(false);
             const canvas = document.getElementById('exerciseDoingCanvas');
             if (canvas) canvas.style.cursor = 'crosshair';
         }
@@ -27582,6 +27648,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 清除只作用于当前页，其余页保持不动
         function clearExCanvas() {
             if (!exCanvasCtx) return;
+            exClearSelection();
             if (exStrokes.length || exBaseImage) {
                 exPushOp({ type: 'clear', strokes: exStrokes, baseImage: exBaseImage });
                 exStrokes = [];
@@ -27598,6 +27665,412 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 exDeleteDrawingFromCloud(`exercise_drawing_cache_${key}`);
                 exDeleteDrawingFromCloud(`exercise_strokes_cache_${key}`);
             }
+        }
+
+        // ==================== 套索：圈选 / 移动 / 缩放 ====================
+        // 与笔记本套索一致：多数点落在圈选多边形内的整笔被选中；框内拖动移动，
+        // 四角手柄拖动等比缩放，浮动工具栏提供放大/缩小/改色/复制/删除。
+        // 轨迹与选区框画在独立覆盖层上，不会混入保存/评分用的作答图片。
+        const EX_SEL_PAD = 8;          // 选区框相对笔迹包围盒的外扩（CSS px）
+        const EX_SEL_HANDLE = 10;      // 四角缩放手柄边长
+        const EX_SEL_HANDLE_HIT = 16;  // 手柄命中半径
+        const EX_SEL_COLORS = ['#000000', '#3b82f6', '#ef4444'];   // 与工具栏笔色一致
+        let exOverlayRaf = 0;
+        let exSelDragRaf = 0;
+
+        function exOverlayCanvas() { return document.getElementById('exerciseDoingOverlay'); }
+
+        // 覆盖层与主画布同尺寸、同 2 倍缩放（initExCanvas 之后调用）
+        function exSizeOverlay() {
+            const ov = exOverlayCanvas();
+            const canvas = document.getElementById('exerciseDoingCanvas');
+            if (!ov || !canvas) return;
+            ov.width = canvas.width;
+            ov.height = canvas.height;
+            ov.style.width = canvas.style.width;
+            ov.style.height = canvas.style.height;
+            exDrawOverlay();
+        }
+
+        function toggleExLasso() { exSetLassoMode(!exLassoMode); }
+
+        function exSetLassoMode(on) {
+            on = !!on;
+            if (on === exLassoMode) return;
+            // 切换瞬间笔还没抬：先按原模式结束进行中的手势
+            if (exDrawing) exStrokeEnd();
+            exLassoMode = on;
+            if (on && exEraserMode) {
+                exEraserMode = false;
+                const eraserBtn = document.getElementById('exEraserBtn');
+                if (eraserBtn) eraserBtn.classList.remove('active');
+            }
+            const btn = document.getElementById('exLassoBtn');
+            if (btn) btn.classList.toggle('active', on);
+            const wrap = document.querySelector('.exercise-doing-canvas-wrap');
+            if (wrap) wrap.classList.toggle('ex-lasso-on', on);
+            const canvas = document.getElementById('exerciseDoingCanvas');
+            if (canvas) canvas.style.cursor = on ? 'default' : 'crosshair';
+            exLassoPath = null;
+            exClearSelection();
+            // Boox：套索走标准指针事件，挂起原生直渲染；回到书写时刷新一次清掉残留
+            window.__exNativeSuspend = on;
+            if (window.__booxPen) {
+                if (typeof window.__booxPen.syncRegions === 'function') window.__booxPen.syncRegions();
+                if (!on && typeof window.__booxPen.refresh === 'function') window.__booxPen.refresh();
+            }
+        }
+
+        // initExCanvas 时调用：状态与界面归零（新题目总是从书写模式开始）
+        function exResetLasso() {
+            if (exSelDragRaf) { cancelAnimationFrame(exSelDragRaf); exSelDragRaf = 0; }
+            exLassoMode = false;
+            exLassoPath = null;
+            exSelDrag = null;
+            exSelection = null;
+            window.__exNativeSuspend = false;
+            const btn = document.getElementById('exLassoBtn');
+            if (btn) btn.classList.remove('active');
+            const wrap = document.querySelector('.exercise-doing-canvas-wrap');
+            if (wrap) wrap.classList.remove('ex-lasso-on');
+            exHideSelToolbar();
+        }
+
+        // ---------- 覆盖层：圈选轨迹 + 选区虚线框 + 四角手柄 ----------
+        function exDrawOverlay() {
+            const ov = exOverlayCanvas();
+            if (!ov || !ov.width) return;
+            const ctx = ov.getContext('2d');
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, ov.width, ov.height);
+            ctx.setTransform(2, 0, 0, 2, 0, 0);
+            if (exLassoPath && exLassoPath.length > 1) {
+                ctx.save();
+                ctx.strokeStyle = '#3b82f6';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([6, 5]);
+                ctx.beginPath();
+                ctx.moveTo(exLassoPath[0][0], exLassoPath[0][1]);
+                for (let i = 1; i < exLassoPath.length; i++) ctx.lineTo(exLassoPath[i][0], exLassoPath[i][1]);
+                ctx.stroke();
+                ctx.restore();
+            }
+            if (exSelection) {
+                const r = exSelFrame();
+                ctx.save();
+                ctx.strokeStyle = '#3b82f6';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([8, 6]);
+                ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+                ctx.setLineDash([]);
+                ctx.fillStyle = '#ffffff';
+                const h = EX_SEL_HANDLE;
+                for (const c of exSelFrameCorners(r)) {
+                    ctx.fillRect(c[0] - h / 2, c[1] - h / 2, h, h);
+                    ctx.strokeRect(c[0] - h / 2, c[1] - h / 2, h, h);
+                }
+                ctx.restore();
+            }
+        }
+
+        function exScheduleOverlay() {
+            if (exOverlayRaf) return;
+            exOverlayRaf = requestAnimationFrame(() => { exOverlayRaf = 0; exDrawOverlay(); });
+        }
+
+        // 选区框：包围盒外扩 EX_SEL_PAD
+        function exSelFrame() {
+            const b = exSelection.bbox;
+            return { x0: b.minX - EX_SEL_PAD, y0: b.minY - EX_SEL_PAD, x1: b.maxX + EX_SEL_PAD, y1: b.maxY + EX_SEL_PAD };
+        }
+        // 四角顺序：左上、右上、左下、右下
+        function exSelFrameCorners(r) {
+            return [[r.x0, r.y0], [r.x1, r.y0], [r.x0, r.y1], [r.x1, r.y1]];
+        }
+
+        function exSelBBox(strokes) {
+            const bb = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+            for (const s of strokes) {
+                const b = s.bbox || (s.bbox = exComputeBBox(s.points));
+                if (b.minX < bb.minX) bb.minX = b.minX;
+                if (b.minY < bb.minY) bb.minY = b.minY;
+                if (b.maxX > bb.maxX) bb.maxX = b.maxX;
+                if (b.maxY > bb.maxY) bb.maxY = b.maxY;
+            }
+            return bb;
+        }
+
+        function exClearSelection() {
+            if (exSelDragRaf) { cancelAnimationFrame(exSelDragRaf); exSelDragRaf = 0; }
+            exSelection = null;
+            exSelDrag = null;
+            exHideSelToolbar();
+            exDrawOverlay();
+        }
+
+        // ---------- 手势：套索模式下 exStrokeBegin/Move/End 转到这里 ----------
+        function exLassoBegin(x, y) {
+            exLassoPath = null;
+            exSelDrag = null;
+            if (exSelection) {
+                const r = exSelFrame();
+                const corners = exSelFrameCorners(r);
+                const b = exSelection.bbox;
+                // 四角手柄 → 以对角为锚点等比缩放（退化成点/线的选区不缩放）
+                const grips = [[b.minX, b.minY], [b.maxX, b.minY], [b.minX, b.maxY], [b.maxX, b.maxY]];
+                const anchors = [[b.maxX, b.maxY], [b.minX, b.maxY], [b.maxX, b.minY], [b.minX, b.minY]];
+                for (let i = 0; i < 4; i++) {
+                    if (Math.hypot(x - corners[i][0], y - corners[i][1]) <= EX_SEL_HANDLE_HIT
+                            && Math.hypot(grips[i][0] - anchors[i][0], grips[i][1] - anchors[i][1]) >= 4) {
+                        // 记住实际按下位置；四角小白方块在笔迹包围盒外，缩放量必须从
+                        // 按下后的位移计算，否则第一次移动就会产生比例跳变。
+                        exSelDrag = { mode: 'resize', anchor: anchors[i], grip: grips[i], start: [x, y], before: exSelSnapshot(), k: 1, moved: false, pending: null };
+                        return;
+                    }
+                }
+                // 框内 → 拖动移动
+                const slack = 6;
+                if (x >= r.x0 - slack && x <= r.x1 + slack && y >= r.y0 - slack && y <= r.y1 + slack) {
+                    exSelDrag = { mode: 'move', start: [x, y], last: [x, y], before: exSelSnapshot(), moved: false, pending: null };
+                    return;
+                }
+                // 框外 → 取消选区并开始新的圈选
+                exClearSelection();
+            }
+            exLassoPath = [[x, y]];
+            exDrawOverlay();
+        }
+
+        function exLassoMove(x, y) {
+            if (exSelDrag) {
+                // 按帧合并：pointerrawupdate 频率下逐事件整页重绘太重
+                exSelDrag.pending = [x, y];
+                if (!exSelDragRaf) exSelDragRaf = requestAnimationFrame(exApplySelDrag);
+            } else if (exLassoPath) {
+                const last = exLassoPath[exLassoPath.length - 1];
+                // 轨迹抽稀：过密的点只会拖慢多边形命中判断
+                if (Math.abs(x - last[0]) >= 1.5 || Math.abs(y - last[1]) >= 1.5) {
+                    exLassoPath.push([x, y]);
+                    exScheduleOverlay();
+                }
+            }
+        }
+
+        function exLassoEnd() {
+            if (exSelDrag) {
+                const d = exSelDrag;
+                if (exSelDragRaf) { cancelAnimationFrame(exSelDragRaf); exSelDragRaf = 0; }
+                exApplySelDrag();
+                exSelDrag = null;
+                if (!exSelection) return;
+                if (d.moved) {
+                    exPushOp({ type: 'xform', strokes: exSelection.strokes.slice(), before: d.before, after: exSelSnapshot() });
+                    exMarkDirty();
+                    exShowSelToolbar();
+                } else {
+                    // 没有实际位移：还原细微抖动；框内原地点按则取消选区（与笔记本一致）
+                    exApplySnapshot(exSelection.strokes, d.before);
+                    exSelection.bbox = exSelBBox(exSelection.strokes);
+                    exRedrawCanvas();
+                    if (d.mode === 'move') {
+                        exClearSelection();
+                    } else {
+                        exDrawOverlay();
+                        exShowSelToolbar();
+                    }
+                }
+                return;
+            }
+            if (exLassoPath) {
+                const poly = exLassoPath;
+                exLassoPath = null;
+                exFinishLasso(poly);
+            }
+        }
+
+        function exApplySelDrag() {
+            exSelDragRaf = 0;
+            const d = exSelDrag;
+            if (!d || !d.pending || !exSelection) return;
+            const x = d.pending[0], y = d.pending[1];
+            d.pending = null;
+            if (d.mode === 'move') {
+                const dx = x - d.last[0], dy = y - d.last[1];
+                if (!dx && !dy) return;
+                d.last = [x, y];
+                if (Math.hypot(x - d.start[0], y - d.start[1]) > 2) d.moved = true;
+                exTranslateSelection(dx, dy);
+            } else {
+                // 指针在"锚点→手柄"对角线上的投影比例即缩放倍数
+                const ax = d.anchor[0], ay = d.anchor[1];
+                const vx = d.grip[0] - ax, vy = d.grip[1] - ay;
+                const len2 = vx * vx + vy * vy;
+                let k = len2 ? 1 + ((x - d.start[0]) * vx + (y - d.start[1]) * vy) / len2 : 1;
+                k = Math.max(0.05, Math.min(20, k));
+                if (k === d.k) return;
+                d.k = k;
+                if (Math.hypot(x - d.start[0], y - d.start[1]) > 2 && Math.abs(k - 1) > 0.01) d.moved = true;
+                exScaleSelectionFrom(d.before, ax, ay, k);
+            }
+            exRedrawCanvas();
+            exDrawOverlay();
+            exPositionSelToolbar();
+        }
+
+        function exTranslateSelection(dx, dy) {
+            for (const s of exSelection.strokes) {
+                const pts = s.points;
+                for (let i = 0; i < pts.length; i++) { pts[i][0] += dx; pts[i][1] += dy; }
+                if (s.bbox) { s.bbox.minX += dx; s.bbox.maxX += dx; s.bbox.minY += dy; s.bbox.maxY += dy; }
+                else s.bbox = exComputeBBox(pts);
+            }
+            const b = exSelection.bbox;
+            b.minX += dx; b.maxX += dx; b.minY += dy; b.maxY += dy;
+        }
+
+        // 以 (ax, ay) 为中心，把选区从快照 before 等比缩放 k 倍（线宽同步缩放）
+        function exScaleSelectionFrom(before, ax, ay, k) {
+            const strokes = exSelection.strokes;
+            for (let i = 0; i < strokes.length && i < before.length; i++) {
+                const s = strokes[i], src = before[i];
+                s.points = src.points.map(p => [
+                    Math.round((ax + (p[0] - ax) * k) * 100) / 100,
+                    Math.round((ay + (p[1] - ay) * k) * 100) / 100
+                ]);
+                s.width = Math.max(0.5, Math.min(40, Math.round((src.width || 2) * k * 100) / 100));
+                s.bbox = exComputeBBox(s.points);
+            }
+            exSelection.bbox = exSelBBox(strokes);
+        }
+
+        // 选区快照（撤销/重做用）：颜色、线宽、点坐标深拷贝
+        function exSelSnapshot(strokes) {
+            const list = strokes || (exSelection ? exSelection.strokes : []);
+            return list.map(s => ({ color: s.color, width: s.width, points: s.points.map(p => [p[0], p[1]]) }));
+        }
+
+        // 把快照写回对应笔画对象（原地修改，保持撤销/重做依赖的对象身份）
+        function exApplySnapshot(strokes, snap) {
+            for (let i = 0; i < strokes.length && i < snap.length; i++) {
+                const s = strokes[i], src = snap[i];
+                s.color = src.color;
+                s.width = src.width;
+                s.points = src.points.map(p => [p[0], p[1]]);
+                s.bbox = exComputeBBox(s.points);
+            }
+        }
+
+        // 圈选结束：多数点落在多边形内的整笔被选中
+        function exFinishLasso(poly) {
+            if (!poly || poly.length < 3) { exDrawOverlay(); return; }
+            const pb = exComputeBBox(poly);
+            const hits = [];
+            for (const s of exStrokes) {
+                const pts = s.points;
+                if (!pts || !pts.length) continue;
+                const b = s.bbox || (s.bbox = exComputeBBox(pts));
+                if (b.maxX < pb.minX || b.minX > pb.maxX || b.maxY < pb.minY || b.minY > pb.maxY) continue;
+                let inside = 0;
+                for (let i = 0; i < pts.length; i++) if (nbPointInPoly(pts[i], poly)) inside++;
+                if (inside / pts.length > 0.5) hits.push(s);
+            }
+            if (!hits.length) { exClearSelection(); return; }
+            exSelection = { strokes: hits, bbox: exSelBBox(hits) };
+            exDrawOverlay();
+            exShowSelToolbar();
+        }
+
+        // ---------- 选区工具栏动作 ----------
+        function exCommitSelXform(before) {
+            exPushOp({ type: 'xform', strokes: exSelection.strokes.slice(), before, after: exSelSnapshot() });
+            exMarkDirty();
+            exRedrawCanvas();
+            exDrawOverlay();
+            exShowSelToolbar();
+        }
+        // 按钮缩放：以选区中心等比缩放
+        function exScaleSelection(k) {
+            if (!exSelection) return;
+            const before = exSelSnapshot();
+            const b = exSelection.bbox;
+            exScaleSelectionFrom(before, (b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, k);
+            exCommitSelXform(before);
+        }
+        function exColorSelection(color) {
+            if (!exSelection) return;
+            const before = exSelSnapshot();
+            for (const s of exSelection.strokes) s.color = color;
+            exCommitSelXform(before);
+        }
+        function exCopySelection() {
+            if (!exSelection) return;
+            const copies = exSelSnapshot().map(src => {
+                const points = src.points.map(p => [p[0] + 20, p[1] + 20]);
+                return { color: src.color, width: src.width, points, bbox: exComputeBBox(points) };
+            });
+            exStrokes.push(...copies);
+            exPushOp({ type: 'add', strokes: copies });
+            exMarkDirty();
+            exSelection = { strokes: copies, bbox: exSelBBox(copies) };
+            exRedrawCanvas();
+            exDrawOverlay();
+            exShowSelToolbar();
+        }
+        function exDeleteSelection() {
+            if (!exSelection) return;
+            const set = new Set(exSelection.strokes);
+            // 与整笔橡皮相同的记录格式（倒序索引），撤销时按位置插回
+            const removed = [];
+            for (let i = exStrokes.length - 1; i >= 0; i--) {
+                if (set.has(exStrokes[i])) {
+                    removed.push({ index: i, stroke: exStrokes[i] });
+                    exStrokes.splice(i, 1);
+                }
+            }
+            exClearSelection();
+            if (removed.length) {
+                exPushOp({ type: 'erase', removed });
+                exMarkDirty();
+            }
+            exRedrawCanvas();
+        }
+
+        function exShowSelToolbar() {
+            const bar = document.getElementById('exSelToolbar');
+            if (!bar || !exSelection) return;
+            bar.innerHTML = `
+                <button onclick="exScaleSelection(1.15)">${i18n('enlarge')}</button>
+                <button onclick="exScaleSelection(0.87)">${i18n('shrink')}</button>
+                <span class="sep"></span>
+                ${EX_SEL_COLORS.map(c => `<button onclick="exColorSelection('${c}')" title="${i18n('change_color')}"><span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${c};vertical-align:middle;"></span></button>`).join('')}
+                <span class="sep"></span>
+                <button onclick="exCopySelection()">${i18n('copy')}</button>
+                <button onclick="exDeleteSelection()" style="color:#ef4444;">${i18n('delete')}</button>`;
+            bar.classList.add('show');
+            exPositionSelToolbar();
+        }
+        // 工具栏放在选区上方；上方放不下则放到选区下方，并限制在做题视图内
+        function exPositionSelToolbar() {
+            const bar = document.getElementById('exSelToolbar');
+            if (!bar || !exSelection || !bar.classList.contains('show')) return;
+            const view = document.getElementById('exerciseDoingView');
+            const canvas = document.getElementById('exerciseDoingCanvas');
+            if (!view || !canvas) return;
+            const vr = view.getBoundingClientRect(), cr = canvas.getBoundingClientRect();
+            const r = exSelFrame();
+            const bw = bar.offsetWidth, bh = bar.offsetHeight;
+            const canvasTop = cr.top - vr.top;
+            let x = cr.left - vr.left + r.x0;
+            let y = canvasTop + r.y0 - bh - 10;
+            if (y < canvasTop + 4) y = canvasTop + r.y1 + 12;
+            x = Math.max(8, Math.min(x, vr.width - bw - 8));
+            y = Math.max(4, Math.min(y, vr.height - bh - 4));
+            bar.style.left = x + 'px';
+            bar.style.top = y + 'px';
+        }
+        function exHideSelToolbar() {
+            const bar = document.getElementById('exSelToolbar');
+            if (bar) bar.classList.remove('show');
         }
 
         // ==================== 多页作答：页面槽位与切换 ====================
@@ -27658,6 +28131,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!exCanvasCtx || p < 0 || p >= exPages.length) return;
             if (p === exPageIndex) { updateExPageNav(); return; }
             if (exDrawing) exStrokeEnd();
+            // 选区只属于当前页
+            exClearSelection();
             // 先把当前页落到本地缓存（内部会把全局状态存回槽位），再装入目标页
             saveCurrentDrawingToCache(false);
             exStoreCurrentPage();

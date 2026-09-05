@@ -26740,6 +26740,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const toolbar = document.querySelector('.exercise-doing-toolbar');
 
             if (isWrong && !q._redoing) {
+                // 进入只读错题前立即隐藏画布并清掉上一题已圈中的笔迹状态，
+                // 避免上一题的浮动按钮仍能修改笔迹。
+                canvasWrap.style.display = 'none';
+                toolbar.style.display = 'none';
+                if (exLassoMode) exSetLassoMode(false);
+                else exClearSelection();
                 // 错题模式：未点重做前，只显示题目和之前的作答结果，隐藏画布
                 // 当前作答（最近一次重做，否则原始作答）；内存图片被 strip 后从 IndexedDB 恢复，多页含后续页
                 const answerPages = await exWrongAnswerPages(taskId, q, questionIndex);
@@ -26776,9 +26782,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     commentBlock.addEventListener('touchend', clearLp);
                     commentBlock.addEventListener('contextmenu', (e) => { e.preventDefault(); regenerateWrongComment(); });
                 }
-                // 隐藏画布和工具栏
-                canvasWrap.style.display = 'none';
-                toolbar.style.display = 'none';
                 // question区域撑满画布位置，footer保持底部
                 qDiv.style.flex = '1';
                 qDiv.style.maxHeight = 'none';
@@ -27514,6 +27517,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             canvas.onpointerdown = null;
             canvas.onpointermove = null;
             canvas.onpointerup = null;
+            canvas.onpointercancel = null;
+            canvas.onlostpointercapture = null;
+            canvas.onpointerleave = null;
 
             if (lowLatency) {
                 setupLowLatencyExCanvas(canvas);
@@ -27524,26 +27530,32 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 return;
             }
 
+            let activePointerId = null;
+            const finishActivePointer = (e) => {
+                if (activePointerId === null || e.pointerId !== activePointerId) return;
+                activePointerId = null;
+                if (exDrawing) exStrokeEnd();
+            };
+
             canvas.onpointerdown = (e) => {
                 e.preventDefault();
+                if (activePointerId !== null) return;
+                activePointerId = e.pointerId;
                 const rect = canvas.getBoundingClientRect();
                 exStrokeBegin(e.clientX - rect.left, e.clientY - rect.top);
             };
 
             canvas.onpointermove = (e) => {
-                if (!exDrawing) return;
+                if (!exDrawing || e.pointerId !== activePointerId) return;
                 e.preventDefault();
                 const rect = canvas.getBoundingClientRect();
                 exStrokeMove(e.clientX - rect.left, e.clientY - rect.top);
             };
 
-            canvas.onpointerup = (e) => {
-                if (exDrawing) exStrokeEnd();
-            };
-
-            canvas.onpointerleave = () => {
-                if (exDrawing) exStrokeEnd();
-            };
+            canvas.onpointerup = finishActivePointer;
+            canvas.onpointercancel = finishActivePointer;
+            canvas.onlostpointercapture = finishActivePointer;
+            canvas.onpointerleave = finishActivePointer;
 
             canvas.addEventListener('touchstart', (e) => { e.preventDefault(); }, { passive: false });
         }
@@ -27810,7 +27822,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 for (let i = 0; i < 4; i++) {
                     if (Math.hypot(x - corners[i][0], y - corners[i][1]) <= EX_SEL_HANDLE_HIT
                             && Math.hypot(grips[i][0] - anchors[i][0], grips[i][1] - anchors[i][1]) >= 4) {
-                        exSelDrag = { mode: 'resize', anchor: anchors[i], grip: grips[i], before: exSelSnapshot(), k: 1, moved: false, pending: null };
+                        // 记住实际按下位置；四角小白方块在笔迹包围盒外，缩放量必须从
+                        // 按下后的位移计算，否则第一次移动就会产生比例跳变。
+                        exSelDrag = { mode: 'resize', anchor: anchors[i], grip: grips[i], start: [x, y], before: exSelSnapshot(), k: 1, moved: false, pending: null };
                         return;
                     }
                 }
@@ -27891,11 +27905,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const ax = d.anchor[0], ay = d.anchor[1];
                 const vx = d.grip[0] - ax, vy = d.grip[1] - ay;
                 const len2 = vx * vx + vy * vy;
-                let k = len2 ? ((x - ax) * vx + (y - ay) * vy) / len2 : 1;
+                let k = len2 ? 1 + ((x - d.start[0]) * vx + (y - d.start[1]) * vy) / len2 : 1;
                 k = Math.max(0.05, Math.min(20, k));
                 if (k === d.k) return;
                 d.k = k;
-                if (Math.abs(k - 1) > 0.01) d.moved = true;
+                if (Math.hypot(x - d.start[0], y - d.start[1]) > 2 && Math.abs(k - 1) > 0.01) d.moved = true;
                 exScaleSelectionFrom(d.before, ax, ay, k);
             }
             exRedrawCanvas();

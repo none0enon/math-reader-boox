@@ -21789,7 +21789,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             setTimeout(() => document.getElementById('chatInput').focus(), 300);
         }
 
-        function addChatMessage(container, isUser, text) {
+        function addChatMessage(container, isUser, text, renderRichText = false) {
             const userName = getUserName();
             const userAvatar = getUserAvatar();
             const aiName = getAIName();
@@ -21808,11 +21808,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             const messageDiv = document.createElement('div');
             messageDiv.className = `chat-message ${isUser ? 'user' : 'ai'}`;
+            messageDiv._rawChatText = String(text || '');
+            const messageHtml = !isUser && renderRichText
+                ? renderChatMarkdownLatex(text)
+                : escapeHtml(text);
             messageDiv.innerHTML = `
                 <div class="chat-sender">${avatarHtml}<span class="chat-sender-name">${escapeHtml(displayName)}</span></div>
-                <div class="chat-bubble">${escapeHtml(text)}</div>
+                <div class="chat-bubble">${messageHtml}</div>
             `;
             container.appendChild(messageDiv);
+            if (!isUser && renderRichText) renderLectureMath(messageDiv);
             container.scrollTop = container.scrollHeight;
         }
 
@@ -21850,6 +21855,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const container = document.getElementById('chatContainer');
             addChatMessage(container, true, msg);
             input.value = '';
+            const renderResponseMath = !!window._wrongAIChatOverride;
 
             addTypingIndicator(container);
 
@@ -21869,7 +21875,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const chatMessages = [];
                 container.querySelectorAll('.chat-message').forEach(el => {
                     const isUser = el.classList.contains('user');
-                    const text = el.querySelector('.chat-bubble')?.textContent?.trim();
+                    const rawText = typeof el._rawChatText === 'string'
+                        ? el._rawChatText
+                        : el.querySelector('.chat-bubble')?.textContent;
+                    const text = rawText?.trim();
                     if (text && !el.id) {
                         chatMessages.push({ role: isUser ? 'user' : 'assistant', content: text });
                     }
@@ -21896,7 +21905,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const result = await callAI(systemPrompt, recentMessages, { maxTokens: 8192 });
                 
                 removeTypingIndicator();
-                addChatMessage(container, false, result || i18n('chat_no_answer'));
+                addChatMessage(container, false, result || i18n('chat_no_answer'), renderResponseMath);
             } catch (err) {
                 removeTypingIndicator();
                 addChatMessage(container, false, i18n('chat_call_failed') + err.message);

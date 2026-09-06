@@ -7225,6 +7225,8 @@
             await recoverInterruptedRecordings();
             // 从 IndexedDB 加载习题数据（不再放 localStorage）
             await loadExercisesFromIDB();
+            // 修复旧版本可能遗留的孤儿续页，再允许云同步读取习题元数据。
+            await exRecoverExercisePageCountsFromStorage();
             // 将 localStorage 中残留的讲义内容迁移到 IndexedDB
             await migrateLectureContentToIDB();
             // 将 localStorage 中残留的论文摘要迁移到 IndexedDB
@@ -8454,6 +8456,10 @@
             }
         }
 
+        // 习题元数据只存在 IndexedDB。串行保存并保留最近一次提交的 Promise，
+        // 让做题页退出时能确认 pageCount 等关键元数据已经真正落盘。
+        let _exercisesDataSavePromise = Promise.resolve(true);
+
         function saveData() {
             // 保存时不包含data字段（大文件数据在IndexedDB）
             // Strip large in-memory data BEFORE JSON.stringify to prevent OOM
@@ -8526,9 +8532,15 @@
                         (item.redoDrawings || []).forEach(rd => { delete rd.drawing; delete rd.extra; });
                     });
                 });
-                saveFileData('__exercises_data__', JSON.stringify(exercisesToIDB)).catch(e => {
-                    console.error('[saveData] exercises 写入 IndexedDB 失败:', e);
-                });
+                const exercisesJson = JSON.stringify(exercisesToIDB);
+                _exercisesDataSavePromise = _exercisesDataSavePromise
+                    .catch(() => false)
+                    .then(() => saveFileData('__exercises_data__', exercisesJson))
+                    .then(() => true)
+                    .catch(e => {
+                        console.error('[saveData] exercises 写入 IndexedDB 失败:', e);
+                        return false;
+                    });
             }
             let metadataSaved = true;
             try {
@@ -8545,6 +8557,15 @@
             // 异步备份到 IndexedDB（双保险）
             backupAppDataToIDB();
             return metadataSaved;
+        }
+
+        async function exWaitForExercisesDataSaves() {
+            let succeeded = true;
+            while (true) {
+                const pending = _exercisesDataSavePromise;
+                if (!(await pending)) succeeded = false;
+                if (pending === _exercisesDataSavePromise) return succeeded;
+            }
         }
 
         // ==================== Navigation ====================
@@ -13993,6 +14014,9 @@
                                     for (const localTask of (localFolder.tasks || [])) {
                                         if (!cloudTaskIds.has(localTask.id)) {
                                             mergedFolder.tasks.push(localTask);
+                                        } else {
+                                            const mergedTask = (mergedFolder.tasks || []).find(t => t.id === localTask.id);
+                                            exMergeExerciseTaskPageCounts(mergedTask, localTask);
                                         }
                                     }
                                 }
@@ -14010,10 +14034,7 @@
                                     if (!cWt) {
                                         cloudWrong.push(localWt);
                                     } else {
-                                        for (const lq of (localWt.questions || [])) {
-                                            const exists = (cWt.questions || []).some(cq => cq.questionIndex === lq.questionIndex);
-                                            if (!exists) { if (!cWt.questions) cWt.questions = []; cWt.questions.push(lq); }
-                                        }
+                                        exMergeWrongTaskPageCounts(cWt, localWt);
                                     }
                                 }
                             }
@@ -14026,11 +14047,14 @@
                             } else {
                                 const cloudArchived = appData.exercises.archivedWrong[fId];
                                 for (const localItem of (localExercises.archivedWrong[fId] || [])) {
-                                    const exists = cloudArchived.some(ci => ci.taskId === localItem.taskId && ci.questionIndex === localItem.questionIndex && ci.archivedAt === localItem.archivedAt);
-                                    if (!exists) cloudArchived.push(localItem);
+                                    const existing = cloudArchived.find(ci => ci.taskId === localItem.taskId && ci.questionIndex === localItem.questionIndex && ci.archivedAt === localItem.archivedAt);
+                                    if (!existing) cloudArchived.push(localItem);
+                                    else exMergeExerciseQuestionPageCounts(existing, localItem);
                                 }
                             }
                         }
+
+                        exPreserveActiveExercisePageCount();
 
                         appData.settings = {
                             ...metadata.settings,
@@ -14144,7 +14168,7 @@
                                     } else {
                                         try {
                                             const cd = await r2GetObject('exercises/drawings/' + drawKey);
-                                            if (cd) await saveFileData(drawKey, cd);
+                                            if (cd) await exSaveCloudDrawingIfMissing(drawKey, cd);
                                         } catch(e) {}
                                     }
                                 }
@@ -14161,7 +14185,7 @@
                                 if (localWD) {
                                     try { await r2PutObject('exercises/drawings/' + wrongDrawKey, localWD, 'image/png'); } catch(e) {}
                                 } else {
-                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
+                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await exSaveCloudDrawingIfMissing(wrongDrawKey, cd); } catch(e) {}
                                 }
                             }
                             for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
@@ -14178,7 +14202,7 @@
                                         if (localRD) {
                                             try { await r2PutObject('exercises/drawings/' + redoKey, localRD, 'image/png'); } catch(e) {}
                                         } else {
-                                            try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                            try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await exSaveCloudDrawingIfMissing(redoKey, cd); } catch(e) {}
                                         }
                                     }
                                 }
@@ -16676,7 +16700,14 @@
                             const merged = appData.exercises.folders.find(f => f.id === localFolder.id);
                             if (merged) {
                                 for (const lt of (localFolder.tasks || [])) {
-                                    if (!cloudTaskIds.has(lt.id)) merged.tasks.push(lt);
+                                    if (!cloudTaskIds.has(lt.id)) {
+                                        merged.tasks.push(lt);
+                                    } else {
+                                        const mergedTask = (merged.tasks || []).find(t => t.id === lt.id);
+                                        if (exMergeExerciseTaskPageCounts(mergedTask, lt)) {
+                                            repairMetadataAfterStartup = true;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -16685,16 +16716,17 @@
                     for (const fId of Object.keys(localEx.wrongByFolder || {})) {
                         if (!appData.exercises.wrongByFolder[fId]) {
                             appData.exercises.wrongByFolder[fId] = localEx.wrongByFolder[fId];
+                            repairMetadataAfterStartup = true;
                         } else {
                             const cloudWrong = appData.exercises.wrongByFolder[fId];
                             for (const localWt of (localEx.wrongByFolder[fId] || [])) {
                                 let cWt = cloudWrong.find(t => t.taskId === localWt.taskId);
                                 if (!cWt) {
                                     cloudWrong.push(localWt);
+                                    repairMetadataAfterStartup = true;
                                 } else {
-                                    for (const lq of (localWt.questions || [])) {
-                                        const exists = (cWt.questions || []).some(cq => cq.questionIndex === lq.questionIndex);
-                                        if (!exists) { if (!cWt.questions) cWt.questions = []; cWt.questions.push(lq); }
+                                    if (exMergeWrongTaskPageCounts(cWt, localWt)) {
+                                        repairMetadataAfterStartup = true;
                                     }
                                 }
                             }
@@ -16704,14 +16736,21 @@
                     for (const fId of Object.keys(localEx.archivedWrong || {})) {
                         if (!appData.exercises.archivedWrong[fId]) {
                             appData.exercises.archivedWrong[fId] = localEx.archivedWrong[fId];
+                            repairMetadataAfterStartup = true;
                         } else {
                             const cloudArch = appData.exercises.archivedWrong[fId];
                             for (const li of (localEx.archivedWrong[fId] || [])) {
-                                const exists = cloudArch.some(ci => ci.taskId === li.taskId && ci.questionIndex === li.questionIndex && ci.archivedAt === li.archivedAt);
-                                if (!exists) cloudArch.push(li);
+                                const existing = cloudArch.find(ci => ci.taskId === li.taskId && ci.questionIndex === li.questionIndex && ci.archivedAt === li.archivedAt);
+                                if (!existing) {
+                                    cloudArch.push(li);
+                                    repairMetadataAfterStartup = true;
+                                } else if (exMergeExerciseQuestionPageCounts(existing, li)) {
+                                    repairMetadataAfterStartup = true;
+                                }
                             }
                         }
                     }
+                    if (exPreserveActiveExercisePageCount()) repairMetadataAfterStartup = true;
                 }
                 if (!appData.exercises) appData.exercises = { folders: [], wrongByFolder: {}, archivedWrong: {} };
                 appData.settings = { ...metadata.settings, ...localApiSettings, r2Config: localR2Config };
@@ -16866,7 +16905,7 @@
                                     if (!localDraw) {
                                         try {
                                             const cloudDraw = await r2GetObject('exercises/drawings/' + drawKey);
-                                            if (cloudDraw) await saveFileData(drawKey, cloudDraw);
+                                            if (cloudDraw) await exSaveCloudDrawingIfMissing(drawKey, cloudDraw);
                                         } catch(e) {}
                                     }
                                 }
@@ -16880,7 +16919,7 @@
                             for (const wrongDrawKey of exGradedPageKeys(`exercise_drawing_${wt.taskId}_${q.questionIndex}`, q.userDrawingPages)) {
                                 const localWD = await getFileData(wrongDrawKey).catch(() => null);
                                 if (!localWD) {
-                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await saveFileData(wrongDrawKey, cd); } catch(e) {}
+                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await exSaveCloudDrawingIfMissing(wrongDrawKey, cd); } catch(e) {}
                                 }
                             }
                             for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
@@ -16888,7 +16927,7 @@
                                 for (const redoKey of exGradedPageKeys(`exercise_redo_drawing_${wt.taskId}_${q.questionIndex}_${ri}`, rd && rd.pages)) {
                                     const localRD = await getFileData(redoKey).catch(() => null);
                                     if (!localRD) {
-                                        try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                        try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await exSaveCloudDrawingIfMissing(redoKey, cd); } catch(e) {}
                                     }
                                 }
                             }
@@ -16900,7 +16939,7 @@
                         for (const archDrawKey of exGradedPageKeys(`exercise_drawing_${item.taskId}_${item.questionIndex}`, item.userDrawingPages)) {
                             const localAD = await getFileData(archDrawKey).catch(() => null);
                             if (!localAD) {
-                                try { const cd = await r2GetObject('exercises/drawings/' + archDrawKey); if (cd) await saveFileData(archDrawKey, cd); } catch(e) {}
+                                try { const cd = await r2GetObject('exercises/drawings/' + archDrawKey); if (cd) await exSaveCloudDrawingIfMissing(archDrawKey, cd); } catch(e) {}
                             }
                         }
                         for (let ri = 0; ri < (item.redoDrawings || []).length; ri++) {
@@ -16908,7 +16947,7 @@
                             for (const redoKey of exGradedPageKeys(`exercise_redo_drawing_${item.taskId}_${item.questionIndex}_${ri}`, rd && rd.pages)) {
                                 const localRD = await getFileData(redoKey).catch(() => null);
                                 if (!localRD) {
-                                    try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await saveFileData(redoKey, cd); } catch(e) {}
+                                    try { const cd = await r2GetObject('exercises/drawings/' + redoKey); if (cd) await exSaveCloudDrawingIfMissing(redoKey, cd); } catch(e) {}
                                 }
                             }
                         }
@@ -24815,6 +24854,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 其余页放在 exPages 槽位中，切页时互换；第 1 页沿用原缓存 key，后续页追加 _p 序号
         let exPages = [];              // [{ strokes, baseImage, opHistory, redoStack, dirtyLocal, dirtyCloud }]
         let exPageIndex = 0;
+        // 恢复开始后只要发生过本地编辑，就必须把“恢复内容 + 新笔迹”的合并结果重新落盘。
+        // dirtyLocal 可能已被自动保存清掉，不能单靠脏标记判断恢复期间是否写过。
+        let exDrawingEditRevision = 0;
 
         // ---- 多页作答通用工具 ----
         // 第 p 页的缓存/存储 key：第 1 页沿用原 key（兼容旧数据），后续页追加 _p 序号
@@ -24829,6 +24871,232 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return keys;
         }
 
+        // 云端旧元数据不能把本机已经存在的多页槽位降回 1 页。
+        // 习题目前只能加页、不能删页，因此页数合并始终取两端较大值。
+        function exMergeExerciseQuestionPageCounts(targetQ, localQ) {
+            if (!targetQ || !localQ) return false;
+            let changed = false;
+            const gradedPages = Math.max(
+                Number(targetQ.userDrawingPages) || 0,
+                Number(localQ.userDrawingPages) || 0
+            );
+            const pageCount = Math.max(
+                1,
+                Number(targetQ.pageCount) || 0,
+                Number(localQ.pageCount) || 0,
+                gradedPages
+            );
+            if ((Number(targetQ.pageCount) || 1) !== pageCount) {
+                targetQ.pageCount = pageCount;
+                changed = true;
+            }
+            if (gradedPages > 0 && (Number(targetQ.userDrawingPages) || 0) !== gradedPages) {
+                targetQ.userDrawingPages = gradedPages;
+                changed = true;
+            }
+
+            // 重做记录按稳定的 time 标识匹配；旧记录没有 time 时退回原数组位置。
+            // 只补本机新增的尾部记录，保持 IDB/R2 中以 redo 下标命名的图片 key 不变。
+            const targetRedos = targetQ.redoDrawings || [];
+            const localRedos = localQ.redoDrawings || [];
+            localRedos.forEach((localRedo, localIndex) => {
+                if (!localRedo) return;
+                let targetIndex = localRedo.time
+                    ? targetRedos.findIndex(redo => redo && redo.time === localRedo.time)
+                    : localIndex;
+                if ((targetIndex < 0 || targetIndex >= targetRedos.length) &&
+                        localIndex >= targetRedos.length) {
+                    targetRedos.push(localRedo);
+                    targetIndex = targetRedos.length - 1;
+                    changed = true;
+                }
+                const targetRedo = targetRedos[targetIndex];
+                if (!targetRedo) return;
+                const redoPages = Math.max(
+                    1,
+                    Number(targetRedo.pages) || 0,
+                    Number(localRedo.pages) || 0
+                );
+                if ((Number(targetRedo.pages) || 1) !== redoPages) {
+                    targetRedo.pages = redoPages;
+                    changed = true;
+                }
+            });
+            if (targetRedos.length && targetQ.redoDrawings !== targetRedos) {
+                targetQ.redoDrawings = targetRedos;
+            }
+            return changed;
+        }
+
+        function exMergeExerciseTaskPageCounts(targetTask, localTask) {
+            if (!targetTask || !localTask || !Array.isArray(targetTask.questions)) return false;
+            let changed = false;
+            (localTask.questions || []).forEach((localQ, fallbackIndex) => {
+                if (!localQ) return;
+                let targetIndex = fallbackIndex;
+                if (localQ.index !== undefined && localQ.index !== null) {
+                    const matched = targetTask.questions.findIndex(q => q && q.index === localQ.index);
+                    if (matched >= 0) targetIndex = matched;
+                }
+                if (exMergeExerciseQuestionPageCounts(targetTask.questions[targetIndex], localQ)) changed = true;
+            });
+            return changed;
+        }
+
+        function exMergeWrongTaskPageCounts(targetTask, localTask) {
+            if (!targetTask || !localTask) return false;
+            if (!Array.isArray(targetTask.questions)) targetTask.questions = [];
+            let changed = false;
+            (localTask.questions || []).forEach(localQ => {
+                if (!localQ) return;
+                const targetQ = targetTask.questions.find(q => q && q.questionIndex === localQ.questionIndex);
+                if (!targetQ) {
+                    targetTask.questions.push(localQ);
+                    changed = true;
+                } else if (exMergeExerciseQuestionPageCounts(targetQ, localQ)) {
+                    changed = true;
+                }
+            });
+            return changed;
+        }
+
+        // 云同步可能在做题期间替换 exercises 对象。把活动题的真实页数合回当前
+        // appData，并重新绑定 questions，避免退出时把旧对象保存到空气里。
+        function exPreserveActiveExercisePageCount() {
+            const state = exDoingState;
+            if (!state || !state.questions) return false;
+            const activeQ = state.questions[state.questionIndex];
+            if (!activeQ) return false;
+            const data = getExercisesData();
+            let canonicalQuestions = null;
+            let canonicalIndex = state.questionIndex;
+
+            if (state.isWrong) {
+                const wrongTask = (data.wrongByFolder[state.folderId] || [])
+                    .find(t => t.taskId === state.taskId);
+                canonicalQuestions = wrongTask && wrongTask.questions;
+                if (canonicalQuestions && activeQ.questionIndex !== undefined && activeQ.questionIndex !== null) {
+                    const matched = canonicalQuestions.findIndex(q => q && q.questionIndex === activeQ.questionIndex);
+                    if (matched >= 0) canonicalIndex = matched;
+                }
+            } else {
+                const folder = data.folders.find(f => f.id === state.folderId);
+                const task = folder && (folder.tasks || []).find(t => t.id === state.taskId);
+                canonicalQuestions = task && task.questions;
+                if (canonicalQuestions && activeQ.index !== undefined && activeQ.index !== null) {
+                    const matched = canonicalQuestions.findIndex(q => q && q.index === activeQ.index);
+                    if (matched >= 0) canonicalIndex = matched;
+                }
+            }
+
+            if (!canonicalQuestions || !canonicalQuestions[canonicalIndex]) return false;
+            const canonicalQ = canonicalQuestions[canonicalIndex];
+            const pageCount = Math.max(
+                1,
+                exPages.length || 0,
+                Number(activeQ.pageCount) || 0,
+                Number(activeQ.userDrawingPages) || 0,
+                Number(canonicalQ.pageCount) || 0,
+                Number(canonicalQ.userDrawingPages) || 0
+            );
+            const changed = (Number(canonicalQ.pageCount) || 1) !== pageCount;
+            activeQ.pageCount = pageCount;
+            canonicalQ.pageCount = pageCount;
+            if (activeQ._redoing) canonicalQ._redoing = true;
+            state.questions = canonicalQuestions;
+            state.questionIndex = canonicalIndex;
+            return changed;
+        }
+
+        // 旧版本可能已把 pageCount 写小，但续页文件仍在 IndexedDB。
+        // 启动时只扫描一次 key，把这些孤儿续页重新纳入可见页数。
+        async function exRecoverExercisePageCountsFromStorage() {
+            const keys = await listFileKeys().catch(() => []);
+            if (!Array.isArray(keys) || keys.length === 0) return false;
+            const countForPrefix = (prefix) => {
+                let count = 0;
+                for (const rawKey of keys) {
+                    const key = String(rawKey || '');
+                    if (key === prefix) {
+                        count = Math.max(count, 1);
+                    } else if (key.startsWith(prefix + '_p')) {
+                        const page = Number(key.slice((prefix + '_p').length));
+                        if (Number.isInteger(page) && page >= 1) count = Math.max(count, page + 1);
+                    }
+                }
+                return count;
+            };
+
+            const data = getExercisesData();
+            let changed = false;
+            for (const folder of (data.folders || [])) {
+                for (const task of (folder.tasks || [])) {
+                    (task.questions || []).forEach((q, i) => {
+                        const cacheCount = Math.max(
+                            countForPrefix(`exercise_drawing_cache_${task.id}_${i}`),
+                            countForPrefix(`exercise_strokes_cache_${task.id}_${i}`)
+                        );
+                        const gradedCount = countForPrefix(`exercise_drawing_${task.id}_${i}`);
+                        const pageCount = Math.max(
+                            1,
+                            Number(q.pageCount) || 0,
+                            Number(q.userDrawingPages) || 0,
+                            cacheCount,
+                            gradedCount
+                        );
+                        if ((Number(q.pageCount) || 1) !== pageCount) {
+                            q.pageCount = pageCount;
+                            changed = true;
+                        }
+                        if (gradedCount > (Number(q.userDrawingPages) || 0)) {
+                            q.userDrawingPages = gradedCount;
+                            changed = true;
+                        }
+                    });
+                }
+            }
+            for (const wrongTasks of Object.values(data.wrongByFolder || {})) {
+                for (const wrongTask of (wrongTasks || [])) {
+                    (wrongTask.questions || []).forEach(q => {
+                        if (!q) return;
+                        const questionIndex = Number(q.questionIndex);
+                        if (!Number.isInteger(questionIndex) || questionIndex < 0) return;
+                        const gradedCount = countForPrefix(`exercise_drawing_${wrongTask.taskId}_${questionIndex}`);
+                        let redoPageCount = 0;
+                        (q.redoDrawings || []).forEach((redo, redoIndex) => {
+                            if (!redo) return;
+                            const storedCount = countForPrefix(`exercise_redo_drawing_${wrongTask.taskId}_${questionIndex}_${redoIndex}`);
+                            redoPageCount = Math.max(redoPageCount, storedCount);
+                            if (storedCount > (Number(redo.pages) || 0)) {
+                                redo.pages = storedCount;
+                                changed = true;
+                            }
+                        });
+                        const pageCount = Math.max(
+                            1,
+                            Number(q.pageCount) || 0,
+                            Number(q.userDrawingPages) || 0,
+                            gradedCount,
+                            redoPageCount
+                        );
+                        if ((Number(q.pageCount) || 1) !== pageCount) {
+                            q.pageCount = pageCount;
+                            changed = true;
+                        }
+                        if (gradedCount > (Number(q.userDrawingPages) || 0)) {
+                            q.userDrawingPages = gradedCount;
+                            changed = true;
+                        }
+                    });
+                }
+            }
+            if (changed) {
+                saveData();
+                await exWaitForExercisesDataSaves();
+            }
+            return changed;
+        }
+
         // 作答对象里第 p 页的内存图片：第 1 页在 userDrawing/drawing 字段，其余在 extra 数组里
         function exPageImageOf(first, extra, p) {
             return (p === 0 ? first : (extra && extra[p - 1])) || null;
@@ -24837,27 +25105,170 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 读取一次作答的全部页面图片：内存里有整套就直接用（评分时整套写入），
         // 否则按页数从 IndexedDB 读取（落盘/同步后 base64 已被剔除）
         async function exLoadDrawingPages(baseKey, first, extra, pageCount) {
-            if (first) return [first].concat(extra || []);
-            const pages = [];
-            for (const key of exGradedPageKeys(baseKey, pageCount)) {
-                const d = await getFileData(key).catch(() => null);
-                if (d) pages.push(d);
+            const count = Math.max(1, Number(pageCount) || 0, first ? 1 + (extra || []).length : 0);
+            if (first) {
+                const memoryPages = [];
+                for (let p = 0; p < count; p++) memoryPages.push(exPageImageOf(first, extra, p));
+                // 元数据合并可能刚把页数扩回去，而内存里仍只有旧快照；缺页优先回读 IDB，
+                // 不能用透明占位遮住仍然存在的续页。
+                for (let p = 0; p < count; p++) {
+                    if (memoryPages[p]) continue;
+                    memoryPages[p] = await getFileData(exPageKey(baseKey, p)).catch(() => null);
+                }
+                return exFillMissingPageSlots(memoryPages);
             }
-            return pages;
+            const pages = [];
+            for (const key of exGradedPageKeys(baseKey, count)) {
+                const d = await getFileData(key).catch(() => null);
+                pages.push(d || null);
+            }
+            return pages.some(Boolean) ? exFillMissingPageSlots(pages) : [];
         }
 
-        // 把评分用的各页图片写入 IndexedDB 并触发云同步；比上次页数多出的旧 key 一并清理
-        async function exSaveGradedPages(baseKey, pages, prevPageCount) {
-            for (let p = 0; p < pages.length; p++) {
-                const key = exPageKey(baseKey, p);
-                await saveFileData(key, pages[p]);
-                triggerSyncOnFileChange(key, 'exercise_drawing_upload');
+        // 每道题的评分快照都带单调 token。AI 返回顺序不等于用户操作顺序：
+        // 新的单题完成/书写/退出会立即使旧的“全部评分”快照失效。
+        let _exQuestionGradingTokenCounter = 0;
+        const _exQuestionGradingTokens = new Map();
+        const _exActiveGuardedGradedTransactions = new Set();
+
+        function exQuestionGradingKey(taskId, stableQuestionIndex) {
+            return `${taskId}:${stableQuestionIndex}`;
+        }
+
+        function exIssueQuestionGradingToken(taskId, stableQuestionIndex) {
+            const token = {
+                key: exQuestionGradingKey(taskId, stableQuestionIndex),
+                generation: ++_exQuestionGradingTokenCounter
+            };
+            _exQuestionGradingTokens.set(token.key, token.generation);
+            // 若旧快照的 IDB 事务还没提交，直接 abort；事务已提交则必然是整套页面原子落盘。
+            for (const active of _exActiveGuardedGradedTransactions) {
+                if (!active.guard()) {
+                    try { active.tx.abort(); } catch (e) {}
+                }
             }
-            for (let p = pages.length; p < (prevPageCount || 1); p++) {
-                const key = exPageKey(baseKey, p);
-                deleteFileData(key).catch(e => {});
-                triggerSyncOnFileChange(key, 'exercise_drawing_delete');
-            }
+            return token;
+        }
+
+        function exQuestionGradingGuard(token) {
+            return () => !!token && _exQuestionGradingTokens.get(token.key) === token.generation;
+        }
+
+        function exStableQuestionIndex(state) {
+            if (!state || !state.questions) return null;
+            const q = state.questions[state.questionIndex];
+            if (!q) return null;
+            if (state.isWrong && q.questionIndex != null) return q.questionIndex;
+            return q.index != null ? q.index : state.questionIndex;
+        }
+
+        function exInvalidateQuestionGrading(state = exDoingState) {
+            if (!state) return;
+            const stableQuestionIndex = exStableQuestionIndex(state);
+            if (stableQuestionIndex == null) return;
+            exIssueQuestionGradingToken(state.taskId, stableQuestionIndex);
+        }
+
+        // 已评分页面共用一个 FIFO：较早完成操作已经发出的慢写入，不能在较新的
+        // 完成/全部评分写入之后落盘并把新快照覆盖掉。单次失败只抛给本次调用者，
+        // 下一次写入仍从已恢复的队列继续。
+        let _exGradedPagesSavePromise = Promise.resolve();
+
+        // missing-only 云下载必须在同一个读写事务里重新判空：若新评分 B 先提交，
+        // 旧云快照 A 会看到 key 已存在并跳过；若 A 事务先创建，B 随后的事务仍会最后覆盖。
+        async function exSaveCloudDrawingIfMissing(key, data) {
+            if (!data) return false;
+            if (!await ensureFileDB()) throw new Error(i18n('indexeddb_unavailable'));
+            return new Promise((resolve, reject) => {
+                let tx;
+                try {
+                    tx = fileDB.transaction('files', 'readwrite');
+                    const store = tx.objectStore('files');
+                    const request = store.get(key);
+                    let inserted = false;
+                    request.onsuccess = () => {
+                        if (request.result !== undefined) return;
+                        inserted = true;
+                        store.put({ id: key, data });
+                    };
+                    tx.oncomplete = () => resolve(inserted);
+                    tx.onerror = () => reject(tx.error || new Error(i18n('transaction_aborted', i18n('unknown_reason'))));
+                    tx.onabort = () => reject(tx.error || new Error(i18n('transaction_aborted', i18n('unknown_reason'))));
+                } catch (e) {
+                    try { if (tx) tx.abort(); } catch (abortError) {}
+                    fileDB = null;
+                    fileDBReady = false;
+                    reject(e);
+                }
+            });
+        }
+
+        // 同一次评分的所有页放在一个 IDB 事务里：要么全部落盘，要么在
+        // token 失效时整个 abort，不会留下新旧页混合的半套结果。
+        async function exWriteGradedPagesAtomic(baseKey, pageSnapshot, guard) {
+            if (guard && !guard()) return false;
+            if (!await ensureFileDB()) throw new Error(i18n('indexeddb_unavailable'));
+            if (guard && !guard()) return false;
+            return new Promise((resolve, reject) => {
+                let tx;
+                let active = null;
+                try {
+                    tx = fileDB.transaction('files', 'readwrite');
+                    active = guard ? { tx, guard } : null;
+                    if (active) _exActiveGuardedGradedTransactions.add(active);
+                    const cleanup = () => {
+                        if (active) _exActiveGuardedGradedTransactions.delete(active);
+                    };
+                    tx.oncomplete = () => {
+                        cleanup();
+                        resolve(!guard || guard());
+                    };
+                    tx.onerror = () => {
+                        cleanup();
+                        reject(tx.error || new Error(i18n('transaction_aborted', i18n('unknown_reason'))));
+                    };
+                    tx.onabort = () => {
+                        cleanup();
+                        if (guard && !guard()) resolve(false);
+                        else reject(tx.error || new Error(i18n('transaction_aborted', i18n('unknown_reason'))));
+                    };
+                    if (guard && !guard()) {
+                        tx.abort();
+                        return;
+                    }
+                    const store = tx.objectStore('files');
+                    for (let p = 0; p < pageSnapshot.length; p++) {
+                        store.put({ id: exPageKey(baseKey, p), data: pageSnapshot[p] });
+                    }
+                } catch (e) {
+                    if (active) _exActiveGuardedGradedTransactions.delete(active);
+                    try { if (tx) tx.abort(); } catch (abortError) {}
+                    fileDB = null;
+                    fileDBReady = false;
+                    reject(e);
+                }
+            });
+        }
+
+        // 把评分用的各页图片写入 IndexedDB 并触发云同步。习题没有删页功能，
+        // 因此这里绝不能按一次较短的快照删除续页；旧/云端续页只允许由明确删除题目清理。
+        function exSaveGradedPages(baseKey, pages, guard = null) {
+            const pageSnapshot = pages.slice();
+            const savePromise = _exGradedPagesSavePromise
+                .catch(() => {})
+                .then(async () => {
+                    // 必须在 FIFO 真正轮到本快照时检查，不能只在 enqueue 前检查。
+                    if (guard && !guard()) return false;
+                    const committed = await exWriteGradedPagesAtomic(baseKey, pageSnapshot, guard);
+                    if (!committed || (guard && !guard())) return false;
+                    for (let p = 0; p < pageSnapshot.length; p++) {
+                        const key = exPageKey(baseKey, p);
+                        triggerSyncOnFileChange(key, 'exercise_drawing_upload');
+                    }
+                    return true;
+                });
+            _exGradedPagesSavePromise = savePromise;
+            return savePromise;
         }
 
         // 评分请求的多模态内容：各页图片按页序排列，多页时补充说明
@@ -24869,33 +25280,74 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return content;
         }
 
-        // 收集某题全部页面的书写图片（跳过空白页）：
-        // 先看未评分的书写缓存（内存 → IndexedDB），任一页有内容即以整套缓存为准；
-        // 否则退回已评分的作答图片（题目对象 → IndexedDB）
-        async function exCollectQuestionDrawings(taskId, i, q) {
-            const pickNonBlank = async (candidates) => {
-                const kept = [];
-                for (const d of candidates) {
-                    if (d && !isCanvasBlank(d) && !(await isCanvasBlankAsync(d))) kept.push(d);
+        // 空白槽位也必须有持久化对象，避免旧的同页 key 在本地或云端“复活”。
+        // 1x1 透明 PNG 只表示逻辑空白页，恢复到画布后仍是空白。
+        function exFillMissingPageSlots(pages) {
+            let blankPage = null;
+            return pages.map(page => {
+                if (page) return page;
+                if (!blankPage) {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 1;
+                    canvas.height = 1;
+                    blankPage = canvas.toDataURL('image/png');
                 }
-                return kept;
-            };
+                return blankPage;
+            });
+        }
+
+        async function exPickNonBlankPages(candidates) {
+            const kept = [];
+            for (const d of candidates) {
+                if (d && !isCanvasBlank(d) && !(await isCanvasBlankAsync(d))) kept.push(d);
+            }
+            return kept;
+        }
+
+        // 同时返回完整页槽和 AI 需要的非空页。完整页槽绝不能被空白检测压缩。
+        // 先看未评分的书写缓存；任一页有明确缓存即以它为准，缺失槽再回退已评分图片。
+        async function exCollectQuestionDrawingPages(taskId, i, q) {
+            const pageCount = Math.max(1, q.pageCount || 1, q.userDrawingPages || 1);
             const cached = [];
-            for (let p = 0; p < (q.pageCount || 1); p++) {
+            for (let p = 0; p < pageCount; p++) {
                 const cacheKey = exPageKey(`${taskId}_${i}`, p);
                 let d = exDrawingCache[cacheKey] || null;
                 if (!d) { try { d = await getFileData(`exercise_drawing_cache_${cacheKey}`); } catch(e) {} }
                 cached.push(d);
             }
-            const fromCache = await pickNonBlank(cached);
-            if (fromCache.length) return fromCache;
+            if (cached.some(Boolean)) {
+                // 部分 cache 缺失不等于该页被清空；明确清空会在退出时保存透明 PNG。
+                // 先从已评分内存/IDB 回填真正缺失的槽，避免批量评分把旧续页覆盖成透明图。
+                const completeCached = cached.slice();
+                for (let p = 0; p < pageCount; p++) {
+                    if (completeCached[p]) continue;
+                    let d = exPageImageOf(q.userDrawing, q.userDrawingExtra, p);
+                    if (!d) {
+                        d = await getFileData(exPageKey(`exercise_drawing_${taskId}_${i}`, p)).catch(() => null);
+                    }
+                    completeCached[p] = d;
+                }
+                return {
+                    allPages: exFillMissingPageSlots(completeCached),
+                    gradingPages: await exPickNonBlankPages(completeCached)
+                };
+            }
             const graded = [];
-            for (let p = 0; p < (q.userDrawingPages || 1); p++) {
+            for (let p = 0; p < pageCount; p++) {
                 let d = exPageImageOf(q.userDrawing, q.userDrawingExtra, p);
                 if (!d) { try { d = await getFileData(exPageKey(`exercise_drawing_${taskId}_${i}`, p)); } catch(e) {} }
                 graded.push(d);
             }
-            return pickNonBlank(graded);
+            const gradedForGrading = await exPickNonBlankPages(graded);
+            return {
+                allPages: gradedForGrading.length ? exFillMissingPageSlots(graded) : [],
+                gradingPages: gradedForGrading
+            };
+        }
+
+        // 导出等只读消费者仍只需要非空页。
+        async function exCollectQuestionDrawings(taskId, i, q) {
+            return (await exCollectQuestionDrawingPages(taskId, i, q)).gradingPages;
         }
 
         // 删除一道题的全部本地/云端书写数据（书写缓存、计时、已评分图片，含多页）
@@ -25318,12 +25770,28 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 return;
             }
 
-            // 收集有书写内容的题目（书写缓存 → 已评分图片 + 异步像素检测），多页作答收集全部非空页
+            if (!confirm(i18n('confirm_delete'))) return;
+
+            // 收集有书写内容的题目：完整页槽用于保存，非空页只用于 AI 评分。
             const toGrade = [];
             for (let i = 0; i < task.questions.length; i++) {
                 const q = task.questions[i];
-                const pages = await exCollectQuestionDrawings(taskId, i, q);
-                if (pages.length) toGrade.push({ index: i, question: q, pages });
+                const stableQuestionIndex = q.index != null ? q.index : i;
+                // token 在本题快照开始形成时签发。若收集期间用户又书写/单题完成，
+                // guard 会失效，这份可能已过时的批量快照不进入队列。
+                const gradingToken = exIssueQuestionGradingToken(taskId, stableQuestionIndex);
+                const gradingGuard = exQuestionGradingGuard(gradingToken);
+                const { allPages, gradingPages } = await exCollectQuestionDrawingPages(taskId, i, q);
+                if (gradingGuard() && gradingPages.length) {
+                    toGrade.push({
+                        index: i,
+                        questionIdentity: q.index,
+                        latex: q.latex,
+                        allPages,
+                        gradingPages,
+                        gradingGuard
+                    });
+                }
             }
 
             if (toGrade.length === 0) {
@@ -25331,63 +25799,101 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 return;
             }
 
-            if (!confirm(i18n('confirm_delete'))) return;
-
             const systemPrompt = i18n('prompt_grade_system');
 
             let graded = 0;
             let failed = 0;
 
             for (const item of toGrade) {
-                const { index: qIdx, question: q, pages } = item;
-                showToast(i18n('grading_progress', graded + 1, toGrade.length, qIdx + 1));
+                const { index: capturedIndex, questionIdentity, latex, allPages, gradingPages, gradingGuard } = item;
+                if (!gradingGuard()) continue;
+                showToast(i18n('grading_progress', graded + 1, toGrade.length, capturedIndex + 1));
 
                 try {
-                    const msgContent = [{ role: 'user', content: exGradingContent(pages, q.latex) }];
+                    const msgContent = [{ role: 'user', content: exGradingContent(gradingPages, latex) }];
 
                     const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
+                    if (!gradingGuard()) continue;
                     if (!result) { failed++; continue; }
 
                     const grading = parseExerciseGradingResponse(result);
                     const score = Math.min(10, Math.max(0, Math.round(grading.score || 0)));
                     const comment = i18n('grade_comment', grading.solution || '-', grading.errors || '-', grading.similar_problem || '-');
 
-                    // 更新题目数据（多页作答：第 1 页在 userDrawing，其余在 userDrawingExtra）
-                    const prevPages = q.userDrawingPages || 1;
-                    q.status = 'done';
-                    q.score = score;
-                    q.userDrawing = pages[0];
-                    q.userDrawingExtra = pages.slice(1);
-                    q.userDrawingPages = pages.length;
-                    q.aiComment = comment;
+                    // AI 等待期间云同步可能整体替换 exercises；必须重新定位当前题目。
+                    let currentData = getExercisesData();
+                    let currentFolder = currentData.folders.find(f => f.id === folderId);
+                    let currentTask = currentFolder && (currentFolder.tasks || []).find(t => t.id === taskId);
+                    if (!currentTask || !Array.isArray(currentTask.questions)) throw new Error('Exercise task no longer exists');
+                    let qIdx = capturedIndex;
+                    if (questionIdentity !== undefined && questionIdentity !== null) {
+                        const matched = currentTask.questions.findIndex(candidate => candidate && candidate.index === questionIdentity);
+                        if (matched >= 0) qIdx = matched;
+                    }
+                    let currentQ = currentTask.questions[qIdx];
+                    if (!currentQ) throw new Error('Exercise question no longer exists');
+                    const storageQuestionIndex = questionIdentity !== undefined && questionIdentity !== null
+                        ? questionIdentity
+                        : capturedIndex;
 
-                    // Save drawings to IDB（逐页）
-                    await exSaveGradedPages(`exercise_drawing_${taskId}_${qIdx}`, pages, prevPages);
+                    // 先按原页位把完整页槽写稳，再提交元数据；空白页不会被压缩或删除。
+                    if (!gradingGuard()) continue;
+                    const pagesSaved = await exSaveGradedPages(
+                        `exercise_drawing_${taskId}_${storageQuestionIndex}`, allPages, gradingGuard);
+                    if (!pagesSaved || !gradingGuard()) continue;
+
+                    // 页面写入期间也可能发生替换；最后一个 await 后再次获取 canonical 对象。
+                    currentData = getExercisesData();
+                    currentFolder = currentData.folders.find(f => f.id === folderId);
+                    currentTask = currentFolder && (currentFolder.tasks || []).find(t => t.id === taskId);
+                    if (!currentTask || !Array.isArray(currentTask.questions)) throw new Error('Exercise task no longer exists');
+                    if (questionIdentity !== undefined && questionIdentity !== null) {
+                        const matched = currentTask.questions.findIndex(candidate => candidate && candidate.index === questionIdentity);
+                        if (matched >= 0) qIdx = matched;
+                    }
+                    currentQ = currentTask.questions[qIdx];
+                    if (!currentQ) throw new Error('Exercise question no longer exists');
+                    const committedPageCount = Math.max(
+                        1,
+                        Number(currentQ.pageCount) || 0,
+                        Number(currentQ.userDrawingPages) || 0,
+                        allPages.length
+                    );
+
+                    currentQ.status = 'done';
+                    currentQ.score = score;
+                    currentQ.userDrawing = allPages[0];
+                    currentQ.userDrawingExtra = allPages.slice(1);
+                    currentQ.pageCount = committedPageCount;
+                    currentQ.userDrawingPages = committedPageCount;
+                    currentQ.aiComment = comment;
 
                     // 写入错题本：同一题只保留一条，重新评分覆盖旧条目
-                    exUpsertWrongQuestion(data, folderId, taskId, task.name, {
-                        questionIndex: qIdx,
-                        latex: q.latex,
+                    exUpsertWrongQuestion(currentData, folderId, taskId, currentTask.name, {
+                        questionIndex: storageQuestionIndex,
+                        latex: currentQ.latex,
                         score,
-                        userDrawing: pages[0],
-                        userDrawingExtra: pages.slice(1),
-                        userDrawingPages: pages.length,
+                        userDrawing: allPages[0],
+                        userDrawingExtra: allPages.slice(1),
+                        userDrawingPages: committedPageCount,
                         aiComment: comment,
-                        timeUsedSeconds: q.timeUsedSeconds || 0,
+                        timeUsedSeconds: currentQ.timeUsedSeconds || 0,
                         redoDrawings: []
                     });
 
-                    graded++;
                     saveData();
+                    if (!(await exWaitForExercisesDataSaves())) throw new Error(i18n('storage_save_failed'));
+                    graded++;
 
                 } catch (err) {
-                    console.error(`第${qIdx + 1}题评分失败:`, err);
+                    console.error(`第${capturedIndex + 1}题评分失败:`, err);
                     failed++;
                 }
             }
 
             debouncedChatSync();
-            renderExerciseFolderContent(folder);
+            const latestFolder = getExercisesData().folders.find(f => f.id === folderId);
+            if (latestFolder) renderExerciseFolderContent(latestFolder);
             showToast(i18n('grade_done', graded) + (failed > 0 ? i18n('grade_done_fail', failed) : ''));
         }
 
@@ -27225,12 +27731,20 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             // Start timer (only for non-wrong mode)
             if (!isWrong) {
                 // 先从IndexedDB恢复计时（异步，恢复后更新显示）
+                const timerState = exDoingState;
                 restoreExTimerFromDB(taskId, questionIndex, q).then(() => {
-                    if (q.remainingSeconds === undefined || q.remainingSeconds === null) {
-                        q.remainingSeconds = getExerciseTimeSeconds();
+                    // 快速切题/退出时，迟到的计时恢复不能重新启动幽灵计时器。
+                    if (exDoingState !== timerState) return;
+                    const timerQ = timerState.questions[timerState.questionIndex] || q;
+                    if (timerQ !== q) {
+                        if (q.remainingSeconds != null) timerQ.remainingSeconds = q.remainingSeconds;
+                        if (q.timeUsedSeconds != null) timerQ.timeUsedSeconds = q.timeUsedSeconds;
                     }
-                    if (!q.timeUsedSeconds) q.timeUsedSeconds = 0;
-                    exTimerSeconds = q.remainingSeconds;
+                    if (timerQ.remainingSeconds === undefined || timerQ.remainingSeconds === null) {
+                        timerQ.remainingSeconds = getExerciseTimeSeconds();
+                    }
+                    if (!timerQ.timeUsedSeconds) timerQ.timeUsedSeconds = 0;
+                    exTimerSeconds = timerQ.remainingSeconds;
                     exTimerStartedAt = Date.now();
                     updateExTimerDisplay();
                     if (exTimerInterval) clearInterval(exTimerInterval);
@@ -27263,63 +27777,155 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function exUploadDrawingToCloud(dbKey, data, contentType) {
-            if (!exDrawingCloudReady() || !data) return;
-            r2PutObject('exercises/drawings/' + dbKey, data, contentType)
-                .catch(e => console.warn('习题书写云同步失败:', dbKey, e));
+            if (!exDrawingCloudReady() || !data) return Promise.resolve(false);
+            return r2PutObject('exercises/drawings/' + dbKey, data, contentType)
+                .then(() => true)
+                .catch(e => {
+                    console.warn('习题书写云同步失败:', dbKey, e);
+                    return false;
+                });
         }
 
         function exDeleteDrawingFromCloud(dbKey) {
-            if (!exDrawingCloudReady()) return;
-            r2DeleteObject('exercises/drawings/' + dbKey).catch(e => {});
+            if (!exDrawingCloudReady()) return Promise.resolve(false);
+            return r2DeleteObject('exercises/drawings/' + dbKey)
+                .then(() => true)
+                .catch(() => false);
+        }
+
+        const exPendingDrawingSaves = new Set();
+        // 本地书写快照按发起顺序串行落盘。仅“等待全部完成”不能阻止较慢的旧 put
+        // 在较新的快照之后完成并覆盖新数据；失败则由下一项从已恢复的队列继续。
+        let _exDrawingLocalSavePromise = Promise.resolve();
+        function exTrackDrawingSave(savePromise) {
+            exPendingDrawingSaves.add(savePromise);
+            savePromise.then(
+                () => exPendingDrawingSaves.delete(savePromise),
+                () => exPendingDrawingSaves.delete(savePromise)
+            );
+            return savePromise;
+        }
+
+        function exQueueDrawingSave(saveWork) {
+            const savePromise = _exDrawingLocalSavePromise
+                .catch(() => {})
+                .then(saveWork);
+            _exDrawingLocalSavePromise = savePromise;
+            return exTrackDrawingSave(savePromise);
+        }
+
+        // 云端不阻塞退出，但同一页必须按快照顺序上传；否则较慢的旧 PUT 会在
+        // 新 PUT 之后完成，使另一台设备恢复出旧笔迹。
+        const _exDrawingCloudSavePromises = new Map();
+        function exQueueDrawingCloudSave(pageKey, saveWork) {
+            const previous = _exDrawingCloudSavePromises.get(pageKey) || Promise.resolve();
+            const savePromise = previous.catch(() => {}).then(saveWork);
+            _exDrawingCloudSavePromises.set(pageKey, savePromise);
+            savePromise.then(
+                () => {
+                    if (_exDrawingCloudSavePromises.get(pageKey) === savePromise) {
+                        _exDrawingCloudSavePromises.delete(pageKey);
+                    }
+                },
+                () => {
+                    if (_exDrawingCloudSavePromises.get(pageKey) === savePromise) {
+                        _exDrawingCloudSavePromises.delete(pageKey);
+                    }
+                }
+            );
+            return savePromise;
+        }
+
+        async function exWaitForPendingDrawingSaves() {
+            let succeeded = true;
+            while (exPendingDrawingSaves.size > 0) {
+                const results = await Promise.all(Array.from(exPendingDrawingSaves));
+                if (results.some(result => result === false)) succeeded = false;
+            }
+            return succeeded;
         }
 
         // 保存当前题目全部页面的书写到IndexedDB持久化；syncToCloud=true（返回/切题/完成时）同步到云端
         function saveCurrentDrawingToCache(syncToCloud = true) {
-            if (!exDoingState) return;
+            if (!exDoingState) return Promise.resolve(true);
+            exPreserveActiveExercisePageCount();
             const { taskId, questionIndex, isWrong, questions } = exDoingState;
-            if (isWrong && questions && questions[questionIndex] && !questions[questionIndex]._redoing) return;
+            if (isWrong && questions && questions[questionIndex] && !questions[questionIndex]._redoing) return Promise.resolve(true);
             const canvas = document.getElementById('exerciseDoingCanvas');
-            if (!canvas || !exCanvasCtx) return;
+            if (!canvas || !exCanvasCtx) return Promise.resolve(true);
             // 保存瞬间笔还没抬（切题/切后台）：先把进行中的笔画落账
             if (exDrawing) exStrokeEnd();
             if (!exPages.length) exInitPages(1);
             exStoreCurrentPage();
+            const currentQ = questions && questions[questionIndex];
+            if (currentQ) currentQ.pageCount = Math.max(1, currentQ.pageCount || 1, exPages.length);
             const baseKey = `${taskId}_${questionIndex}`;
+            const localSaves = [];
             exPages.forEach((page, p) => {
                 const key = exPageKey(baseKey, p);
                 const dbKey = `exercise_drawing_cache_${key}`;
                 const strokesDbKey = `exercise_strokes_cache_${key}`;
                 if (page.dirtyLocal) {
-                    page.dirtyLocal = false;
                     const dataUrl = p === exPageIndex ? canvas.toDataURL('image/png') : exRenderPageToDataURL(page);
                     exDrawingCache[key] = dataUrl;
-                    saveFileData(dbKey, dataUrl).catch(e => console.warn('保存书写缓存失败:', e));
+                    const removeStrokes = !!page.baseImage;
+                    let strokesJson = null;
                     if (page.baseImage) {
                         // 底图（旧版PNG）已合入新PNG，矢量数据不含底图，删除避免恢复时丢内容
                         delete exStrokesCache[key];
-                        deleteFileData(strokesDbKey).catch(e => {});
                     } else {
-                        const strokesJson = JSON.stringify({
+                        strokesJson = JSON.stringify({
                             v: 2,
                             strokes: page.strokes.map(s => ({ color: s.color, width: s.width, points: s.points }))
                         });
                         exStrokesCache[key] = strokesJson;
-                        saveFileData(strokesDbKey, strokesJson).catch(e => console.warn('保存笔画缓存失败:', e));
                     }
+                    page.dirtyLocal = false;
+                    const pageSave = exQueueDrawingSave(() => {
+                        const pageWrites = [saveFileData(dbKey, dataUrl)];
+                        pageWrites.push(removeStrokes
+                            ? deleteFileData(strokesDbKey)
+                            : saveFileData(strokesDbKey, strokesJson));
+                        return Promise.all(pageWrites.map(write => write.then(
+                            () => ({ ok: true }),
+                            error => ({ ok: false, error })
+                        ))).then(results => {
+                            const failed = results.find(result => !result.ok);
+                            if (failed) {
+                                page.dirtyLocal = true;
+                                if (exPages[p] === page && exPageIndex === p) exDirtyLocal = true;
+                                console.warn('保存书写缓存失败:', failed.error);
+                                return false;
+                            }
+                            return true;
+                        });
+                    });
+                    localSaves.push(pageSave);
                 }
-                if (syncToCloud && page.dirtyCloud) {
+                if (syncToCloud && page.dirtyCloud && exDrawingCloudReady()) {
                     page.dirtyCloud = false;
-                    exUploadDrawingToCloud(dbKey, exDrawingCache[key], 'image/png');
-                    if (exStrokesCache[key]) {
-                        exUploadDrawingToCloud(strokesDbKey, exStrokesCache[key], 'application/json');
-                    } else {
-                        exDeleteDrawingFromCloud(strokesDbKey);
-                    }
+                    const drawingData = exDrawingCache[key];
+                    const strokesData = exStrokesCache[key] || null;
+                    exQueueDrawingCloudSave(dbKey, () => {
+                        const cloudWrites = [exUploadDrawingToCloud(dbKey, drawingData, 'image/png')];
+                        cloudWrites.push(strokesData
+                            ? exUploadDrawingToCloud(strokesDbKey, strokesData, 'application/json')
+                            : exDeleteDrawingFromCloud(strokesDbKey));
+                        return Promise.all(cloudWrites).then(results => {
+                            if (!results.some(result => result === false)) return true;
+                            page.dirtyCloud = true;
+                            if (exPages[p] === page && exPageIndex === p) exDirtyCloud = true;
+                            return false;
+                        });
+                    });
                 }
             });
             // 当前页的脏标记以槽位为准（上面已清）
             exDirtyLocal = exPages[exPageIndex].dirtyLocal;
             exDirtyCloud = exPages[exPageIndex].dirtyCloud;
+            return localSaves.length
+                ? Promise.all(localSaves).then(results => results.every(result => result !== false))
+                : Promise.resolve(true);
         }
 
         // 恢复书写：各页并行恢复，当前页直接上屏，其余页恢复到各自槽位。
@@ -27329,6 +27935,19 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         let exRestorePromise = null;
         function exRestoreInFlight() {
             return exRestoreSettled !== exRestoreToken;
+        }
+        async function exWaitForDrawingRestore(expectedState) {
+            if (!expectedState || exDoingState !== expectedState) return false;
+            if (!exRestoreInFlight()) return true;
+            showToast(i18n('toast_restoring_pages'));
+            const restoreTimeout = new Promise(resolve => setTimeout(resolve, 20000));
+            try { await Promise.race([exRestorePromise, restoreTimeout]); } catch(e) {}
+            if (exDoingState !== expectedState) return false;
+            if (exRestoreInFlight()) {
+                showToast(i18n('toast_restore_not_done'));
+                return false;
+            }
+            return true;
         }
         async function restoreDrawingFromCache() {
             if (!exDoingState) return;
@@ -27344,6 +27963,17 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // 恢复单页：优先矢量笔画（支持整笔橡皮），其次旧版PNG缓存；本地没有时尝试云端
         async function exRestorePageFromCache(baseKey, p, token) {
+            const editRevisionAtStart = exDrawingEditRevision;
+            const restoreState = exDoingState;
+            const stableQuestionIndex = exStableQuestionIndex(restoreState);
+            const restoreGradingKey = restoreState && stableQuestionIndex != null
+                ? exQuestionGradingKey(restoreState.taskId, stableQuestionIndex)
+                : null;
+            const restoreGradingVersion = restoreGradingKey == null
+                ? null
+                : _exQuestionGradingTokens.get(restoreGradingKey);
+            const restoreGradingGuard = () => restoreGradingKey != null &&
+                _exQuestionGradingTokens.get(restoreGradingKey) === restoreGradingVersion;
             const key = exPageKey(baseKey, p);
             const dbKey = `exercise_drawing_cache_${key}`;
             const strokesDbKey = `exercise_strokes_cache_${key}`;
@@ -27357,16 +27987,86 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 try { imageData = await getFileData(dbKey); } catch(e) {}
             }
             // 本地无数据时尝试从云端拉取（跨设备恢复书写进度）
+            let needsLocalSave = false;
             if (!strokesJson && !imageData && exDrawingCloudReady()) {
                 try { strokesJson = await r2GetObject('exercises/drawings/' + strokesDbKey); } catch(e) {}
                 try { imageData = await r2GetObject('exercises/drawings/' + dbKey); } catch(e) {}
-                if (strokesJson) saveFileData(strokesDbKey, strokesJson).catch(e => {});
-                if (imageData) saveFileData(dbKey, imageData).catch(e => {});
+                if (strokesJson || imageData) {
+                    let skippedForLocalEdit = false;
+                    let cacheError = null;
+                    const cached = await exQueueDrawingSave(() => {
+                        // 排到本次云恢复前的本地编辑必须先落盘；旧云快照不能随后覆盖它。
+                        if (exDrawingEditRevision !== editRevisionAtStart) {
+                            skippedForLocalEdit = true;
+                            return true;
+                        }
+                        const localWrites = [];
+                        if (strokesJson) localWrites.push(saveFileData(strokesDbKey, strokesJson));
+                        if (imageData) localWrites.push(saveFileData(dbKey, imageData));
+                        return Promise.all(localWrites.map(write => write.then(
+                            () => ({ ok: true }),
+                            error => ({ ok: false, error })
+                        ))).then(results => {
+                            const failed = results.find(result => !result.ok);
+                            if (!failed) return true;
+                            cacheError = failed.error;
+                            return false;
+                        });
+                    });
+                    if (skippedForLocalEdit || !cached) needsLocalSave = true;
+                    if (cacheError) console.warn('缓存云端习题书写失败:', cacheError);
+                }
+            }
+            // draft cache 缺页时不代表用户创建的页是空白；正常习题应回退已评分图片。
+            // 这也让旧版本遗留的 orphan graded 续页在恢复 pageCount 后真正回到画布。
+            let imageDataFromGradedFallback = false;
+            if (!strokesJson && !imageData && exDoingState && !exDoingState.isWrong) {
+                const activeQ = exDoingState.questions && exDoingState.questions[exDoingState.questionIndex];
+                const storedQuestionIndex = activeQ && activeQ.index != null
+                    ? activeQ.index
+                    : exDoingState.questionIndex;
+                const gradedKey = exPageKey(`exercise_drawing_${exDoingState.taskId}_${storedQuestionIndex}`, p);
+                let gradedImage = null;
+                try { gradedImage = await getFileData(gradedKey); } catch (e) {}
+                if (!gradedImage && exDrawingCloudReady()) {
+                    let cloudGradedImage = null;
+                    try { cloudGradedImage = await r2GetObject('exercises/drawings/' + gradedKey); } catch (e) {}
+                    if (cloudGradedImage && restoreGradingGuard()) {
+                        try {
+                            const inserted = await exSaveCloudDrawingIfMissing(gradedKey, cloudGradedImage);
+                            if (restoreGradingGuard()) {
+                                if (inserted) {
+                                    gradedImage = cloudGradedImage;
+                                } else {
+                                    gradedImage = await getFileData(gradedKey).catch(() => null);
+                                }
+                            }
+                        } catch (e) {
+                            if (restoreGradingGuard()) {
+                                gradedImage = cloudGradedImage;
+                                needsLocalSave = true;
+                                console.warn('缓存云端已评分习题页失败:', e);
+                            }
+                        }
+                    }
+                }
+                if (gradedImage && restoreGradingGuard()) {
+                    imageData = gradedImage;
+                    imageDataFromGradedFallback = true;
+                }
             }
             // 等待期间已切题/关闭则放弃本次恢复
             const stillValid = () => token === exRestoreToken && exDoingState && exCanvasCtx
                 && `${exDoingState.taskId}_${exDoingState.questionIndex}` === baseKey && p < exPages.length;
+            const markMergedPageForSave = () => {
+                if (!stillValid() || (!needsLocalSave && exDrawingEditRevision === editRevisionAtStart)) return;
+                if (p === exPageIndex) exDirtyLocal = true;
+                if (exPages[p]) exPages[p].dirtyLocal = true;
+                exScheduleAutoSave();
+            };
             if (!stillValid()) return;
+            // 本地读取或 R2 拉取后若有更新评分提交，旧 graded 图片不能再进入草稿缓存/画布。
+            if (imageDataFromGradedFallback && !restoreGradingGuard()) imageData = null;
             if (strokesJson) exStrokesCache[key] = strokesJson;
             if (imageData) exDrawingCache[key] = imageData;
 
@@ -27383,18 +28083,25 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                                 bbox: exComputeBBox(s.points)
                             }));
                         exApplyRestoredPage(p, restored, null);
+                        markMergedPageForSave();
                         return;
                     }
                 } catch(e) { console.warn('恢复笔画缓存失败:', e); }
             }
             if (imageData) {
                 // 旧版PNG缓存：作为底图恢复（整笔橡皮不作用于底图，可用"清除"清空）
-                const img = new Image();
-                img.onload = () => {
-                    if (!stillValid()) return;
-                    exApplyRestoredPage(p, null, img);
-                };
-                img.src = imageData;
+                await new Promise(resolve => {
+                    const img = new Image();
+                    img.onload = () => {
+                        if (stillValid()) {
+                            exApplyRestoredPage(p, null, img);
+                            markMergedPageForSave();
+                        }
+                        resolve();
+                    };
+                    img.onerror = () => resolve();
+                    img.src = imageData;
+                });
             }
         }
 
@@ -27466,29 +28173,108 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             timerEl.classList.toggle('warning', exTimerSeconds <= 120);
         }
 
-        function closeExerciseDoing() {
-            exFlushCurrentPosition();
-            saveCurrentDrawingToCache();
-            saveCurrentExTimer();
-            if (exLassoMode) exSetLassoMode(false);
-            const wasWrong = exDoingState && exDoingState.isWrong;
-            const prevFolderId = exDoingState && exDoingState.folderId;
-            document.getElementById('exerciseDoingView').classList.remove('show');
-            document.body.classList.remove('exercise-doing-active');
-            if (exTimerInterval) { clearInterval(exTimerInterval); exTimerInterval = null; }
-            exDoingState = null;
-            exTimerStartedAt = null;
-            if (currentExerciseFolder) {
-                const data = getExercisesData();
-                const folderId = prevFolderId || currentExerciseFolder.folderId;
-                const folder = data.folders.find(f => f.id === folderId);
-                if (folder) {
-                    if (wasWrong) {
-                        const wrongTasks = data.wrongByFolder[folderId] || [];
-                        renderWrongFolderContent(folderId, folder, wrongTasks);
-                    } else {
-                        renderExerciseFolderContent(folder);
+        // 退出必须等最后一帧书写和 pageCount 元数据真正落盘。单飞可以防止用户
+        // 连点返回，或评分徽标跳转在旧题仍保存时打开新题并被迟到回调覆盖。
+        let _exClosePromise = null;
+        let _exCloseState = null;
+        async function closeExerciseDoing() {
+            if (_exClosePromise) {
+                return _exCloseState === exDoingState ? _exClosePromise : false;
+            }
+            if (!exDoingState) return true;
+
+            const expectedState = exDoingState;
+            // 返回的含义是保存当前草稿并离开；本题仍在等待的旧完成/批量评分不得在退出后回写。
+            // 先取消还停在 restore/pending-save、尚未形成题目 token 的完成操作。
+            _exCompleteGeneration++;
+            exInvalidateQuestionGrading(expectedState);
+            _exCloseState = expectedState;
+            const closePromise = (async () => {
+                try {
+                    if (exAutoSaveTimer) { clearTimeout(exAutoSaveTimer); exAutoSaveTimer = null; }
+                    if (!(await exWaitForDrawingRestore(expectedState))) return false;
+
+                    // 先排空自动保存的旧快照，再启动最终快照，保证同一个 key 不会旧写后到。
+                    await exWaitForPendingDrawingSaves();
+                    if (exDoingState !== expectedState) return false;
+
+                    while (true) {
+                        const drawingSaved = await saveCurrentDrawingToCache();
+                        const pendingSaved = await exWaitForPendingDrawingSaves();
+                        if (!drawingSaved || !pendingSaved) {
+                            showToast(i18n('storage_save_failed'));
+                            return false;
+                        }
+                        if (exDoingState !== expectedState) return false;
+
+                        // 保存等待期间仍可能有最后一个输入事件；有新脏数据就再做一次最终快照。
+                        exStoreCurrentPage();
+                        if (exDrawing || exPages.some(page => page && page.dirtyLocal)) continue;
+
+                        exPreserveActiveExercisePageCount();
+                        saveCurrentExTimer();
+                        const metadataSaved = saveData();
+                        const exercisesSaved = await exWaitForExercisesDataSaves();
+                        if (!metadataSaved || !exercisesSaved) {
+                            showToast(i18n('storage_save_failed'));
+                            return false;
+                        }
+                        if (exDoingState !== expectedState) return false;
+
+                        const lateDrawingSaves = await exWaitForPendingDrawingSaves();
+                        if (!lateDrawingSaves) {
+                            showToast(i18n('storage_save_failed'));
+                            return false;
+                        }
+                        if (exDoingState !== expectedState) return false;
+
+                        // 元数据写入期间若又收到笔迹，不能清空状态；回到循环一并重存页面和页数。
+                        exStoreCurrentPage();
+                        if (!exDrawing && !exPages.some(page => page && page.dirtyLocal)) break;
                     }
+
+                    exFlushCurrentPosition();
+                    if (exLassoMode) exSetLassoMode(false);
+                    const wasWrong = expectedState.isWrong;
+                    const prevFolderId = expectedState.folderId;
+                    document.getElementById('exerciseDoingView').classList.remove('show');
+                    document.body.classList.remove('exercise-doing-active');
+                    if (exTimerInterval) { clearInterval(exTimerInterval); exTimerInterval = null; }
+                    exDoingState = null;
+                    exTimerStartedAt = null;
+                    if (currentExerciseFolder) {
+                        const data = getExercisesData();
+                        const folderId = prevFolderId || currentExerciseFolder.folderId;
+                        const folder = data.folders.find(f => f.id === folderId);
+                        if (folder) {
+                            if (wasWrong) {
+                                const wrongTasks = data.wrongByFolder[folderId] || [];
+                                renderWrongFolderContent(folderId, folder, wrongTasks);
+                            } else {
+                                renderExerciseFolderContent(folder);
+                            }
+                        }
+                    }
+                    return true;
+                } catch (e) {
+                    console.error('退出习题保存失败:', e);
+                    showToast(i18n('storage_save_failed'));
+                    return false;
+                }
+            })();
+            _exClosePromise = closePromise;
+            let closeSucceeded = false;
+            try {
+                closeSucceeded = await closePromise;
+                return closeSucceeded;
+            } finally {
+                if (_exClosePromise === closePromise) {
+                    _exClosePromise = null;
+                    _exCloseState = null;
+                }
+                if (!closeSucceeded && exDoingState === expectedState) {
+                    exStoreCurrentPage();
+                    if (exDrawing || exPages.some(page => page && page.dirtyLocal)) exScheduleAutoSave();
                 }
             }
         }
@@ -27522,7 +28308,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
-        function onExScoreBadgeClick() {
+        async function onExScoreBadgeClick() {
             if (!_exScoreBadgeTarget) return;
             const { action, folderId, taskId, questionIndex } = _exScoreBadgeTarget;
 
@@ -27535,15 +28321,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 // 找到 wrongTask.questions 中 questionIndex 匹配的错题
                 const wqIdx = wTask.questions.findIndex(wq => wq.questionIndex === questionIndex);
                 if (wqIdx < 0) { showToast(i18n('toast_select_wrong')); return; }
-                closeExerciseDoing();
-                setTimeout(() => openExerciseDoing(folderId, taskId, wqIdx, true), 100);
+                if (!(await closeExerciseDoing())) return;
+                await openExerciseDoing(folderId, taskId, wqIdx, true);
             } else if (action === 'goToExercise') {
                 // 从错题跳转回习题集对应题
-                closeExerciseDoing();
-                setTimeout(() => {
-                    exMarkUserPosition(taskId, questionIndex);
-                    openExerciseDoing(folderId, taskId, questionIndex, false);
-                }, 100);
+                if (!(await closeExerciseDoing())) return;
+                exMarkUserPosition(taskId, questionIndex);
+                await openExerciseDoing(folderId, taskId, questionIndex, false);
             }
         }
 
@@ -27718,6 +28502,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function exMarkDirty() {
+            // 用户在快照形成后又改了内容，等待中的旧 AI 结果不得回写。
+            exDrawingEditRevision++;
+            exInvalidateQuestionGrading();
             exDirtyLocal = true;
             exDirtyCloud = true;
             exScheduleAutoSave();
@@ -27726,6 +28513,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 抬笔后稍候自动保存到本地，防应用意外退出丢笔迹；云同步在返回/切题/完成时进行
         let exAutoSaveTimer = null;
         function exScheduleAutoSave() {
+            if (_exClosePromise && _exCloseState === exDoingState) return;
             if (exAutoSaveTimer) clearTimeout(exAutoSaveTimer);
             exAutoSaveTimer = setTimeout(() => {
                 exAutoSaveTimer = null;
@@ -28548,8 +29336,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!exDoingState || !exCanvasCtx) return;
             if (!exPages.length) exInitPages(1);
             exPages.push(exNewPageState());
+            exDrawingEditRevision++;
+            exInvalidateQuestionGrading();
             const q = exDoingState.questions[exDoingState.questionIndex];
-            if (q) q.pageCount = exPages.length;
+            if (q) q.pageCount = Math.max(1, Number(q.pageCount) || 0, exPages.length);
             saveData();
             debouncedChatSync();
             exSwitchPage(exPages.length - 1);
@@ -28608,10 +29398,39 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             openExerciseDoing(folderId, taskId, questionIndex + 1, isWrong);
         }
 
+        let _exCompleteGeneration = 0;
+        let _exCompletePromise = null;
+        let _exCompleteState = null;
         async function exCompleteQuestion() {
             if (!exDoingState) return;
-            const { folderId, taskId, questionIndex, isWrong, questions } = exDoingState;
+            if (_exCompletePromise && _exCompleteState === exDoingState) return _exCompletePromise;
+
+            const expectedState = exDoingState;
+            const generation = ++_exCompleteGeneration;
+            const completePromise = exCompleteQuestionNow(expectedState, generation);
+            _exCompletePromise = completePromise;
+            _exCompleteState = expectedState;
+            try {
+                return await completePromise;
+            } finally {
+                if (_exCompletePromise === completePromise) {
+                    _exCompletePromise = null;
+                    _exCompleteState = null;
+                }
+            }
+        }
+
+        async function exCompleteQuestionNow(expectedState, generation) {
+            if (!expectedState || exDoingState !== expectedState) return;
+            const isLatestCompletion = () => generation === _exCompleteGeneration;
+            const { folderId, taskId, questionIndex, isWrong, questions } = expectedState;
             const q = questions[questionIndex];
+            const originalQuestionIndex = isWrong && q.questionIndex != null
+                ? q.questionIndex
+                : (q.index != null ? q.index : questionIndex);
+            const questionLatex = q.latex;
+            const timerStartedAtForQuestion = !isWrong ? exTimerStartedAt : null;
+            const startingTimeUsed = !isWrong ? (q.timeUsedSeconds || 0) : 0;
 
             if (isWrong && !q._redoing) {
                 // Start redo mode
@@ -28621,27 +29440,33 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 return;
             }
 
-            // 本地/云端恢复还没结束就点完成：先等恢复完成，否则未加载的续页会被当成空白页丢弃，
-            // 保存评分结果时还会把云端多出的已评分页删掉
-            if (exRestoreInFlight()) {
-                showToast(i18n('toast_restoring_pages'));
-                const restoreTimeout = new Promise(resolve => setTimeout(resolve, 20000));
-                try { await Promise.race([exRestorePromise, restoreTimeout]); } catch(e) {}
-                // 等待期间已切题/关闭则放弃
-                if (!exDoingState || exDoingState.taskId !== taskId || exDoingState.questionIndex !== questionIndex
-                    || exDoingState.isWrong !== isWrong) return;
-                if (exRestoreInFlight()) { showToast(i18n('toast_restore_not_done')); return; }
-            }
+            // 本地/云端恢复还没结束就点完成：先等恢复完成，否则未加载的续页会被当成空白页丢弃。
+            if (!(await exWaitForDrawingRestore(expectedState))) return;
 
-            // 收集全部页面的作答图片；空白页不参与评分（全空则保留第 1 页）
+            // 自动保存可能仍在写旧快照。先排空，再把当前全部页面作为最后快照提交。
+            await exWaitForPendingDrawingSaves();
+            if (exDoingState !== expectedState) return;
+
+            // 收集全部页面的作答图片。完成后必须原样保留所有页；
+            // 空白页只从 AI 评分请求中排除，不能据此压缩或删除用户创建的页面。
             const pageImages = exCollectPageImages();
+            const gradingToken = exIssueQuestionGradingToken(taskId, originalQuestionIndex);
+            const gradingGuard = exQuestionGradingGuard(gradingToken);
+            const isCurrentCompletion = () => isLatestCompletion() && gradingGuard();
 
-            // 完成时先把当前书写持久化到本地并云同步（评分失败也不丢内容）
-            saveCurrentDrawingToCache();
+            // 完成时先把当前书写持久化到本地并云同步（评分失败也不丢内容）。
+            const drawingSaved = await saveCurrentDrawingToCache();
+            const pendingSaved = await exWaitForPendingDrawingSaves();
+            if (!drawingSaved || !pendingSaved) {
+                showToast(i18n('storage_save_failed'));
+                return;
+            }
+            if (exDoingState !== expectedState) return;
 
-            const gradedPages = await exDropBlankPages(pageImages);
-            const userDrawing = gradedPages[0];
-            const extraDrawings = gradedPages.slice(1);
+            const gradingPages = await exDropBlankPages(pageImages);
+            if (!isCurrentCompletion()) return;
+            const userDrawing = pageImages[0];
+            const extraDrawings = pageImages.slice(1);
 
             // Show loading
             showToast(i18n('toast_asking_ai'));
@@ -28649,9 +29474,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const systemPrompt = i18n('prompt_grade_system');
 
             try {
-                const msgContent = [{ role: 'user', content: exGradingContent(gradedPages, q.latex) }];
+                const msgContent = [{ role: 'user', content: exGradingContent(gradingPages, questionLatex) }];
 
                 const result = await callAI(systemPrompt, msgContent, { maxTokens: 8192, temperature: 0.3 });
+                if (!isCurrentCompletion()) return;
                 if (!result) { showToast(i18n('toast_ai_return_parse_fail')); return; }
 
                 const grading = parseExerciseGradingResponse(result);
@@ -28659,75 +29485,153 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const comment = i18n('grade_comment', grading.solution || '-', grading.errors || '-', grading.similar_problem || '-');
 
                 if (isWrong) {
-                    // Update wrong question：重做图片单独存重做 key，原始作答 key 不动；
-                    // 错题视图/问 AI/重新生成解析一律通过 exWrongAnswerPages 读最近一次重做
-                    q.score = score;
-                    q.userDrawing = userDrawing;
-                    q.userDrawingExtra = extraDrawings;
-                    q.aiComment = comment;
-                    q._redoing = false;
-                    if (!q.redoDrawings) q.redoDrawings = [];
-                    q.redoDrawings.push({ drawing: userDrawing, extra: extraDrawings, pages: gradedPages.length, score, comment, time: new Date().toISOString() });
-                    // Save redo drawings to IDB and trigger sync（逐页）
-                    const redoIdx = q.redoDrawings.length - 1;
-                    await exSaveGradedPages(`exercise_redo_drawing_${taskId}_${q.questionIndex}_${redoIdx}`, gradedPages, 1);
+                    // AI 等待期间云同步可能替换 exercises；提交前始终重新获取当前错题对象。
+                    let data;
+                    let wrongTask;
+                    let commitQ;
+                    let redoIdx;
+                    while (true) {
+                        data = getExercisesData();
+                        wrongTask = (data.wrongByFolder[folderId] || []).find(t => t.taskId === taskId);
+                        commitQ = wrongTask && (wrongTask.questions || [])
+                            .find(item => item && item.questionIndex === originalQuestionIndex);
+                        if (!commitQ) throw new Error('Wrong question no longer exists');
+                        redoIdx = (commitQ.redoDrawings || []).length;
+
+                        // 重做图片必须先写稳，再把记录加入元数据，避免失败时留下半完成状态。
+                        if (!isCurrentCompletion()) return;
+                        const pagesSaved = await exSaveGradedPages(
+                            `exercise_redo_drawing_${taskId}_${originalQuestionIndex}_${redoIdx}`,
+                            pageImages,
+                            gradingGuard
+                        );
+                        if (!pagesSaved || !isCurrentCompletion()) return;
+
+                        // 图片写入期间若云合并追加了历史，按新的稳定尾下标重试。
+                        data = getExercisesData();
+                        wrongTask = (data.wrongByFolder[folderId] || []).find(t => t.taskId === taskId);
+                        commitQ = wrongTask && (wrongTask.questions || [])
+                            .find(item => item && item.questionIndex === originalQuestionIndex);
+                        if (!commitQ) throw new Error('Wrong question no longer exists');
+                        if ((commitQ.redoDrawings || []).length === redoIdx) break;
+                    }
+
+                    // 错题视图/问 AI/重新生成解析一律通过 exWrongAnswerPages 读最近一次重做。
+                    const committedPageCount = Math.max(
+                        1,
+                        Number(commitQ.pageCount) || 0,
+                        Number(commitQ.userDrawingPages) || 0,
+                        pageImages.length
+                    );
+                    commitQ.score = score;
+                    commitQ.userDrawing = userDrawing;
+                    commitQ.userDrawingExtra = extraDrawings;
+                    commitQ.pageCount = committedPageCount;
+                    commitQ.aiComment = comment;
+                    commitQ._redoing = false;
+                    if (!commitQ.redoDrawings) commitQ.redoDrawings = [];
+                    commitQ.redoDrawings.push({
+                        drawing: userDrawing,
+                        extra: extraDrawings,
+                        pages: pageImages.length,
+                        score,
+                        comment,
+                        time: new Date().toISOString()
+                    });
                 } else {
-                    // Finalize timer: save elapsed time for this question
-                    let finalTimeUsed = 0;
-                    if (exTimerStartedAt) {
-                        const elapsed = Math.round((Date.now() - exTimerStartedAt) / 1000);
-                        finalTimeUsed = (q.timeUsedSeconds || 0) + elapsed;
-                        q.timeUsedSeconds = finalTimeUsed;
-                        q.remainingSeconds = Math.max(0, exTimerSeconds);
+                    // AI 等待期间云同步可能替换 exercises；先从当前数据计算旧页数并写稳图片。
+                    let data = getExercisesData();
+                    let folder = data.folders.find(f => f.id === folderId);
+                    let task = folder && (folder.tasks || []).find(t => t.id === taskId);
+                    let canonicalIndex = questionIndex;
+                    if (task && q.index != null) {
+                        const matched = (task.questions || []).findIndex(candidate => candidate && candidate.index === q.index);
+                        if (matched >= 0) canonicalIndex = matched;
+                    }
+                    let origQ = task && task.questions && task.questions[canonicalIndex];
+                    if (!origQ) throw new Error('Exercise question no longer exists');
+                    if (!isCurrentCompletion()) return;
+                    const pagesSaved = await exSaveGradedPages(
+                        `exercise_drawing_${taskId}_${originalQuestionIndex}`, pageImages, gradingGuard);
+                    if (!pagesSaved || !isCurrentCompletion()) return;
+
+                    // 图片写入后再次取 canonical 对象，随后才提交题目/错题元数据。
+                    data = getExercisesData();
+                    folder = data.folders.find(f => f.id === folderId);
+                    task = folder && (folder.tasks || []).find(t => t.id === taskId);
+                    canonicalIndex = questionIndex;
+                    if (task && q.index != null) {
+                        const matched = (task.questions || []).findIndex(candidate => candidate && candidate.index === q.index);
+                        if (matched >= 0) canonicalIndex = matched;
+                    }
+                    origQ = task && task.questions && task.questions[canonicalIndex];
+                    if (!origQ) throw new Error('Exercise question no longer exists');
+                    if (!isCurrentCompletion()) return;
+
+                    let finalTimeUsed = origQ.timeUsedSeconds || 0;
+                    let finalRemaining = origQ.remainingSeconds;
+                    if (exDoingState === expectedState && exTimerStartedAt === timerStartedAtForQuestion && exTimerStartedAt) {
+                        const elapsed = Math.round((Date.now() - timerStartedAtForQuestion) / 1000);
+                        finalTimeUsed = startingTimeUsed + elapsed;
+                        finalRemaining = Math.max(0, exTimerSeconds);
                         exTimerStartedAt = null;
                         if (exTimerInterval) { clearInterval(exTimerInterval); exTimerInterval = null; }
-                    } else {
-                        finalTimeUsed = q.timeUsedSeconds || 0;
                     }
 
-                    // Update original task question
-                    const data = getExercisesData();
-                    const folder = data.folders.find(f => f.id === folderId);
-                    if (!folder) return;
-                    const task = folder.tasks.find(t => t.id === taskId);
-                    if (!task) return;
-                    const origQ = task.questions[questionIndex];
-                    const prevPages = origQ ? (origQ.userDrawingPages || 1) : 1;
-                    if (origQ) {
-                        origQ.status = 'done';
-                        origQ.score = score;
-                        origQ.userDrawing = userDrawing;
-                        origQ.userDrawingExtra = extraDrawings;
-                        origQ.userDrawingPages = gradedPages.length;
-                        origQ.aiComment = comment;
-                        origQ.timeUsedSeconds = finalTimeUsed;
-                    }
-
-                    // Save user drawings to IDB（逐页）
-                    await exSaveGradedPages(`exercise_drawing_${taskId}_${questionIndex}`, gradedPages, prevPages);
+                    origQ.status = 'done';
+                    origQ.score = score;
+                    origQ.userDrawing = userDrawing;
+                    origQ.userDrawingExtra = extraDrawings;
+                    const committedPageCount = Math.max(
+                        1,
+                        Number(origQ.pageCount) || 0,
+                        Number(origQ.userDrawingPages) || 0,
+                        pageImages.length
+                    );
+                    origQ.pageCount = committedPageCount;
+                    origQ.userDrawingPages = committedPageCount;
+                    origQ.aiComment = comment;
+                    origQ.timeUsedSeconds = finalTimeUsed;
+                    if (finalRemaining != null) origQ.remainingSeconds = finalRemaining;
 
                     // 写入错题本：同一题只保留一条，重新评分覆盖旧条目
                     exUpsertWrongQuestion(data, folderId, taskId, task.name, {
-                        questionIndex,
+                        questionIndex: originalQuestionIndex,
                         latex: origQ.latex,
                         score,
                         userDrawing,
                         userDrawingExtra: extraDrawings,
-                        userDrawingPages: gradedPages.length,
+                        userDrawingPages: committedPageCount,
                         aiComment: comment,
                         timeUsedSeconds: finalTimeUsed,
                         redoDrawings: []
                     });
                 }
 
+                if (!isCurrentCompletion()) return;
                 saveData();
+                if (!(await exWaitForExercisesDataSaves())) {
+                    showToast(i18n('storage_save_failed'));
+                    return;
+                }
+                if (!isCurrentCompletion()) return;
                 debouncedChatSync();
 
                 const scoreColor = score >= 8 ? '#22c55e' : score >= 6 ? '#eab308' : '#ef4444';
                 showToast(i18n('score_display', score));
 
-                // Re-render current question to show result
-                openExerciseDoing(folderId, taskId, questionIndex, isWrong);
+                // 用户仍停留在本题时才刷新；AI 等待期间若已切题，不打断当前页面。
+                if (exDoingState === expectedState) {
+                    let reopenIndex = questionIndex;
+                    if (isWrong) {
+                        const wrongTask = (getExercisesData().wrongByFolder[folderId] || [])
+                            .find(t => t.taskId === taskId);
+                        const found = wrongTask && (wrongTask.questions || [])
+                            .findIndex(item => item && item.questionIndex === originalQuestionIndex);
+                        if (found >= 0) reopenIndex = found;
+                    }
+                    await openExerciseDoing(folderId, taskId, reopenIndex, isWrong);
+                }
 
             } catch (err) {
                 console.error('AI评分失败:', err);

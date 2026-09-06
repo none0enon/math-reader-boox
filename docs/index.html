@@ -7272,6 +7272,7 @@
                 try { flushCurrentPageNow(); } catch (e) {}
                 try { saveCurrentExTimer(); } catch (e) {}
                 try { saveCurrentDrawingToCache(); } catch (e) {}
+                try { exFlushCurrentPosition(); } catch (e) {}
                 try { nbFlushPositionSync(); } catch (e) {}
                 try { flushLectureProgressSync(); } catch (e) {}
                 try {
@@ -17764,6 +17765,8 @@
                 if (imported.exportFormat && !['math-reader-full-zip-v1', 'math-reader-full-zip-v2'].includes(imported.exportFormat)) {
                     console.warn('未知导出格式:', imported.exportFormat);
                 }
+                // 后续会替换整包数据；旧习题位置同步不得跨过这条边界写入导入内容。
+                exInvalidatePositionSyncs();
                 const oldSettings = appData.settings || {};
                 appData = {
                     books: imported.books || [],
@@ -17910,6 +17913,7 @@
                 renderClassroomPage();
                 renderExercisesPage();
                 renderNotebooksPage?.();
+                exClearLocalPositionShadows();
                 showToast(i18n('import_complete_files', restored));
             } catch (err) {
                 console.error('导入 ZIP 失败:', err);
@@ -18050,6 +18054,7 @@
                     classroomTombstones: deletionTombstones
                 };
                 saveData();
+                exClearLocalPositionShadows();
                 for (const item of appData.classroomSyncOutbox) {
                     triggerSyncOnFileChange(item.fileId, item.action);
                 }
@@ -18231,7 +18236,7 @@
         //   避免公式里的 *、-、换行等被当作 Markdown 语法改写。
         // - 回填公式时做 HTML 转义：公式里的 <、>、& 否则会被浏览器当成标签或实体（如 $a<b$），导致无法渲染。
         // - 公式之外残留的箭头命令（模型常把 → 写成 \rightarrow）替换成对应字符，否则会原样显示。
-        function renderChatMarkdownLatex(text) {
+        function renderChatMarkdownLatex(text, escapeText = false) {
             if (!text) return '';
             const escapeLatexHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const arrowMap = {
@@ -18263,6 +18268,10 @@
                 latexInlines.push(p1.trim());
                 return `%%LATEXINLINE${latexInlines.length - 1}%%`;
             });
+
+            // 富文本展示不受信任的 AI 回复时，先转义公式之外的正文；
+            // Markdown 标签仍由下面的转换生成，公式则已被占位符保护。
+            if (escapeText) content = escapeHtml(content);
 
             content = content.replace(/\\(rightarrow|longrightarrow|to|Rightarrow|Longrightarrow|implies|leftarrow|longleftarrow|gets|Leftarrow|leftrightarrow|Leftrightarrow|iff)\b/g, (match, name) => arrowMap[name]);
 
@@ -21788,7 +21797,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             setTimeout(() => document.getElementById('chatInput').focus(), 300);
         }
 
-        function addChatMessage(container, isUser, text) {
+        function addChatMessage(container, isUser, text, renderRichText = false) {
             const userName = getUserName();
             const userAvatar = getUserAvatar();
             const aiName = getAIName();
@@ -21807,11 +21816,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             const messageDiv = document.createElement('div');
             messageDiv.className = `chat-message ${isUser ? 'user' : 'ai'}`;
+            messageDiv._rawChatText = String(text || '');
+            const messageHtml = !isUser && renderRichText
+                ? renderChatMarkdownLatex(text, true)
+                : escapeHtml(text);
             messageDiv.innerHTML = `
                 <div class="chat-sender">${avatarHtml}<span class="chat-sender-name">${escapeHtml(displayName)}</span></div>
-                <div class="chat-bubble">${escapeHtml(text)}</div>
+                <div class="chat-bubble">${messageHtml}</div>
             `;
             container.appendChild(messageDiv);
+            if (!isUser && renderRichText) renderLectureMath(messageDiv);
             container.scrollTop = container.scrollHeight;
         }
 
@@ -21849,6 +21863,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const container = document.getElementById('chatContainer');
             addChatMessage(container, true, msg);
             input.value = '';
+            const renderResponseMath = !!window._wrongAIChatOverride;
 
             addTypingIndicator(container);
 
@@ -21868,7 +21883,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const chatMessages = [];
                 container.querySelectorAll('.chat-message').forEach(el => {
                     const isUser = el.classList.contains('user');
-                    const text = el.querySelector('.chat-bubble')?.textContent?.trim();
+                    const rawText = typeof el._rawChatText === 'string'
+                        ? el._rawChatText
+                        : el.querySelector('.chat-bubble')?.textContent;
+                    const text = rawText?.trim();
                     if (text && !el.id) {
                         chatMessages.push({ role: isUser ? 'user' : 'assistant', content: text });
                     }
@@ -21895,7 +21913,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const result = await callAI(systemPrompt, recentMessages, { maxTokens: 8192 });
                 
                 removeTypingIndicator();
-                addChatMessage(container, false, result || i18n('chat_no_answer'));
+                addChatMessage(container, false, result || i18n('chat_no_answer'), renderResponseMath);
             } catch (err) {
                 removeTypingIndicator();
                 addChatMessage(container, false, i18n('chat_call_failed') + err.message);
@@ -25121,6 +25139,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (idx >= 0) {
                 const folder = data.folders[idx];
                 (folder.tasks || []).forEach(task => {
+                    exForgetExercisePosition(folderId, task.id);
                     // 清理源文件
                     (task.sourceFiles || []).forEach(sf => {
                         try { deleteFileData('exercise_' + sf.id); } catch(e) {}
@@ -25231,6 +25250,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
             // 清理每道题的IndexedDB缓存与内存缓存（含多页）
             (task.questions || []).forEach((q, i) => exPurgeQuestionDrawings(taskId, i, q));
+            // 新题集与旧题号不再对应；先清云端旧位置，成功重建后从第一题重新记录。
+            exForgetExercisePosition(folderId, taskId, true);
             // Clear existing questions
             task.questions = [];
             saveData();
@@ -25243,6 +25264,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (!dataUrl) { showToast(i18n('toast_file_data_lost')); return; }
                 const isImage = sf.type === 'image';
                 await extractExerciseQuestions(folderId, taskId, dataUrl, isImage, sf.mimeType || '');
+                const regeneratedTask = exFindTask(folderId, taskId);
+                if (regeneratedTask && (regeneratedTask.questions || []).length) {
+                    exRememberOpenedQuestion(
+                        folderId, taskId, exResolveOpeningQuestionIndex(regeneratedTask, null), true);
+                    exFlushPositionSync(folderId, taskId);
+                }
             } catch (err) {
                 showToast(i18n('toast_regen_failed') + err.message);
             }
@@ -25257,6 +25284,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const taskIdx = folder.tasks.findIndex(t => t.id === taskId);
             if (taskIdx < 0) return;
             const task = folder.tasks[taskIdx];
+            exForgetExercisePosition(folderId, taskId);
             // Clean up IDB files
             (task.sourceFiles || []).forEach(sf => {
                 try { deleteFileData('exercise_' + sf.id); } catch(e) {}
@@ -26679,22 +26707,386 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
+        // 习题最后打开题：同步写 task + localStorage shadow，确保快速退出时也已落盘；
+        // 云端使用独立小对象，避免整包 exercises 合并时旧 metadata 覆盖新位置。
+        function exFindTask(folderId, taskId) {
+            const folder = getExercisesData().folders.find(f => f.id === folderId);
+            return folder && (folder.tasks || []).find(t => t.id === taskId);
+        }
+
+        function exLocalPositionKey(taskId) {
+            return 'mathReaderExercisePosition_' + taskId;
+        }
+
+        function exInvalidatePositionSyncs(clearPendingChoices = false) {
+            _exPositionSyncGeneration++;
+            clearTimeout(_exPositionSyncTimer);
+            _exPositionSyncTimer = null;
+            _exPositionSyncTarget = null;
+            if (clearPendingChoices) {
+                Object.keys(_exPendingPositionChoices).forEach(taskId => {
+                    delete _exPendingPositionChoices[taskId];
+                });
+            }
+        }
+
+        function exClearLocalPositionShadows() {
+            exInvalidatePositionSyncs(true);
+            const prefix = exLocalPositionKey('');
+            const keys = [];
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith(prefix)) keys.push(key);
+                }
+                keys.forEach(key => localStorage.removeItem(key));
+            } catch (e) {
+                console.warn('[exercise] 清理最后打开题记录失败:', e);
+            }
+        }
+
+        function exCloudPositionKey(taskId) {
+            return 'exercises/positions/' + encodeURIComponent(taskId) + '.json';
+        }
+
+        function exPositionTimestamp(position) {
+            return Number(position && position.lastOpenedQuestionUpdatedAt) || 0;
+        }
+
+        function exTaskPosition(task) {
+            if (!task) return null;
+            return {
+                taskId: task.id,
+                lastOpenedQuestionIndex: task.lastOpenedQuestionIndex,
+                lastOpenedQuestionUpdatedAt: task.lastOpenedQuestionUpdatedAt
+            };
+        }
+
+        function exPositionIsValid(task, position) {
+            const idx = position && position.lastOpenedQuestionIndex;
+            return !!task && Array.isArray(task.questions) && Number.isInteger(idx) &&
+                idx >= 0 && idx < task.questions.length && exPositionTimestamp(position) > 0;
+        }
+
+        function exReadLocalPosition(taskId) {
+            try {
+                return JSON.parse(localStorage.getItem(exLocalPositionKey(taskId)) || 'null');
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function exLatestPosition(task, ...positions) {
+            let latest = null;
+            for (const position of positions) {
+                if (!exPositionIsValid(task, position)) continue;
+                if (!latest || exPositionTimestamp(position) > exPositionTimestamp(latest)) {
+                    latest = position;
+                }
+            }
+            return latest;
+        }
+
+        function exApplyPosition(task, position) {
+            if (!exPositionIsValid(task, position)) return false;
+            const changed = task.lastOpenedQuestionIndex !== position.lastOpenedQuestionIndex ||
+                exPositionTimestamp(task) !== exPositionTimestamp(position);
+            task.lastOpenedQuestionIndex = position.lastOpenedQuestionIndex;
+            task.lastOpenedQuestionUpdatedAt = exPositionTimestamp(position);
+            try {
+                localStorage.setItem(exLocalPositionKey(task.id), JSON.stringify({
+                    taskId: task.id,
+                    lastOpenedQuestionIndex: task.lastOpenedQuestionIndex,
+                    lastOpenedQuestionUpdatedAt: task.lastOpenedQuestionUpdatedAt
+                }));
+            } catch (e) { console.warn('[exercise] 保存最后打开题失败:', e); }
+            if (changed) saveData();
+            return changed;
+        }
+
+        function exRememberOpenedQuestion(folderId, taskId, questionIndex, force = false) {
+            const task = exFindTask(folderId, taskId);
+            if (!task || !Number.isInteger(questionIndex) || questionIndex < 0 ||
+                questionIndex >= (task.questions || []).length) return false;
+            const current = exLatestPosition(task, exTaskPosition(task), exReadLocalPosition(taskId));
+            if (!force && current && current.lastOpenedQuestionIndex === questionIndex) {
+                exApplyPosition(task, current);
+                return false;
+            }
+            const previousTimestamp = Math.max(
+                exPositionTimestamp(exTaskPosition(task)),
+                exPositionTimestamp(exReadLocalPosition(taskId))
+            );
+            exApplyPosition(task, {
+                taskId,
+                lastOpenedQuestionIndex: questionIndex,
+                lastOpenedQuestionUpdatedAt: Math.max(Date.now(), previousTimestamp + 1)
+            });
+            return true;
+        }
+
+        function exResolveOpeningQuestionIndex(task, position) {
+            const questions = (task && task.questions) || [];
+            if (exPositionIsValid(task, position)) return position.lastOpenedQuestionIndex;
+            const pendingIndex = questions.findIndex(q => q.status === 'pending');
+            return pendingIndex >= 0 ? pendingIndex : 0;
+        }
+
+        function exPositionCloudReady() {
+            const config = appData.settings && appData.settings.r2Config;
+            return !!(config && config.accessKeyId && config.secretKey && config.endpoint &&
+                config.bucketName && (config.autoSyncEnabled || config.autoSyncOnChange));
+        }
+
+        function exParseCloudPosition(raw, taskId) {
+            if (!raw) return null;
+            const position = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!position || (position.taskId && position.taskId !== taskId) ||
+                !Number.isInteger(position.lastOpenedQuestionIndex) ||
+                position.lastOpenedQuestionIndex < 0 || exPositionTimestamp(position) <= 0) {
+                throw new Error('Invalid exercise position');
+            }
+            return position;
+        }
+
+        async function r2FetchExercisePosition(taskId, withMetadata = false) {
+            if (!taskId || !exPositionCloudReady()) {
+                return withMetadata ? { position: null, etag: null, missing: true } : null;
+            }
+            const result = await r2GetObjectWithTimeout(
+                exCloudPositionKey(taskId), 5000, withMetadata ? { withMetadata: true } : {}
+            );
+            if (!withMetadata) return exParseCloudPosition(result, taskId);
+            return {
+                position: exParseCloudPosition(result && result.data, taskId),
+                etag: result && result.etag,
+                missing: !result || result.missing
+            };
+        }
+
+        async function r2FetchExercisePositionForOpen(taskId) {
+            try {
+                return await r2FetchExercisePosition(taskId);
+            } catch (e) {
+                if (e && e.name !== 'AbortError') {
+                    console.warn('[exercise] 拉取最后打开题失败:', taskId, e);
+                }
+                return null;
+            }
+        }
+
+        const _r2ExercisePositionSyncs = {};
+        let _exPositionSyncGeneration = 0;
+        const _exPendingPositionChoices = {};
+
+        function exMarkUserPosition(taskId, questionIndex) {
+            if (!taskId || !Number.isInteger(questionIndex)) return;
+            _exPendingPositionChoices[taskId] = { questionIndex };
+        }
+
+        function r2SyncExercisePosition(folderId, taskId) {
+            const generation = _exPositionSyncGeneration;
+            const previous = _r2ExercisePositionSyncs[taskId] || Promise.resolve();
+            const next = previous.catch(() => {}).then(async () => {
+                if (generation !== _exPositionSyncGeneration || !exPositionCloudReady()) return;
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    const remote = await r2FetchExercisePosition(taskId, true);
+                    if (generation !== _exPositionSyncGeneration) return;
+                    const task = exFindTask(folderId, taskId);
+                    if (!task) return;
+                    let local = exLatestPosition(
+                        task, exTaskPosition(task), exReadLocalPosition(taskId));
+                    if (!local) return;
+                    let pendingChoice = _exPendingPositionChoices[taskId] || null;
+                    if (pendingChoice && (!Number.isInteger(pendingChoice.questionIndex) ||
+                        pendingChoice.questionIndex < 0 || pendingChoice.questionIndex >= task.questions.length)) {
+                        if (_exPendingPositionChoices[taskId] === pendingChoice) {
+                            delete _exPendingPositionChoices[taskId];
+                        }
+                        pendingChoice = null;
+                    }
+                    const cloud = exPositionIsValid(task, remote.position) ? remote.position : null;
+                    if (cloud && exPositionTimestamp(cloud) > exPositionTimestamp(local)) {
+                        if (!pendingChoice) {
+                            exApplyPosition(task, cloud);
+                            return cloud;
+                        }
+                        if (pendingChoice.questionIndex === cloud.lastOpenedQuestionIndex) {
+                            exApplyPosition(task, cloud);
+                            if (_exPendingPositionChoices[taskId] === pendingChoice) {
+                                delete _exPendingPositionChoices[taskId];
+                            }
+                            return cloud;
+                        }
+                        local = {
+                            taskId,
+                            lastOpenedQuestionIndex: pendingChoice.questionIndex,
+                            lastOpenedQuestionUpdatedAt: Math.max(
+                                Date.now(),
+                                exPositionTimestamp(cloud) + 1,
+                                exPositionTimestamp(local) + 1
+                            )
+                        };
+                        exApplyPosition(task, local);
+                    }
+                    if (cloud && exPositionTimestamp(cloud) === exPositionTimestamp(local) &&
+                        cloud.lastOpenedQuestionIndex === local.lastOpenedQuestionIndex) {
+                        if (pendingChoice && pendingChoice.questionIndex === local.lastOpenedQuestionIndex &&
+                            _exPendingPositionChoices[taskId] === pendingChoice) {
+                            delete _exPendingPositionChoices[taskId];
+                        }
+                        return cloud;
+                    }
+                    const conditions = remote.missing
+                        ? { ifNoneMatch: '*' }
+                        : remote.etag ? { ifMatch: remote.etag } : {};
+                    const uploadedChoice = _exPendingPositionChoices[taskId] || null;
+                    try {
+                        if (generation !== _exPositionSyncGeneration) return;
+                        await r2PutObject(
+                            exCloudPositionKey(taskId),
+                            JSON.stringify({
+                                taskId,
+                                lastOpenedQuestionIndex: local.lastOpenedQuestionIndex,
+                                lastOpenedQuestionUpdatedAt: exPositionTimestamp(local)
+                            }),
+                            'application/json',
+                            conditions
+                        );
+                        if (generation !== _exPositionSyncGeneration) return;
+                        if (uploadedChoice && _exPendingPositionChoices[taskId] === uploadedChoice &&
+                            uploadedChoice.questionIndex === local.lastOpenedQuestionIndex) {
+                            delete _exPendingPositionChoices[taskId];
+                        }
+                        return local;
+                    } catch (e) {
+                        if (e && e.status === 412) continue;
+                        throw e;
+                    }
+                }
+                throw new Error('Exercise position sync conflict');
+            }).catch(e => console.warn('[exercise] 同步最后打开题失败:', taskId, e));
+            _r2ExercisePositionSyncs[taskId] = next;
+            return next;
+        }
+
+        function exForgetExercisePosition(folderId, taskId, preserveTaskPosition = false) {
+            const task = exFindTask(folderId, taskId);
+            if (task && !preserveTaskPosition) {
+                delete task.lastOpenedQuestionIndex;
+                delete task.lastOpenedQuestionUpdatedAt;
+            }
+            try { localStorage.removeItem(exLocalPositionKey(taskId)); } catch (e) {}
+            delete _exPendingPositionChoices[taskId];
+            if (_exPositionSyncTarget && _exPositionSyncTarget.taskId === taskId) {
+                clearTimeout(_exPositionSyncTimer);
+                _exPositionSyncTimer = null;
+                _exPositionSyncTarget = null;
+            }
+            const previous = _r2ExercisePositionSyncs[taskId] || Promise.resolve();
+            const next = previous.catch(() => {}).then(async () => {
+                if (exPositionCloudReady()) await r2DeleteObject(exCloudPositionKey(taskId));
+            }).catch(e => console.warn('[exercise] 删除最后打开题失败:', taskId, e));
+            _r2ExercisePositionSyncs[taskId] = next;
+            return next;
+        }
+
+        let _exPositionSyncTimer = null;
+        let _exPositionSyncTarget = null;
+        function exSchedulePositionSync(folderId, taskId) {
+            clearTimeout(_exPositionSyncTimer);
+            _exPositionSyncTarget = { folderId, taskId };
+            _exPositionSyncTimer = setTimeout(() => {
+                _exPositionSyncTimer = null;
+                _exPositionSyncTarget = null;
+                r2SyncExercisePosition(folderId, taskId);
+            }, 1200);
+        }
+
+        function exFlushPositionSync(folderId, taskId) {
+            const target = (folderId && taskId) ? { folderId, taskId } : _exPositionSyncTarget;
+            clearTimeout(_exPositionSyncTimer);
+            _exPositionSyncTimer = null;
+            _exPositionSyncTarget = null;
+            if (target) return r2SyncExercisePosition(target.folderId, target.taskId);
+        }
+
+        function exFlushCurrentPosition() {
+            if (!exDoingState || exDoingState.isWrong) return exFlushPositionSync();
+            const { folderId, taskId } = exDoingState;
+            return exFlushPositionSync(folderId, taskId);
+        }
+
+        let _exOpenRequestToken = 0;
+        function exWaitForStartupMetadata(timeoutMs = 5000) {
+            return new Promise(resolve => {
+                let timer = null;
+                const finish = () => {
+                    if (timer) clearTimeout(timer);
+                    resolve();
+                };
+                timer = setTimeout(finish, timeoutMs);
+                r2StartupMetadataReady.then(finish, finish);
+            });
+        }
+
         // Start exercise task
-        function startExerciseTask(folderId, taskId) {
-            const data = getExercisesData();
-            const folder = data.folders.find(f => f.id === folderId);
-            if (!folder) return;
-            const task = folder.tasks.find(t => t.id === taskId);
+        async function startExerciseTask(folderId, taskId) {
+            const openToken = ++_exOpenRequestToken;
+            let task = exFindTask(folderId, taskId);
+            if (!task || !task.questions || task.questions.length === 0) {
+                showToast(i18n('toast_select_wrong'));
+                return;
+            }
+            // 本机已有位置时立即打开；云端核对在后台进行，离线不能拖慢本地做题。
+            const savedLocalPosition = exLatestPosition(
+                task, exTaskPosition(task), exReadLocalPosition(taskId));
+            if (savedLocalPosition) {
+                exApplyPosition(task, savedLocalPosition);
+                await openExerciseDoing(
+                    folderId, taskId,
+                    exResolveOpeningQuestionIndex(task, savedLocalPosition), false);
+                const openedState = exDoingState;
+                const cloudPosition = await r2SyncExercisePosition(folderId, taskId);
+                task = exFindTask(folderId, taskId);
+                if (exDoingState === openedState && openedState && !openedState.isWrong &&
+                    exPositionIsValid(task, cloudPosition) &&
+                    cloudPosition.lastOpenedQuestionIndex !== openedState.questionIndex) {
+                    await openExerciseDoing(
+                        folderId, taskId, cloudPosition.lastOpenedQuestionIndex, false);
+                }
+                return;
+            }
+
+            const [cloudPosition] = await Promise.all([
+                r2FetchExercisePositionForOpen(taskId),
+                exWaitForStartupMetadata()
+            ]);
+            if (openToken !== _exOpenRequestToken) return;
+            const exercisePage = document.getElementById('page6');
+            if (!exercisePage || !exercisePage.classList.contains('active') ||
+                !currentExerciseFolder || currentExerciseFolder.folderId !== folderId) return;
+            task = exFindTask(folderId, taskId);
             if (!task || !task.questions || task.questions.length === 0) {
                 showToast(i18n('toast_select_wrong'));
                 return;
             }
 
-            // Find first pending question
-            let startIdx = task.questions.findIndex(q => q.status === 'pending');
-            if (startIdx < 0) startIdx = 0;
-
-            openExerciseDoing(folderId, taskId, startIdx, false);
+            const localPosition = exLatestPosition(
+                task, exTaskPosition(task), exReadLocalPosition(taskId));
+            const validCloudPosition = exPositionIsValid(task, cloudPosition)
+                ? cloudPosition : null;
+            const openingPosition = exLatestPosition(task, localPosition, validCloudPosition);
+            if (openingPosition) exApplyPosition(task, openingPosition);
+            const cloudMatchesLocal = localPosition && validCloudPosition &&
+                exPositionTimestamp(localPosition) === exPositionTimestamp(validCloudPosition) &&
+                localPosition.lastOpenedQuestionIndex === validCloudPosition.lastOpenedQuestionIndex;
+            if (localPosition && !cloudMatchesLocal && (!validCloudPosition ||
+                exPositionTimestamp(localPosition) >= exPositionTimestamp(validCloudPosition))) {
+                exSchedulePositionSync(folderId, taskId);
+            }
+            await openExerciseDoing(
+                folderId, taskId, exResolveOpeningQuestionIndex(task, openingPosition), false);
         }
 
         async function openExerciseDoing(folderId, taskId, questionIndex, isWrong) {
@@ -26856,6 +27248,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             } else {
                 document.getElementById('exerciseDoingTimer').textContent = '--:--';
                 exTimerStartedAt = null;
+            }
+            if (!isWrong && exRememberOpenedQuestion(folderId, taskId, questionIndex)) {
+                exSchedulePositionSync(folderId, taskId);
             }
         }
 
@@ -27072,6 +27467,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function closeExerciseDoing() {
+            exFlushCurrentPosition();
             saveCurrentDrawingToCache();
             saveCurrentExTimer();
             if (exLassoMode) exSetLassoMode(false);
@@ -27144,7 +27540,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             } else if (action === 'goToExercise') {
                 // 从错题跳转回习题集对应题
                 closeExerciseDoing();
-                setTimeout(() => openExerciseDoing(folderId, taskId, questionIndex, false), 100);
+                setTimeout(() => {
+                    exMarkUserPosition(taskId, questionIndex);
+                    openExerciseDoing(folderId, taskId, questionIndex, false);
+                }, 100);
             }
         }
 
@@ -28196,13 +28595,17 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function exPrevQuestion() {
             if (!exDoingState || exDoingState.questionIndex <= 0) return;
-            openExerciseDoing(exDoingState.folderId, exDoingState.taskId, exDoingState.questionIndex - 1, exDoingState.isWrong);
+            const { folderId, taskId, questionIndex, isWrong } = exDoingState;
+            if (!isWrong) exMarkUserPosition(taskId, questionIndex - 1);
+            openExerciseDoing(folderId, taskId, questionIndex - 1, isWrong);
         }
 
         function exNextQuestion() {
             if (!exDoingState) return;
             if (exDoingState.questionIndex >= exDoingState.questions.length - 1) return;
-            openExerciseDoing(exDoingState.folderId, exDoingState.taskId, exDoingState.questionIndex + 1, exDoingState.isWrong);
+            const { folderId, taskId, questionIndex, isWrong } = exDoingState;
+            if (!isWrong) exMarkUserPosition(taskId, questionIndex + 1);
+            openExerciseDoing(folderId, taskId, questionIndex + 1, isWrong);
         }
 
         async function exCompleteQuestion() {

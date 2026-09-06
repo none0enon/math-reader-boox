@@ -7272,6 +7272,7 @@
                 try { flushCurrentPageNow(); } catch (e) {}
                 try { saveCurrentExTimer(); } catch (e) {}
                 try { saveCurrentDrawingToCache(); } catch (e) {}
+                try { exFlushCurrentPosition(true); } catch (e) {}
                 try { nbFlushPositionSync(); } catch (e) {}
                 try { flushLectureProgressSync(); } catch (e) {}
                 try {
@@ -25121,6 +25122,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (idx >= 0) {
                 const folder = data.folders[idx];
                 (folder.tasks || []).forEach(task => {
+                    exForgetExercisePosition(folderId, task.id);
                     // 清理源文件
                     (task.sourceFiles || []).forEach(sf => {
                         try { deleteFileData('exercise_' + sf.id); } catch(e) {}
@@ -25231,6 +25233,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
             // 清理每道题的IndexedDB缓存与内存缓存（含多页）
             (task.questions || []).forEach((q, i) => exPurgeQuestionDrawings(taskId, i, q));
+            // 新题集与旧题号不再对应；先清云端旧位置，成功重建后从第一题重新记录。
+            exForgetExercisePosition(folderId, taskId, true);
             // Clear existing questions
             task.questions = [];
             saveData();
@@ -25243,6 +25247,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (!dataUrl) { showToast(i18n('toast_file_data_lost')); return; }
                 const isImage = sf.type === 'image';
                 await extractExerciseQuestions(folderId, taskId, dataUrl, isImage, sf.mimeType || '');
+                const regeneratedTask = exFindTask(folderId, taskId);
+                if (regeneratedTask && (regeneratedTask.questions || []).length) {
+                    exRememberOpenedQuestion(
+                        folderId, taskId, exResolveOpeningQuestionIndex(regeneratedTask, null), true);
+                    exFlushPositionSync(folderId, taskId);
+                }
             } catch (err) {
                 showToast(i18n('toast_regen_failed') + err.message);
             }
@@ -25257,6 +25267,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const taskIdx = folder.tasks.findIndex(t => t.id === taskId);
             if (taskIdx < 0) return;
             const task = folder.tasks[taskIdx];
+            exForgetExercisePosition(folderId, taskId);
             // Clean up IDB files
             (task.sourceFiles || []).forEach(sf => {
                 try { deleteFileData('exercise_' + sf.id); } catch(e) {}
@@ -26679,22 +26690,301 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
+        // 习题最后打开题：同步写 task + localStorage shadow，确保快速退出时也已落盘；
+        // 云端使用独立小对象，避免整包 exercises 合并时旧 metadata 覆盖新位置。
+        function exFindTask(folderId, taskId) {
+            const folder = getExercisesData().folders.find(f => f.id === folderId);
+            return folder && (folder.tasks || []).find(t => t.id === taskId);
+        }
+
+        function exLocalPositionKey(taskId) {
+            return 'mathReaderExercisePosition_' + taskId;
+        }
+
+        function exCloudPositionKey(taskId) {
+            return 'exercises/positions/' + encodeURIComponent(taskId) + '.json';
+        }
+
+        function exPositionTimestamp(position) {
+            return Number(position && position.lastOpenedQuestionUpdatedAt) || 0;
+        }
+
+        function exTaskPosition(task) {
+            if (!task) return null;
+            return {
+                taskId: task.id,
+                lastOpenedQuestionIndex: task.lastOpenedQuestionIndex,
+                lastOpenedQuestionUpdatedAt: task.lastOpenedQuestionUpdatedAt
+            };
+        }
+
+        function exPositionIsValid(task, position) {
+            const idx = position && position.lastOpenedQuestionIndex;
+            return !!task && Array.isArray(task.questions) && Number.isInteger(idx) &&
+                idx >= 0 && idx < task.questions.length && exPositionTimestamp(position) > 0;
+        }
+
+        function exReadLocalPosition(taskId) {
+            try {
+                return JSON.parse(localStorage.getItem(exLocalPositionKey(taskId)) || 'null');
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function exLatestPosition(task, ...positions) {
+            let latest = null;
+            for (const position of positions) {
+                if (!exPositionIsValid(task, position)) continue;
+                if (!latest || exPositionTimestamp(position) > exPositionTimestamp(latest)) {
+                    latest = position;
+                }
+            }
+            return latest;
+        }
+
+        function exApplyPosition(task, position) {
+            if (!exPositionIsValid(task, position)) return false;
+            const changed = task.lastOpenedQuestionIndex !== position.lastOpenedQuestionIndex ||
+                exPositionTimestamp(task) !== exPositionTimestamp(position);
+            task.lastOpenedQuestionIndex = position.lastOpenedQuestionIndex;
+            task.lastOpenedQuestionUpdatedAt = exPositionTimestamp(position);
+            try {
+                localStorage.setItem(exLocalPositionKey(task.id), JSON.stringify({
+                    taskId: task.id,
+                    lastOpenedQuestionIndex: task.lastOpenedQuestionIndex,
+                    lastOpenedQuestionUpdatedAt: task.lastOpenedQuestionUpdatedAt
+                }));
+            } catch (e) { console.warn('[exercise] 保存最后打开题失败:', e); }
+            if (changed) saveData();
+            return changed;
+        }
+
+        function exRememberOpenedQuestion(folderId, taskId, questionIndex, force = false) {
+            const task = exFindTask(folderId, taskId);
+            if (!task || !Number.isInteger(questionIndex) || questionIndex < 0 ||
+                questionIndex >= (task.questions || []).length) return false;
+            const current = exLatestPosition(task, exTaskPosition(task), exReadLocalPosition(taskId));
+            if (!force && current && current.lastOpenedQuestionIndex === questionIndex) {
+                exApplyPosition(task, current);
+                return false;
+            }
+            const previousTimestamp = Math.max(
+                exPositionTimestamp(exTaskPosition(task)),
+                exPositionTimestamp(exReadLocalPosition(taskId))
+            );
+            exApplyPosition(task, {
+                taskId,
+                lastOpenedQuestionIndex: questionIndex,
+                lastOpenedQuestionUpdatedAt: Math.max(Date.now(), previousTimestamp + 1)
+            });
+            return true;
+        }
+
+        function exResolveOpeningQuestionIndex(task, position) {
+            const questions = (task && task.questions) || [];
+            if (exPositionIsValid(task, position)) return position.lastOpenedQuestionIndex;
+            const pendingIndex = questions.findIndex(q => q.status === 'pending');
+            return pendingIndex >= 0 ? pendingIndex : 0;
+        }
+
+        function exPositionCloudReady() {
+            const config = appData.settings && appData.settings.r2Config;
+            return !!(config && config.accessKeyId && config.secretKey && config.endpoint &&
+                config.bucketName && (config.autoSyncEnabled || config.autoSyncOnChange));
+        }
+
+        function exParseCloudPosition(raw, taskId) {
+            if (!raw) return null;
+            const position = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!position || (position.taskId && position.taskId !== taskId) ||
+                !Number.isInteger(position.lastOpenedQuestionIndex) ||
+                position.lastOpenedQuestionIndex < 0 || exPositionTimestamp(position) <= 0) {
+                throw new Error('Invalid exercise position');
+            }
+            return position;
+        }
+
+        async function r2FetchExercisePosition(taskId, withMetadata = false) {
+            if (!taskId || !exPositionCloudReady()) {
+                return withMetadata ? { position: null, etag: null, missing: true } : null;
+            }
+            const result = await r2GetObjectWithTimeout(
+                exCloudPositionKey(taskId), 5000, withMetadata ? { withMetadata: true } : {}
+            );
+            if (!withMetadata) return exParseCloudPosition(result, taskId);
+            return {
+                position: exParseCloudPosition(result && result.data, taskId),
+                etag: result && result.etag,
+                missing: !result || result.missing
+            };
+        }
+
+        async function r2FetchExercisePositionForOpen(taskId) {
+            try {
+                return await r2FetchExercisePosition(taskId);
+            } catch (e) {
+                if (e && e.name !== 'AbortError') {
+                    console.warn('[exercise] 拉取最后打开题失败:', taskId, e);
+                }
+                return null;
+            }
+        }
+
+        const _r2ExercisePositionSyncs = {};
+        function r2SyncExercisePosition(folderId, taskId) {
+            const previous = _r2ExercisePositionSyncs[taskId] || Promise.resolve();
+            const next = previous.catch(() => {}).then(async () => {
+                if (!exPositionCloudReady()) return;
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    const remote = await r2FetchExercisePosition(taskId, true);
+                    const task = exFindTask(folderId, taskId);
+                    if (!task) return;
+                    const local = exLatestPosition(
+                        task, exTaskPosition(task), exReadLocalPosition(taskId));
+                    if (!local) return;
+                    const cloud = exPositionIsValid(task, remote.position) ? remote.position : null;
+                    if (cloud && exPositionTimestamp(cloud) > exPositionTimestamp(local)) {
+                        exApplyPosition(task, cloud);
+                        return;
+                    }
+                    if (cloud && exPositionTimestamp(cloud) === exPositionTimestamp(local) &&
+                        cloud.lastOpenedQuestionIndex === local.lastOpenedQuestionIndex) return;
+                    const conditions = remote.missing
+                        ? { ifNoneMatch: '*' }
+                        : remote.etag ? { ifMatch: remote.etag } : {};
+                    try {
+                        await r2PutObject(
+                            exCloudPositionKey(taskId),
+                            JSON.stringify({
+                                taskId,
+                                lastOpenedQuestionIndex: local.lastOpenedQuestionIndex,
+                                lastOpenedQuestionUpdatedAt: exPositionTimestamp(local)
+                            }),
+                            'application/json',
+                            conditions
+                        );
+                        return;
+                    } catch (e) {
+                        if (e && e.status === 412) continue;
+                        throw e;
+                    }
+                }
+                throw new Error('Exercise position sync conflict');
+            }).catch(e => console.warn('[exercise] 同步最后打开题失败:', taskId, e));
+            _r2ExercisePositionSyncs[taskId] = next;
+            return next;
+        }
+
+        function exForgetExercisePosition(folderId, taskId, preserveTaskPosition = false) {
+            const task = exFindTask(folderId, taskId);
+            if (task && !preserveTaskPosition) {
+                delete task.lastOpenedQuestionIndex;
+                delete task.lastOpenedQuestionUpdatedAt;
+            }
+            try { localStorage.removeItem(exLocalPositionKey(taskId)); } catch (e) {}
+            if (_exPositionSyncTarget && _exPositionSyncTarget.taskId === taskId) {
+                clearTimeout(_exPositionSyncTimer);
+                _exPositionSyncTimer = null;
+                _exPositionSyncTarget = null;
+            }
+            const previous = _r2ExercisePositionSyncs[taskId] || Promise.resolve();
+            const next = previous.catch(() => {}).then(async () => {
+                if (exPositionCloudReady()) await r2DeleteObject(exCloudPositionKey(taskId));
+            }).catch(e => console.warn('[exercise] 删除最后打开题失败:', taskId, e));
+            _r2ExercisePositionSyncs[taskId] = next;
+            return next;
+        }
+
+        let _exPositionSyncTimer = null;
+        let _exPositionSyncTarget = null;
+        function exSchedulePositionSync(folderId, taskId) {
+            clearTimeout(_exPositionSyncTimer);
+            _exPositionSyncTarget = { folderId, taskId };
+            _exPositionSyncTimer = setTimeout(() => {
+                _exPositionSyncTimer = null;
+                _exPositionSyncTarget = null;
+                r2SyncExercisePosition(folderId, taskId);
+            }, 1200);
+        }
+
+        function exFlushPositionSync(folderId, taskId) {
+            const target = (folderId && taskId) ? { folderId, taskId } : _exPositionSyncTarget;
+            clearTimeout(_exPositionSyncTimer);
+            _exPositionSyncTimer = null;
+            _exPositionSyncTarget = null;
+            if (target) return r2SyncExercisePosition(target.folderId, target.taskId);
+        }
+
+        function exFlushCurrentPosition(force = false) {
+            if (!exDoingState || exDoingState.isWrong) return exFlushPositionSync();
+            const { folderId, taskId, questionIndex } = exDoingState;
+            exRememberOpenedQuestion(folderId, taskId, questionIndex, force);
+            return exFlushPositionSync(folderId, taskId);
+        }
+
+        let _exOpenRequestToken = 0;
+        function exWaitForStartupMetadata(timeoutMs = 5000) {
+            return new Promise(resolve => {
+                let timer = null;
+                const finish = () => {
+                    if (timer) clearTimeout(timer);
+                    resolve();
+                };
+                timer = setTimeout(finish, timeoutMs);
+                r2StartupMetadataReady.then(finish, finish);
+            });
+        }
+
         // Start exercise task
-        function startExerciseTask(folderId, taskId) {
-            const data = getExercisesData();
-            const folder = data.folders.find(f => f.id === folderId);
-            if (!folder) return;
-            const task = folder.tasks.find(t => t.id === taskId);
+        async function startExerciseTask(folderId, taskId) {
+            const openToken = ++_exOpenRequestToken;
+            let task = exFindTask(folderId, taskId);
+            if (!task || !task.questions || task.questions.length === 0) {
+                showToast(i18n('toast_select_wrong'));
+                return;
+            }
+            // 本机已有位置时立即打开；云端核对在后台进行，离线不能拖慢本地做题。
+            const savedLocalPosition = exLatestPosition(
+                task, exTaskPosition(task), exReadLocalPosition(taskId));
+            if (savedLocalPosition) {
+                exApplyPosition(task, savedLocalPosition);
+                r2SyncExercisePosition(folderId, taskId);
+                await openExerciseDoing(
+                    folderId, taskId,
+                    exResolveOpeningQuestionIndex(task, savedLocalPosition), false);
+                return;
+            }
+
+            const [cloudPosition] = await Promise.all([
+                r2FetchExercisePositionForOpen(taskId),
+                exWaitForStartupMetadata()
+            ]);
+            if (openToken !== _exOpenRequestToken) return;
+            const exercisePage = document.getElementById('page6');
+            if (!exercisePage || !exercisePage.classList.contains('active') ||
+                !currentExerciseFolder || currentExerciseFolder.folderId !== folderId) return;
+            task = exFindTask(folderId, taskId);
             if (!task || !task.questions || task.questions.length === 0) {
                 showToast(i18n('toast_select_wrong'));
                 return;
             }
 
-            // Find first pending question
-            let startIdx = task.questions.findIndex(q => q.status === 'pending');
-            if (startIdx < 0) startIdx = 0;
-
-            openExerciseDoing(folderId, taskId, startIdx, false);
+            const localPosition = exLatestPosition(
+                task, exTaskPosition(task), exReadLocalPosition(taskId));
+            const validCloudPosition = exPositionIsValid(task, cloudPosition)
+                ? cloudPosition : null;
+            const openingPosition = exLatestPosition(task, localPosition, validCloudPosition);
+            if (openingPosition) exApplyPosition(task, openingPosition);
+            const cloudMatchesLocal = localPosition && validCloudPosition &&
+                exPositionTimestamp(localPosition) === exPositionTimestamp(validCloudPosition) &&
+                localPosition.lastOpenedQuestionIndex === validCloudPosition.lastOpenedQuestionIndex;
+            if (localPosition && !cloudMatchesLocal && (!validCloudPosition ||
+                exPositionTimestamp(localPosition) >= exPositionTimestamp(validCloudPosition))) {
+                exSchedulePositionSync(folderId, taskId);
+            }
+            await openExerciseDoing(
+                folderId, taskId, exResolveOpeningQuestionIndex(task, openingPosition), false);
         }
 
         async function openExerciseDoing(folderId, taskId, questionIndex, isWrong) {
@@ -26856,6 +27146,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             } else {
                 document.getElementById('exerciseDoingTimer').textContent = '--:--';
                 exTimerStartedAt = null;
+            }
+            if (!isWrong && exRememberOpenedQuestion(folderId, taskId, questionIndex)) {
+                exSchedulePositionSync(folderId, taskId);
             }
         }
 
@@ -27072,6 +27365,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function closeExerciseDoing() {
+            exFlushCurrentPosition(true);
             saveCurrentDrawingToCache();
             saveCurrentExTimer();
             if (exLassoMode) exSetLassoMode(false);

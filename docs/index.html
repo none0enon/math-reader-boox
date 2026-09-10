@@ -4754,6 +4754,7 @@
             border-radius: 8px; overflow: hidden; cursor: pointer; background: #fff;
             user-select: none; -webkit-user-select: none; touch-action: none;
         }
+        #nbExportThumbs .nb-thumb { touch-action: pan-y; }
         .nb-thumb img { width: 100%; display: block; pointer-events: none; }
         .nb-thumb.current { border-color: var(--accent); }
         .nb-thumb.dragging { opacity: 0.5; border-style: dashed; }
@@ -20905,6 +20906,7 @@ ${i18n('prompt_lecture_gen')}`;
         let lectureDraftDrawing = false;
         let lectureDraftPointerId = null;
         let lectureDraftPointerIsPen = false;
+        let lectureDraftPointerIsEraser = false;
         let lectureDraftLastX = 0;
         let lectureDraftLastY = 0;
         let lectureDraftHistory = [];
@@ -21265,12 +21267,16 @@ ${i18n('prompt_lecture_gen')}`;
         }
 
         function startLectureDraftDraw(e) {
-            if ((!lectureDraftPenEnabled && !lectureDraftEraserEnabled) || lectureDraftDrawing || lectureDraftPanActive) return;
-            if (applePencilMode && !booxReaderIsPen(e)) return;
+            const isPen = booxReaderIsPen(e);
+            if ((!lectureDraftPenEnabled && !lectureDraftEraserEnabled) || lectureDraftDrawing) return;
+            if (!isPen && (applePencilMode || lectureDraftPanActive)) return;
+            // 笔接管先落下的手指平移，原生整笔回放也没有额外 touchstart 可清除此状态。
+            lectureDraftPanActive = false;
             e.preventDefault();
             try { lectureDraftCanvas.setPointerCapture(e.pointerId); } catch (err) {}
             lectureDraftPointerId = e.pointerId;
-            lectureDraftPointerIsPen = booxReaderIsPen(e);
+            lectureDraftPointerIsPen = isPen;
+            lectureDraftPointerIsEraser = isPen && (e.button === 5 || !!(e.buttons & 32));
             lectureDraftDrawing = true;
             const rect = lectureDraftCanvas.getBoundingClientRect();
             lectureDraftLastX = e.clientX - rect.left;
@@ -21288,7 +21294,7 @@ ${i18n('prompt_lecture_gen')}`;
             lectureDraftCtx.moveTo(lectureDraftLastX, lectureDraftLastY);
             lectureDraftCtx.lineTo(x, y);
             
-            if (lectureDraftEraserEnabled) {
+            if (lectureDraftEraserEnabled || lectureDraftPointerIsEraser) {
                 lectureDraftCtx.globalCompositeOperation = 'destination-out';
                 lectureDraftCtx.strokeStyle = 'rgba(0,0,0,1)';
                 lectureDraftCtx.lineWidth = 20;
@@ -21309,6 +21315,7 @@ ${i18n('prompt_lecture_gen')}`;
             if (lectureDraftDrawing && e.pointerId === lectureDraftPointerId) {
                 lectureDraftDrawing = false;
                 lectureDraftPointerId = null;
+                lectureDraftPointerIsEraser = false;
                 lectureDraftCtx.globalCompositeOperation = 'source-over';
                 saveLectureDraftCanvasState();
                 debouncedSaveLectureDraft();
@@ -31661,6 +31668,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // ==================== 指针输入（书写/橡皮/套索/图形/文本） ====================
         let _nbActivePointerId = null;
+        let _nbActivePointerIsPen = false;
+        let _nbTouchGesture = null;
         function nbEventPoint(e) {
             const c = document.getElementById('nbCanvas');
             const r = c.getBoundingClientRect();
@@ -31705,16 +31714,18 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
             // 沿用阅读器的 touch-action:none + 手指手动滚动，避免 Safari 抢走 Pencil。
             const wrap = document.getElementById('nbCanvasWrap');
-            let gesture = null;
             const fingers = e => Array.from(e.touches).filter(t => t.touchType !== 'stylus');
             const beginGesture = e => {
-                gesture = null;
-                if (!applePencilMode || nbState.drawing
+                _nbTouchGesture = null;
+                if ((nbState.drawing && _nbActivePointerIsPen)
                     || e.target.closest('input, textarea, button')
                     || (document.activeElement?.isContentEditable && document.activeElement.contains(e.target))) return;
                 const ts = fingers(e);
-                if (!ts.length || ts.length > 2 || ts.length !== e.touches.length) return;
-                gesture = {
+                if (!ts.length || ts.length > 2 || ts.length !== e.touches.length
+                    || (!applePencilMode && ts.length !== 2)) return;
+                // 第二根手指接管导航前，撤回第一根手指尚未提交的编辑。
+                nbCancelDrawing();
+                _nbTouchGesture = {
                     count: ts.length,
                     x: ts.reduce((n, t) => n + t.clientX, 0) / ts.length,
                     y: ts.reduce((n, t) => n + t.clientY, 0) / ts.length,
@@ -31723,9 +31734,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             };
             wrap.addEventListener('touchstart', beginGesture, { passive: true });
             wrap.addEventListener('touchmove', e => {
-                if (!gesture || !applePencilMode || nbState.drawing) { gesture = null; return; }
+                const gesture = _nbTouchGesture;
+                if (!gesture || nbState.drawing) { _nbTouchGesture = null; return; }
                 const ts = fingers(e);
-                if (ts.length !== gesture.count || ts.length !== e.touches.length) { gesture = null; return; }
+                if (ts.length !== gesture.count || ts.length !== e.touches.length) { _nbTouchGesture = null; return; }
                 const x = ts.reduce((n, t) => n + t.clientX, 0) / ts.length;
                 const y = ts.reduce((n, t) => n + t.clientY, 0) / ts.length;
                 const rect = wrap.getBoundingClientRect();
@@ -31737,16 +31749,49 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const ratio = nbState.zoom / oldZoom;
                 wrap.scrollLeft = scrollX * ratio - (x - rect.left);
                 wrap.scrollTop = scrollY * ratio - (y - rect.top);
-                gesture = { count: ts.length, x, y, distance };
+                _nbTouchGesture = { count: ts.length, x, y, distance };
                 e.preventDefault();
             }, { passive: false });
             wrap.addEventListener('touchend', beginGesture, { passive: true });
-            wrap.addEventListener('touchcancel', () => { gesture = null; }, { passive: true });
+            wrap.addEventListener('touchcancel', () => { _nbTouchGesture = null; }, { passive: true });
+        }
+
+        function nbCancelDrawing() {
+            const d = nbState.drawing;
+            if (!d) return;
+            nbState.drawing = null;
+            _nbActivePointerId = null;
+            let changed = false;
+            if (d.mode === 'erase') {
+                // i 是每次删除当时的索引；必须逆着删除顺序恢复。
+                changed = d.removed.length > 0;
+                d.removed.slice().reverse().forEach(({ s, i }) => nbState.content.strokes.splice(i, 0, s));
+            } else if (d.mode === 'move') {
+                changed = d.moved;
+                const before = new Map(d.before.map(s => [s.id, s]));
+                for (const s of nbState.content.strokes) {
+                    if (before.has(s.id)) { Object.assign(s, before.get(s.id)); delete s._bb; }
+                }
+                if (nbState.selection) nbState.selection.bbox = nbSelBBox(nbState.selection.ids);
+                nbPositionSelToolbar();
+            } else if (d.mode === 'boxdrag') {
+                changed = true; // 旧自动保存可能已写入拖动中途的位置，即使后来拖回起点也要重存。
+                Object.assign(d.obj, d.before);
+                const el = document.querySelector(`#nbTextLayer [data-id="${d.obj.id}"]`);
+                if (el) { el.style.left = d.obj.x + 'px'; el.style.top = d.obj.y + 'px'; }
+                if (d.kind === 'text') nbPositionTextToolbar(d.obj.id);
+            } else if (d.cancel) {
+                d.cancel();
+            }
+            nbRedraw();
+            if (changed) nbScheduleSave();
         }
 
         function nbPointerDown(e) {
             if (e.button === 2 || nbState.drawing) return;
+            if (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture)) return;
             if (applePencilMode && !booxReaderIsPen(e)) return;
+            _nbTouchGesture = null;
             nbHidePanel();
             nbHideOutline();
             nbHideTextToolbar();
@@ -31755,6 +31800,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             e.preventDefault();
             try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
             _nbActivePointerId = e.pointerId;
+            _nbActivePointerIsPen = booxReaderIsPen(e);
 
             if (tool === 'pen') {
                 // Boox 原生笔按矩形抢占整个画布，落在文本框/媒体上的笔迹会以回放事件
@@ -31767,7 +31813,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         document.querySelectorAll('.nb-media-img.selected,.nb-media-audio.selected').forEach(x => x.classList.remove('selected'));
                         document.querySelector(`#nbTextLayer [data-id="${hit.obj.id}"]`)?.classList.add('selected');
                     }
-                    nbState.drawing = { mode: 'boxdrag', kind: hit.kind, obj: hit.obj, last: p, moved: false };
+                    nbState.drawing = { mode: 'boxdrag', kind: hit.kind, obj: hit.obj, before: { x: hit.obj.x, y: hit.obj.y }, last: p, moved: false };
                     nbNativeRefresh();   // 清掉原生层点按留下的墨点
                     return;
                 }
@@ -31791,8 +31837,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             } else if (tool === 'shape') {
                 nbState.drawing = { mode: 'shape', start: p, cur: p, freehand: [p], preview: null };
             } else if (tool === 'text') {
-                nbAddTextBox(p[0], p[1]);
-                nbState.drawing = null;
+                nbState.drawing = { mode: 'text', start: p };
             }
         }
 
@@ -31857,7 +31902,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!d || e.pointerId !== _nbActivePointerId) return;
             _nbActivePointerId = null;
             nbState.drawing = null;
-            if (d.mode === 'stroke') {
+            if (d.mode === 'text') {
+                if (e.type !== 'pointercancel') nbAddTextBox(d.start[0], d.start[1]);
+            } else if (d.mode === 'stroke') {
                 const pts = d.stroke.paths[0];
                 if (pts.length >= 1) {
                     nbState.content.strokes.push(d.stroke);
@@ -32270,7 +32317,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (e.target.classList.contains('nb-tb-corner') || e.target.classList.contains('nb-media-del')) return;
                 const editing = document.activeElement === inner;
                 if (editing && e.target === inner) return;   // 编辑中不拦截光标操作
+                if (nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
                 if (applePencilMode && !booxReaderIsPen(e)) return;
+                _nbTouchGesture = null;
+                _nbActivePointerId = e.pointerId;
+                _nbActivePointerIsPen = booxReaderIsPen(e);
                 e.preventDefault();
                 e.stopPropagation();
                 nbSelectTextBox(box.id);
@@ -32291,6 +32342,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     if (ev.pointerId !== e.pointerId) return;
                     document.removeEventListener('pointermove', mv);
                     document.removeEventListener('pointerup', up);
+                    document.removeEventListener('pointercancel', up);
+                    nbState.drawing = null;
+                    _nbActivePointerId = null;
+                    if (ev.type === 'pointercancel') {
+                        box.x = ox; box.y = oy;
+                        el.style.left = ox + 'px'; el.style.top = oy + 'px';
+                        nbPositionTextToolbar(box.id);
+                        nbScheduleSave();
+                        return;
+                    }
                     if (moved) {
                         nbScheduleSave();
                     } else {
@@ -32306,8 +32367,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         } catch (err) {}
                     }
                 };
+                nbState.drawing = { mode: 'object', cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
                 document.addEventListener('pointermove', mv);
                 document.addEventListener('pointerup', up);
+                document.addEventListener('pointercancel', up);
             });
 
             // 四角缩放：等比调整字号与宽度，对角固定
@@ -32316,9 +32379,15 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 h.className = 'nb-tb-corner';
                 h.dataset.c = c;
                 h.addEventListener('pointerdown', (e) => {
+                    if (nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
                     if (applePencilMode && !booxReaderIsPen(e)) return;
+                    _nbTouchGesture = null;
+                    _nbActivePointerId = e.pointerId;
+                    _nbActivePointerIsPen = booxReaderIsPen(e);
                     e.preventDefault();
                     e.stopPropagation();
+                    const before = { x: box.x, y: box.y, w: box.w, fontSize: box.fontSize };
+                    const styleBefore = el.style.cssText, fontBefore = inner.style.fontSize;
                     const s = nbDisplayScale();
                     const w0 = el.offsetWidth, h0 = el.offsetHeight, f0 = box.fontSize || 18;
                     const x0 = box.x, y0 = box.y;
@@ -32348,11 +32417,24 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         if (ev.pointerId !== e.pointerId) return;
                         document.removeEventListener('pointermove', mv);
                         document.removeEventListener('pointerup', up);
+                        document.removeEventListener('pointercancel', up);
+                        nbState.drawing = null;
+                        _nbActivePointerId = null;
+                        if (ev.type === 'pointercancel') {
+                            Object.assign(box, before);
+                            el.style.cssText = styleBefore;
+                            inner.style.fontSize = fontBefore;
+                            nbPositionTextToolbar(box.id);
+                            nbScheduleSave();
+                            return;
+                        }
                         nbScheduleSave();
                         nbShowTextToolbar(box.id);   // 刷新工具条上的字号状态
                     };
+                    nbState.drawing = { mode: 'object', cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
                     document.addEventListener('pointermove', mv);
                     document.addEventListener('pointerup', up);
+                    document.addEventListener('pointercancel', up);
                 });
                 el.appendChild(h);
             });
@@ -32475,7 +32557,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             el.appendChild(del);
             el.addEventListener('pointerdown', (e) => {
                 if (e.target.tagName === 'BUTTON') return;
+                if (nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
                 if (applePencilMode && !booxReaderIsPen(e)) return;
+                _nbTouchGesture = null;
+                _nbActivePointerId = e.pointerId;
+                _nbActivePointerIsPen = booxReaderIsPen(e);
                 e.preventDefault();
                 e.stopPropagation();
                 document.querySelectorAll('.nb-media-img.selected,.nb-media-audio.selected,.nb-textbox.selected').forEach(x => x.classList.remove('selected'));
@@ -32496,10 +32582,21 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     if (ev.pointerId !== e.pointerId) return;
                     document.removeEventListener('pointermove', mv);
                     document.removeEventListener('pointerup', up);
+                    document.removeEventListener('pointercancel', up);
+                    nbState.drawing = null;
+                    _nbActivePointerId = null;
+                    if (ev.type === 'pointercancel') {
+                        m.x = ox; m.y = oy;
+                        el.style.left = ox + 'px'; el.style.top = oy + 'px';
+                        nbScheduleSave();
+                        return;
+                    }
                     if (moved) nbScheduleSave();
                 };
+                nbState.drawing = { mode: 'object', cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
                 document.addEventListener('pointermove', mv);
                 document.addEventListener('pointerup', up);
+                document.addEventListener('pointercancel', up);
             });
             return el;
         }

@@ -195,4 +195,33 @@ assert.equal(lectureButton.classList.contains('active'), false);
 assert.equal(lectureToolbar.classList.contains('show'), false);
 assert.equal(selection.rangeCount, 1);
 assert.equal(regionsSynced, 3);
-console.log('native selection guards and lecture Ask AI: passed');
+
+// Export/print thumbnails scroll by finger; outline thumbnails keep drag sorting.
+const cssRule = selector => html.split(selector + ' {')[1]?.split('}')[0] || '';
+assert.match(cssRule('#nbExportThumbs .nb-thumb'), /touch-action:\s*pan-y\s*;/);
+assert.match(cssRule('.nb-thumb'), /touch-action:\s*none\s*;/);
+assert.match(cssRule('.nb-quiz-body'), /overflow-y:\s*auto\s*;/);
+assert.doesNotMatch(cssRule('.nb-thumb-placeholder'), /touch-action:\s*none/);
+for (const selector of ['.nb-thumb img', '.nb-thumb .chk']) {
+    assert.match(cssRule(selector), /pointer-events:\s*none\s*;/);
+}
+// Check the real markup, so moving the modal into the canvas would fail this check.
+const divStack = [];
+const markup = html.slice(html.indexOf('<body>'), html.indexOf('<script', html.indexOf('<body>')));
+for (const [tag] of markup.matchAll(/<\/?div\b[^>]*>/g)) {
+    if (tag.startsWith('</')) { divStack.pop(); continue; }
+    const id = tag.match(/\bid="([^"]+)"/)?.[1];
+    if (id === 'nbExportModal') assert.deepEqual(divStack, [], 'export modal must remain outside writing surfaces');
+    divStack.push(id);
+}
+const exportModal = element('nbExportModal', body);
+const exportGrid = element('nbExportThumbs', exportModal);
+const exportThumb = element('exportThumb', exportGrid);
+for (const pencilMode of [false, true]) {
+    mode(true, true, true, true);
+    body.classList.toggle('apple-pencil-mode', pencilMode);
+    for (const [id, tag] of [['placeholder', 'DIV'], ['image', 'IMG'], ['checkbox', 'INPUT']]) {
+        expectBlocked(element('export-' + id, exportThumb, tag), false);
+    }
+}
+console.log('native selection, lecture Ask AI and export touch scrolling: passed');

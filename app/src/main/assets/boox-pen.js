@@ -297,7 +297,7 @@
     }, true);
 
     /* -------- 原生笔迹回放 -------- */
-    function dispatchPointer(el, type, x, y, pressure, buttons) {
+    function dispatchPointer(el, type, x, y, pressure, buttons, button) {
         var ev = new PointerEvent(type, {
             bubbles: true,
             cancelable: true,
@@ -308,18 +308,20 @@
             clientX: x,
             clientY: y,
             pressure: pressure,
+            button: button,
             buttons: buttons
         });
         el.dispatchEvent(ev);
     }
 
-    function replay(el, pts) {
-        dispatchPointer(el, 'pointerdown', pts[0][0], pts[0][1], pts[0][2], 1);
+    function replay(el, pts, erase) {
+        var button = erase ? 5 : 0, buttons = erase ? 32 : 1;
+        dispatchPointer(el, 'pointerdown', pts[0][0], pts[0][1], pts[0][2], buttons, button);
         for (var i = 1; i < pts.length; i++) {
-            dispatchPointer(el, 'pointermove', pts[i][0], pts[i][1], pts[i][2], 1);
+            dispatchPointer(el, 'pointermove', pts[i][0], pts[i][1], pts[i][2], buttons, -1);
         }
         var last = pts[pts.length - 1];
-        dispatchPointer(el, 'pointerup', last[0], last[1], 0, 0);
+        dispatchPointer(el, 'pointerup', last[0], last[1], 0, 0, button);
     }
 
     // points: [[viewPxX, viewPxY, pressure], ...]，erase: 笔侧橡皮
@@ -346,7 +348,7 @@
             try { window[cfg.eraserToggle](); toggled = true; } catch (e) {}
         }
         try {
-            replay(target, pts);
+            replay(target, pts, erase);
         } finally {
             if (toggled) {
                 try { window[cfg.eraserToggle](); } catch (e) {}

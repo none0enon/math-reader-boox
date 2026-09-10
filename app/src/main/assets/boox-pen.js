@@ -115,15 +115,21 @@
     // eraserToggle: 全局函数名，回放原生笔侧橡皮笔迹时临时切换
     // suspendFlag: 全局布尔变量名，为真时挂起原生直渲染（套索/文本/图形等非书写工具）
     // widthFlag: 全局变量名，数值为当前笔刷 CSS 像素宽度（原生直渲染层的笔迹粗细）
+    // clipId: 长画布的滚动容器，探测与原生区域都限制在可见内容内
     var CONFIGS = [
         { name: 'notebookQuiz', id: 'nbQuizFsCanvas',       cssWidth: 2,
           eraserBtn: 'qzEraserBtn',     eraserToggle: 'toggleQzEraser' },
         { name: 'notebook',     id: 'nbCanvas',             cssWidth: 2,
           eraserBtn: 'nbEraserBtn',     eraserToggle: 'toggleNbEraser',
-          suspendFlag: '__nbNativeSuspend', widthFlag: '__nbNativeWidth' },
+          suspendFlag: '__nbNativeSuspend', widthFlag: '__nbNativeWidth',
+          clipId: 'nbCanvasWrap' },
         { name: 'draft',        id: 'draftCanvas',          cssWidth: 2 },
-        { name: 'lectureDraft', id: 'lectureDraftCanvas',   cssWidth: 2 },
-        { name: 'lectureDraw',  id: 'lectureDrawCanvas',    cssWidth: 2 },
+        { name: 'lectureDraft', id: 'lectureDraftCanvas',   cssWidth: 4,
+          clipId: 'lectureDraftCanvasWrapper', eraserBtn: 'lectureDraftEraserToggle',
+          widthFlag: '__lectureDraftNativeWidth' },
+        { name: 'lectureDraw',  id: 'lectureDrawCanvas',    cssWidth: 2,
+          clipId: 'lectureViewerContent', eraserBtn: 'lecturePenEraser',
+          eraserToggle: 'toggleLecturePenEraser', widthFlag: '__lectureNativeWidth' },
         { name: 'exercise',     id: 'exerciseDoingCanvas',  cssWidth: 2,
           eraserBtn: 'exEraserBtn',     eraserToggle: 'toggleExEraser',
           suspendFlag: '__exNativeSuspend' },
@@ -135,19 +141,33 @@
     var activeEls = [];
     var lastKey = 'off';
 
-    function isDrawable(el) {
+    function drawableRect(el, cfg) {
+        var r = el.getBoundingClientRect();
+        var clip = cfg.clipId && document.getElementById(cfg.clipId);
+        if (clip) {
+            var c = clip.getBoundingClientRect();
+            return {
+                left: Math.max(r.left, c.left, 0), top: Math.max(r.top, c.top, 0),
+                right: Math.min(r.right, c.right, window.innerWidth),
+                bottom: Math.min(r.bottom, c.bottom, window.innerHeight)
+            };
+        }
+        return r;
+    }
+
+    function isDrawable(el, cfg) {
         if (!el || !el.isConnected) { return false; }
         var cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden' || cs.pointerEvents === 'none') {
             return false;
         }
-        var r = el.getBoundingClientRect();
-        if (r.width < 4 || r.height < 4) { return false; }
+        var r = drawableRect(el, cfg);
+        if (r.right - r.left < 4 || r.bottom - r.top < 4) { return false; }
         var vw = window.innerWidth, vh = window.innerHeight;
         if (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh) { return false; }
         // 顶层采样：被弹窗/面板遮住时不能抢笔
         var samples = [
-            [r.left + r.width / 2, r.top + r.height / 2],
+            [(r.left + r.right) / 2, (r.top + r.bottom) / 2],
             [r.left + 8, r.top + 8], [r.right - 8, r.top + 8],
             [r.left + 8, r.bottom - 8], [r.right - 8, r.bottom - 8]
         ];
@@ -195,7 +215,7 @@
             var els = cfg.selector
                 ? Array.prototype.slice.call(document.querySelectorAll(cfg.selector))
                 : [document.getElementById(cfg.id)];
-            els = els.filter(isDrawable);
+            els = els.filter(function (el) { return isDrawable(el, cfg); });
             if (els.length) { found = { cfg: cfg, els: els }; }
         }
         if (!found || eraserActive(found.cfg)) {
@@ -210,7 +230,7 @@
         for (var g = 0; g < activeEls.length; g++) { installFingerGuard(activeEls[g]); }
         var vw = window.innerWidth, vh = window.innerHeight;
         var rects = found.els.map(function (el) {
-            var r = el.getBoundingClientRect();
+            var r = drawableRect(el, found.cfg);
             return [
                 Math.round(Math.max(r.left, 0) * DPR),
                 Math.round(Math.max(r.top, 0) * DPR),
@@ -277,7 +297,7 @@
     }, true);
 
     /* -------- 原生笔迹回放 -------- */
-    function dispatchPointer(el, type, x, y, pressure, buttons) {
+    function dispatchPointer(el, type, x, y, pressure, buttons, button) {
         var ev = new PointerEvent(type, {
             bubbles: true,
             cancelable: true,
@@ -288,18 +308,20 @@
             clientX: x,
             clientY: y,
             pressure: pressure,
+            button: button,
             buttons: buttons
         });
         el.dispatchEvent(ev);
     }
 
-    function replay(el, pts) {
-        dispatchPointer(el, 'pointerdown', pts[0][0], pts[0][1], pts[0][2], 1);
+    function replay(el, pts, erase) {
+        var button = erase ? 5 : 0, buttons = erase ? 32 : 1;
+        dispatchPointer(el, 'pointerdown', pts[0][0], pts[0][1], pts[0][2], buttons, button);
         for (var i = 1; i < pts.length; i++) {
-            dispatchPointer(el, 'pointermove', pts[i][0], pts[i][1], pts[i][2], 1);
+            dispatchPointer(el, 'pointermove', pts[i][0], pts[i][1], pts[i][2], buttons, -1);
         }
         var last = pts[pts.length - 1];
-        dispatchPointer(el, 'pointerup', last[0], last[1], 0, 0);
+        dispatchPointer(el, 'pointerup', last[0], last[1], 0, 0, button);
     }
 
     // points: [[viewPxX, viewPxY, pressure], ...]，erase: 笔侧橡皮
@@ -326,7 +348,7 @@
             try { window[cfg.eraserToggle](); toggled = true; } catch (e) {}
         }
         try {
-            replay(target, pts);
+            replay(target, pts, erase);
         } finally {
             if (toggled) {
                 try { window[cfg.eraserToggle](); } catch (e) {}

@@ -15,6 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Check handwriting input and shared page
+        run: |
+          node tests/notebook-input.test.js
+          node tests/native-selection.test.js
+          node tests/boox-pen.test.js
+          cmp app/src/main/assets/www/index.html docs/index.html
+
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin

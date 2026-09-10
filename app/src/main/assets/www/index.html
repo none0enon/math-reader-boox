@@ -1024,11 +1024,26 @@
         /* 手写模式必须压过透明套索层的 user-select:text，避免 iPad
            长按或 Pencil 抖动唤起浏览器原生选区/放大镜。 */
         body.reader-pen-mode #readerContainer,
-        body.reader-pen-mode #readerContainer * {
+        body.reader-pen-mode #readerContainer *,
+        body.lecture-pen-mode #lectureViewerContent,
+        body.lecture-pen-mode #lectureViewerContent *,
+        #lectureDraftCanvasWrapper.active,
+        #lectureDraftCanvasWrapper.active *,
+        body:not(.nb-text-mode) #nbCanvasWrap,
+        body:not(.nb-text-mode) #nbCanvasWrap * {
             -webkit-user-select: none !important;
             user-select: none !important;
             -webkit-touch-callout: none !important;
         }
+        /* 文本编辑继续使用原有光标/选区；手写保护与阅读器共用。 */
+        body.lecture-pen-mode #lectureViewerContent :is(input, textarea, [contenteditable="true"], [contenteditable="true"] *),
+        #lectureDraftCanvasWrapper.active :is(input, textarea, [contenteditable="true"], [contenteditable="true"] *),
+        body:not(.nb-text-mode) #nbCanvasWrap :is(input, textarea, [contenteditable="true"], [contenteditable="true"] *) {
+            -webkit-user-select: text !important;
+            user-select: text !important;
+            -webkit-touch-callout: default !important;
+        }
+        body.lecture-pen-mode .eink-lecture-tap-zone { pointer-events: none; }
         /* AI 评论的计数圆点：沿用笔记 marker，换蓝色以区分手写笔记 */
         .annotation-marker.ai-marker {
             background: rgba(59, 130, 246, 0.7);
@@ -4486,12 +4501,13 @@
         }
 
         /* ==================== 笔记模块（page7 + 笔记本编辑器） ==================== */
+        #page7 { padding: 0; }
         .nbhome-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 12px;
             height: 100%;
-            padding: 16px 16px 80px;
+            padding: 0;
             box-sizing: border-box;
         }
         .nbhome-column {
@@ -4635,6 +4651,7 @@
         .nb-page-box canvas { position: absolute; left: 0; top: 0; }
         #nbBgCanvas { z-index: 1; }
         #nbCanvas { z-index: 2; touch-action: none; }
+        body.apple-pencil-mode #nbCanvasWrap { touch-action: none; }
         #nbOverlayCanvas { z-index: 3; pointer-events: none; }
         #nbTextLayer { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; transform-origin: 0 0; }
         #nbTextLayer > * { pointer-events: auto; }
@@ -13342,8 +13359,11 @@
 
         function readerPenModeOwnsEventTarget(target) {
             const container = document.getElementById('readerContainer');
-            return !!(penMode && container && target
-                && (target === container || container.contains(target)));
+            if (penMode && container && target
+                && (target === container || container.contains(target))) return true;
+            const element = target && (target.nodeType === 1 ? target : target.parentElement);
+            if (!element || !element.closest || element.closest('input, textarea, [contenteditable="true"]')) return false;
+            return !!element.closest('body.lecture-pen-mode #lectureViewerContent, #lectureDraftCanvasWrapper.active, body:not(.nb-text-mode) #nbCanvasWrap');
         }
 
         function blockReaderNativeSelectionInPenMode(e) {
@@ -13353,13 +13373,11 @@
         }
 
         function clearNativeReaderSelectionInPenMode() {
-            if (!penMode) return;
-            const container = document.getElementById('readerContainer');
             const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
-            if (!container || !selection || !selection.rangeCount) return;
+            if (!selection || !selection.rangeCount) return;
             const anchor = selection.anchorNode;
             const focus = selection.focusNode;
-            if ((anchor && container.contains(anchor)) || (focus && container.contains(focus))) {
+            if (readerPenModeOwnsEventTarget(anchor) || readerPenModeOwnsEventTarget(focus)) {
                 selection.removeAllRanges();
             }
         }
@@ -20372,24 +20390,20 @@ ${i18n('prompt_lecture_gen')}`;
 
         function toggleLecturePenMode() {
             lecturePenMode = !lecturePenMode;
-            const btn = document.getElementById('lecturePenBtn');
-            const toolbar = document.getElementById('lecturePenToolbar');
+            applyLectureInputMode();
+            if (!lecturePenMode) saveLectureDrawing();
+        }
+
+        function applyLectureInputMode() {
+            document.body.classList.toggle('lecture-pen-mode', lecturePenMode);
+            document.getElementById('lecturePenBtn').classList.toggle('active', lecturePenMode);
+            document.getElementById('lecturePenToolbar').classList.toggle('show', lecturePenMode);
             const canvas = document.getElementById('lectureDrawCanvas');
-            
-            btn.classList.toggle('active', lecturePenMode);
-            
-            if (lecturePenMode) {
-                toolbar.classList.add('show');
-                if (canvas) {
-                    canvas.classList.add('active');
-                }
-            } else {
-                toolbar.classList.remove('show');
-                if (canvas) {
-                    canvas.classList.remove('active');
-                }
-                saveLectureDrawing();
-            }
+            if (canvas) canvas.classList.toggle('active', lecturePenMode);
+            window.__lectureNativeWidth = lecturePenSize;
+            if (lecturePenMode) hideLectureSelectionMenu();
+            clearNativeReaderSelectionInPenMode();
+            if (window.__booxPen && window.__booxPen.syncRegions) window.__booxPen.syncRegions();
         }
 
         function setLecturePenColor(el) {
@@ -20400,6 +20414,7 @@ ${i18n('prompt_lecture_gen')}`;
             document.getElementById('lecturePenEraser').classList.remove('active');
             // 仅本地记忆，不云同步
             try { localStorage.setItem('lecturePenColor', lecturePenColor); } catch(e) {}
+            applyLectureInputMode();
         }
 
         function setLecturePenSize(el) {
@@ -20408,6 +20423,7 @@ ${i18n('prompt_lecture_gen')}`;
             lecturePenSize = parseInt(el.dataset.size);
             // 仅本地记忆，不云同步
             try { localStorage.setItem('lecturePenSize', String(lecturePenSize)); } catch(e) {}
+            applyLectureInputMode();
         }
 
         // 恢复本地记忆的画笔偏好
@@ -20436,6 +20452,7 @@ ${i18n('prompt_lecture_gen')}`;
             if (lecturePenEraser) {
                 document.querySelectorAll('.lecture-pen-color').forEach(c => c.classList.remove('active'));
             }
+            applyLectureInputMode();
         }
 
         function initLectureDrawCanvas() {
@@ -20489,6 +20506,7 @@ ${i18n('prompt_lecture_gen')}`;
                 ro.observe(lectureBody);
                 canvas._resizeObserver = ro;
             }
+            applyLectureInputMode();
         }
 
         // 讲义画布：检查是否应忽略此指针（Apple Pencil 模式下忽略手指）
@@ -20885,6 +20903,8 @@ ${i18n('prompt_lecture_gen')}`;
         let lectureDraftPenColor = '#000000';
         let lectureDraftPenSize = 2;
         let lectureDraftDrawing = false;
+        let lectureDraftPointerId = null;
+        let lectureDraftPointerIsPen = false;
         let lectureDraftLastX = 0;
         let lectureDraftLastY = 0;
         let lectureDraftHistory = [];
@@ -20920,6 +20940,8 @@ ${i18n('prompt_lecture_gen')}`;
                 document.getElementById('lectureDraftMiniBar').style.display = 'block';
             }
             saveLectureDraft();
+            clearNativeReaderSelectionInPenMode();
+            if (window.__booxPen && window.__booxPen.syncRegions) window.__booxPen.syncRegions();
         }
 
         function getLectureDraftKey() {
@@ -21038,10 +21060,11 @@ ${i18n('prompt_lecture_gen')}`;
             lectureDraftCanvas.addEventListener('touchstart', handleLectureDraftTouchStart, { passive: false });
             lectureDraftCanvas.addEventListener('touchmove', handleLectureDraftTouchMove, { passive: false });
             lectureDraftCanvas.addEventListener('touchend', handleLectureDraftTouchEnd);
-            lectureDraftCanvas.addEventListener('mousedown', startLectureDraftDraw);
-            lectureDraftCanvas.addEventListener('mousemove', doLectureDraftDraw);
-            lectureDraftCanvas.addEventListener('mouseup', endLectureDraftDraw);
-            lectureDraftCanvas.addEventListener('mouseleave', endLectureDraftDraw);
+            lectureDraftCanvas.addEventListener('touchcancel', handleLectureDraftTouchEnd);
+            lectureDraftCanvas.addEventListener('pointerdown', startLectureDraftDraw);
+            lectureDraftCanvas.addEventListener('pointermove', doLectureDraftDraw);
+            lectureDraftCanvas.addEventListener('pointerup', endLectureDraftDraw);
+            lectureDraftCanvas.addEventListener('pointercancel', endLectureDraftDraw);
             
             lectureDraftCanvas.bindedEvents = true;
         }
@@ -21101,6 +21124,8 @@ ${i18n('prompt_lecture_gen')}`;
                     }
                 }, 50);
             }
+            clearNativeReaderSelectionInPenMode();
+            if (window.__booxPen && window.__booxPen.syncRegions) window.__booxPen.syncRegions();
         }
 
         function toggleLectureDraftEraser() {
@@ -21129,6 +21154,8 @@ ${i18n('prompt_lecture_gen')}`;
                     }
                 }, 50);
             }
+            clearNativeReaderSelectionInPenMode();
+            if (window.__booxPen && window.__booxPen.syncRegions) window.__booxPen.syncRegions();
         }
 
         function restoreLectureDraftPenSettings() {
@@ -21140,6 +21167,7 @@ ${i18n('prompt_lecture_gen')}`;
             });
             
             lectureDraftPenSize = s.lectureDraftPenSize || 2;
+            window.__lectureDraftNativeWidth = lectureDraftPenSize * 2;
             document.querySelectorAll('#lectureDraftPenTools .pen-size').forEach(sz => {
                 sz.classList.toggle('active', parseInt(sz.dataset.size) === lectureDraftPenSize);
             });
@@ -21160,6 +21188,8 @@ ${i18n('prompt_lecture_gen')}`;
                     }
                 }, 100);
             }
+            clearNativeReaderSelectionInPenMode();
+            if (window.__booxPen && window.__booxPen.syncRegions) window.__booxPen.syncRegions();
         }
 
         function setLectureDraftPenColor(el) {
@@ -21172,10 +21202,13 @@ ${i18n('prompt_lecture_gen')}`;
 
         function setLectureDraftPenSize(el) {
             lectureDraftPenSize = parseInt(el.dataset.size);
+            window.__lectureDraftNativeWidth = lectureDraftPenSize * 2;
             document.querySelectorAll('#lectureDraftPenTools .pen-size').forEach(s => s.classList.remove('active'));
             el.classList.add('active');
             appData.settings.lectureDraftPenSize = lectureDraftPenSize;
             saveData();
+            clearNativeReaderSelectionInPenMode();
+            if (window.__booxPen && window.__booxPen.syncRegions) window.__booxPen.syncRegions();
         }
 
         function formatLectureDraftText(type) {
@@ -21197,85 +21230,47 @@ ${i18n('prompt_lecture_gen')}`;
         let lectureDraftPanLastY = 0;
 
         function handleLectureDraftTouchStart(e) {
+            lectureDraftPanActive = false;
             if (!lectureDraftPenEnabled && !lectureDraftEraserEnabled) return;
-            if (e.touches.length === 2) {
-                e.preventDefault();
-                lectureDraftDrawing = false;
-                lectureDraftPanActive = true;
-                const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-                const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-                lectureDraftPanLastX = cx;
-                lectureDraftPanLastY = cy;
-                return;
-            }
-            if (e.touches.length !== 1) return;
-            e.preventDefault();
-            lectureDraftDrawing = true;
-            const touch = e.touches[0];
-            const rect = lectureDraftCanvas.getBoundingClientRect();
-            lectureDraftLastX = touch.clientX - rect.left;
-            lectureDraftLastY = touch.clientY - rect.top;
+            if (lectureDraftDrawing && lectureDraftPointerIsPen) return;
+            const touches = Array.from(e.touches);
+            if (touches.some(t => t.touchType === 'stylus')) return;
+            if (touches.length !== 2 && !(applePencilMode && touches.length === 1)) return;
+            endLectureDraftDraw({ pointerId: lectureDraftPointerId });
+            lectureDraftPanActive = true;
+            lectureDraftPanLastX = touches.reduce((n, t) => n + t.clientX, 0) / touches.length;
+            lectureDraftPanLastY = touches.reduce((n, t) => n + t.clientY, 0) / touches.length;
         }
 
         function handleLectureDraftTouchMove(e) {
-            if (e.touches.length === 2 && lectureDraftPanActive) {
-                e.preventDefault();
-                const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-                const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-                const dx = cx - lectureDraftPanLastX;
-                const dy = cy - lectureDraftPanLastY;
-                const wrapper = document.getElementById('lectureDraftCanvasWrapper');
-                if (wrapper) {
-                    wrapper.scrollLeft -= dx;
-                    wrapper.scrollTop -= dy;
-                }
-                lectureDraftPanLastX = cx;
-                lectureDraftPanLastY = cy;
-                return;
+            if (!lectureDraftPanActive) return;
+            const touches = Array.from(e.touches);
+            if (touches.some(t => t.touchType === 'stylus')) return;
+            if (touches.length !== 2 && !(applePencilMode && touches.length === 1)) return;
+            const cx = touches.reduce((n, t) => n + t.clientX, 0) / touches.length;
+            const cy = touches.reduce((n, t) => n + t.clientY, 0) / touches.length;
+            const wrapper = document.getElementById('lectureDraftCanvasWrapper');
+            if (wrapper) {
+                wrapper.scrollLeft -= cx - lectureDraftPanLastX;
+                wrapper.scrollTop -= cy - lectureDraftPanLastY;
             }
-            if (!lectureDraftDrawing || (!lectureDraftPenEnabled && !lectureDraftEraserEnabled)) return;
-            if (e.touches.length !== 1) return;
+            lectureDraftPanLastX = cx;
+            lectureDraftPanLastY = cy;
             e.preventDefault();
-            const touch = e.touches[0];
-            const rect = lectureDraftCanvas.getBoundingClientRect();
-            const x = touch.clientX - rect.left;
-            const y = touch.clientY - rect.top;
-            
-            lectureDraftCtx.beginPath();
-            lectureDraftCtx.moveTo(lectureDraftLastX, lectureDraftLastY);
-            lectureDraftCtx.lineTo(x, y);
-            
-            if (lectureDraftEraserEnabled) {
-                lectureDraftCtx.globalCompositeOperation = 'destination-out';
-                lectureDraftCtx.strokeStyle = 'rgba(0,0,0,1)';
-                lectureDraftCtx.lineWidth = 20;
-            } else {
-                lectureDraftCtx.globalCompositeOperation = 'source-over';
-                lectureDraftCtx.strokeStyle = lectureDraftPenColor;
-                lectureDraftCtx.lineWidth = lectureDraftPenSize * 2;
-            }
-            lectureDraftCtx.lineCap = 'round';
-            lectureDraftCtx.lineJoin = 'round';
-            lectureDraftCtx.stroke();
-            
-            lectureDraftLastX = x;
-            lectureDraftLastY = y;
         }
 
         function handleLectureDraftTouchEnd(e) {
-            if (e.touches.length < 2) {
-                lectureDraftPanActive = false;
-            }
-            if (lectureDraftDrawing) {
-                lectureDraftDrawing = false;
-                lectureDraftCtx.globalCompositeOperation = 'source-over';
-                saveLectureDraftCanvasState();
-                debouncedSaveLectureDraft();
-            }
+            lectureDraftPanActive = false;
+            if (e.touches.length) handleLectureDraftTouchStart(e);
         }
 
         function startLectureDraftDraw(e) {
-            if (!lectureDraftPenEnabled && !lectureDraftEraserEnabled) return;
+            if ((!lectureDraftPenEnabled && !lectureDraftEraserEnabled) || lectureDraftDrawing || lectureDraftPanActive) return;
+            if (applePencilMode && !booxReaderIsPen(e)) return;
+            e.preventDefault();
+            try { lectureDraftCanvas.setPointerCapture(e.pointerId); } catch (err) {}
+            lectureDraftPointerId = e.pointerId;
+            lectureDraftPointerIsPen = booxReaderIsPen(e);
             lectureDraftDrawing = true;
             const rect = lectureDraftCanvas.getBoundingClientRect();
             lectureDraftLastX = e.clientX - rect.left;
@@ -21283,7 +21278,8 @@ ${i18n('prompt_lecture_gen')}`;
         }
 
         function doLectureDraftDraw(e) {
-            if (!lectureDraftDrawing || (!lectureDraftPenEnabled && !lectureDraftEraserEnabled)) return;
+            if (!lectureDraftDrawing || e.pointerId !== lectureDraftPointerId || (!lectureDraftPenEnabled && !lectureDraftEraserEnabled)) return;
+            e.preventDefault();
             const rect = lectureDraftCanvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
@@ -21309,9 +21305,10 @@ ${i18n('prompt_lecture_gen')}`;
             lectureDraftLastY = y;
         }
 
-        function endLectureDraftDraw() {
-            if (lectureDraftDrawing) {
+        function endLectureDraftDraw(e) {
+            if (lectureDraftDrawing && e.pointerId === lectureDraftPointerId) {
                 lectureDraftDrawing = false;
+                lectureDraftPointerId = null;
                 lectureDraftCtx.globalCompositeOperation = 'source-over';
                 saveLectureDraftCanvasState();
                 debouncedSaveLectureDraft();
@@ -21430,6 +21427,7 @@ ${i18n('prompt_lecture_gen')}`;
         function handleLectureSelection(e) {
             // 延时足够让iPad完成选区，但在弹出原生菜单前拦截
             setTimeout(() => {
+                if (lecturePenMode) return;
                 const selection = window.getSelection();
                 const text = selection.toString().trim();
 
@@ -31309,7 +31307,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!wrap || !document.getElementById('nbEditor').classList.contains('show')) return;
             const availW = wrap.clientWidth, availH = wrap.clientHeight;
             if (availW <= 0 || availH <= 0) return;
-            nbState.fitScale = Math.min(availW / NB_PAGE_W, availH / NB_PAGE_H);
+            nbState.fitScale = availW / NB_PAGE_W;
             const s = nbDisplayScale();
             const cssW = Math.round(NB_PAGE_W * s), cssH = Math.round(NB_PAGE_H * s);
             const box = document.getElementById('nbPageBox');
@@ -31586,6 +31584,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             document.querySelectorAll('.nb-brush-btn').forEach((b, i) =>
                 b.classList.toggle('active', tool === 'pen' && i === nbState.brushIndex));
             document.body.classList.toggle('nb-text-mode', tool === 'text');
+            clearNativeReaderSelectionInPenMode();
         }
         function toggleNbEraser() {
             nbSetTool(nbState.tool === 'eraser' ? (nbState.prevTool || 'pen') : 'eraser');
@@ -31661,6 +31660,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         // ==================== 指针输入（书写/橡皮/套索/图形/文本） ====================
+        let _nbActivePointerId = null;
         function nbEventPoint(e) {
             const c = document.getElementById('nbCanvas');
             const r = c.getBoundingClientRect();
@@ -31702,10 +31702,51 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             c.addEventListener('pointerup', nbPointerUp);
             c.addEventListener('pointercancel', nbPointerUp);
             c.addEventListener('contextmenu', e => e.preventDefault());
+
+            // 沿用阅读器的 touch-action:none + 手指手动滚动，避免 Safari 抢走 Pencil。
+            const wrap = document.getElementById('nbCanvasWrap');
+            let gesture = null;
+            const fingers = e => Array.from(e.touches).filter(t => t.touchType !== 'stylus');
+            const beginGesture = e => {
+                gesture = null;
+                if (!applePencilMode || nbState.drawing
+                    || e.target.closest('input, textarea, button')
+                    || (document.activeElement?.isContentEditable && document.activeElement.contains(e.target))) return;
+                const ts = fingers(e);
+                if (!ts.length || ts.length > 2 || ts.length !== e.touches.length) return;
+                gesture = {
+                    count: ts.length,
+                    x: ts.reduce((n, t) => n + t.clientX, 0) / ts.length,
+                    y: ts.reduce((n, t) => n + t.clientY, 0) / ts.length,
+                    distance: ts.length === 2 ? Math.hypot(ts[1].clientX - ts[0].clientX, ts[1].clientY - ts[0].clientY) : 0
+                };
+            };
+            wrap.addEventListener('touchstart', beginGesture, { passive: true });
+            wrap.addEventListener('touchmove', e => {
+                if (!gesture || !applePencilMode || nbState.drawing) { gesture = null; return; }
+                const ts = fingers(e);
+                if (ts.length !== gesture.count || ts.length !== e.touches.length) { gesture = null; return; }
+                const x = ts.reduce((n, t) => n + t.clientX, 0) / ts.length;
+                const y = ts.reduce((n, t) => n + t.clientY, 0) / ts.length;
+                const rect = wrap.getBoundingClientRect();
+                const oldZoom = nbState.zoom;
+                const distance = ts.length === 2 ? Math.hypot(ts[1].clientX - ts[0].clientX, ts[1].clientY - ts[0].clientY) : 0;
+                const scrollX = wrap.scrollLeft + gesture.x - rect.left;
+                const scrollY = wrap.scrollTop + gesture.y - rect.top;
+                if (distance > 0 && gesture.distance > 0 && distance !== gesture.distance) nbZoomSet(oldZoom * distance / gesture.distance * 100);
+                const ratio = nbState.zoom / oldZoom;
+                wrap.scrollLeft = scrollX * ratio - (x - rect.left);
+                wrap.scrollTop = scrollY * ratio - (y - rect.top);
+                gesture = { count: ts.length, x, y, distance };
+                e.preventDefault();
+            }, { passive: false });
+            wrap.addEventListener('touchend', beginGesture, { passive: true });
+            wrap.addEventListener('touchcancel', () => { gesture = null; }, { passive: true });
         }
 
         function nbPointerDown(e) {
-            if (e.button === 2) return;
+            if (e.button === 2 || nbState.drawing) return;
+            if (applePencilMode && !booxReaderIsPen(e)) return;
             nbHidePanel();
             nbHideOutline();
             nbHideTextToolbar();
@@ -31713,6 +31754,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const tool = nbState.tool;
             e.preventDefault();
             try { e.target.setPointerCapture(e.pointerId); } catch (err) {}
+            _nbActivePointerId = e.pointerId;
 
             if (tool === 'pen') {
                 // Boox 原生笔按矩形抢占整个画布，落在文本框/媒体上的笔迹会以回放事件
@@ -31756,7 +31798,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbPointerMove(e) {
             const d = nbState.drawing;
-            if (!d) return;
+            if (!d || e.pointerId !== _nbActivePointerId) return;
             e.preventDefault();
             const events = (typeof e.getCoalescedEvents === 'function' && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
             for (const ev of events) {
@@ -31812,7 +31854,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbPointerUp(e) {
             const d = nbState.drawing;
-            if (!d) return;
+            if (!d || e.pointerId !== _nbActivePointerId) return;
+            _nbActivePointerId = null;
             nbState.drawing = null;
             if (d.mode === 'stroke') {
                 const pts = d.stroke.paths[0];
@@ -32227,6 +32270,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (e.target.classList.contains('nb-tb-corner') || e.target.classList.contains('nb-media-del')) return;
                 const editing = document.activeElement === inner;
                 if (editing && e.target === inner) return;   // 编辑中不拦截光标操作
+                if (applePencilMode && !booxReaderIsPen(e)) return;
                 e.preventDefault();
                 e.stopPropagation();
                 nbSelectTextBox(box.id);
@@ -32234,6 +32278,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const sx = e.clientX, sy = e.clientY, ox = box.x, oy = box.y;
                 let moved = false;
                 const mv = (ev) => {
+                    if (ev.pointerId !== e.pointerId) return;
                     const dx = (ev.clientX - sx) / s, dy = (ev.clientY - sy) / s;
                     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
                     box.x = Math.round(ox + dx);
@@ -32242,7 +32287,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     el.style.top = box.y + 'px';
                     nbPositionTextToolbar(box.id);
                 };
-                const up = () => {
+                const up = (ev) => {
+                    if (ev.pointerId !== e.pointerId) return;
                     document.removeEventListener('pointermove', mv);
                     document.removeEventListener('pointerup', up);
                     if (moved) {
@@ -32270,6 +32316,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 h.className = 'nb-tb-corner';
                 h.dataset.c = c;
                 h.addEventListener('pointerdown', (e) => {
+                    if (applePencilMode && !booxReaderIsPen(e)) return;
                     e.preventDefault();
                     e.stopPropagation();
                     const s = nbDisplayScale();
@@ -32283,6 +32330,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     const d0 = Math.max(10, Math.hypot(cx0 - ax, cy0 - ay));
                     const sx = e.clientX, sy = e.clientY;
                     const mv = (ev) => {
+                        if (ev.pointerId !== e.pointerId) return;
                         const px = (ev.clientX - sx) / s + (c.includes('l') ? x0 : x0 + w0);
                         const py = (ev.clientY - sy) / s + (c.includes('t') ? y0 : y0 + h0);
                         const k = Math.max(0.2, Math.min(6, Math.hypot(px - ax, py - ay) / d0));
@@ -32296,7 +32344,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         inner.style.fontSize = box.fontSize + 'px';
                         nbPositionTextToolbar(box.id);
                     };
-                    const up = () => {
+                    const up = (ev) => {
+                        if (ev.pointerId !== e.pointerId) return;
                         document.removeEventListener('pointermove', mv);
                         document.removeEventListener('pointerup', up);
                         nbScheduleSave();
@@ -32426,6 +32475,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             el.appendChild(del);
             el.addEventListener('pointerdown', (e) => {
                 if (e.target.tagName === 'BUTTON') return;
+                if (applePencilMode && !booxReaderIsPen(e)) return;
                 e.preventDefault();
                 e.stopPropagation();
                 document.querySelectorAll('.nb-media-img.selected,.nb-media-audio.selected,.nb-textbox.selected').forEach(x => x.classList.remove('selected'));
@@ -32434,6 +32484,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const sx = e.clientX, sy = e.clientY, ox = m.x, oy = m.y;
                 let moved = false;
                 const mv = (ev) => {
+                    if (ev.pointerId !== e.pointerId) return;
                     const dx = (ev.clientX - sx) / s, dy = (ev.clientY - sy) / s;
                     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
                     m.x = Math.round(ox + dx);
@@ -32441,7 +32492,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     el.style.left = m.x + 'px';
                     el.style.top = m.y + 'px';
                 };
-                const up = () => {
+                const up = (ev) => {
+                    if (ev.pointerId !== e.pointerId) return;
                     document.removeEventListener('pointermove', mv);
                     document.removeEventListener('pointerup', up);
                     if (moved) nbScheduleSave();
@@ -32596,7 +32648,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const l = document.getElementById('nbZoomLabel');
             if (l) l.textContent = Math.round(nbState.zoom * 100) + '%';
             nbLayout();
-            nbRenderTexts();
         }
 
         function nbShowExportModal() {

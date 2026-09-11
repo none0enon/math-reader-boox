@@ -14177,82 +14177,12 @@
                                 }
                             }
                         }
-                        // 同步用户作答drawings（本地有云端没有 → 上传，本地没有云端有 → 拉取），多页作答逐页同步
-                        for (const q of (task.questions || [])) {
-                            if (q.status === 'done') {
-                                for (const drawKey of exGradedPageKeys(`exercise_drawing_${task.id}_${q.index}`, q.userDrawingPages)) {
-                                    const localDraw = await getFileData(drawKey).catch(() => null);
-                                    if (localDraw) {
-                                        try { await r2PutObject('exercises/drawings/' + drawKey, localDraw, 'image/png'); } catch(e) {}
-                                    } else {
-                                        try {
-                                            const cd = await r2GetObject('exercises/drawings/' + drawKey);
-                                            if (cd) await exSaveCloudDrawingIfMissing(drawKey, cd);
-                                        } catch(e) {}
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
-                // 同步错题和重做drawings（多页作答逐页同步）
-                for (const fId of Object.keys(appData.exercises?.wrongByFolder || {})) {
-                    for (const wt of (appData.exercises.wrongByFolder[fId] || [])) {
-                        for (const q of (wt.questions || [])) {
-                            for (const wrongDrawKey of exGradedPageKeys(`exercise_drawing_${wt.taskId}_${q.questionIndex}`, q.userDrawingPages)) {
-                                const localWD = await getFileData(wrongDrawKey).catch(() => null);
-                                if (localWD) {
-                                    try { await r2PutObject('exercises/drawings/' + wrongDrawKey, localWD, 'image/png'); } catch(e) {}
-                                } else {
-                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await exSaveCloudDrawingIfMissing(wrongDrawKey, cd); } catch(e) {}
-                                }
-                            }
-                            for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
-                                const rd = q.redoDrawings[ri];
-                                const redoBaseKeys = exRedoDrawingBaseKeys(
-                                    wt.taskId, q.questionIndex, rd, ri);
-                                const redoPageCount = Math.max(1, Number(rd && rd.pages) || 0);
-                                for (let p = 0; p < redoPageCount; p++) {
-                                    const localRD = await exReadRedoPageFromLocal(redoBaseKeys, rd, p);
-                                    if (localRD) {
-                                        try { await exUploadRedoPageAliases(redoBaseKeys, p, localRD); } catch(e) {}
-                                    } else {
-                                        const cloudRD = await exReadRedoPageFromCloud(redoBaseKeys, p);
-                                        if (cloudRD) await exWriteRedoPageAliases(redoBaseKeys, p, cloudRD);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                await exSyncCachedGradedPages();
 
-                // 同步笔记本页面和媒体（本地有云端没有 → 上传，本地没有云端有 → 拉取）
-                for (const nb of (appData.notebooks?.items || [])) {
-                    for (const page of (nb.pages || [])) {
-                        if (!page || !page.id) continue;
-                        let pgData = await getFileData('nbpage_' + page.id).catch(() => null);
-                        if (pgData) {
-                            try { await r2PutObject('notebooks/pages/nbpage_' + page.id, pgData, 'application/json'); } catch(e) {}
-                        } else {
-                            try {
-                                const cd = await r2GetObject('notebooks/pages/nbpage_' + page.id);
-                                if (cd) { pgData = cd; await saveFileData('nbpage_' + page.id, cd); }
-                            } catch(e) {}
-                        }
-                        const mediaIds = r2NotebookMediaIdsFromPage(page, pgData);
-                        for (const mid of mediaIds) {
-                            const localMedia = await getFileData('nbmedia_' + mid).catch(() => null);
-                            if (localMedia) {
-                                try { await r2PutObject('notebooks/media/nbmedia_' + mid, localMedia, 'application/octet-stream'); } catch(e) {}
-                            } else {
-                                try {
-                                    const cd = await r2GetObject('notebooks/media/nbmedia_' + mid);
-                                    if (cd) await saveFileData('nbmedia_' + mid, cd);
-                                } catch(e) {}
-                            }
-                        }
-                    }
-                }
+                // 正文上传已走统一版本检查；下载较新或缺失的正文和媒体。
+                await r2PullNotebookAssetsFromCloud({ missingOnly: true });
 
                 // 更新上次同步时间
                 config.lastSyncTime = new Date().toISOString();
@@ -14919,8 +14849,17 @@
             const mediaIds = new Set();
             let pgData = await getFileData('nbpage_' + pageId).catch(() => null);
             let pageContent = null;
-            try { pageContent = pgData ? JSON.parse(pgData) : null; } catch (e) {}
-            if (!pageContent && page) pageContent = { strokes: [], texts: [], media: [], recognized: null };
+            if (pgData) pageContent = JSON.parse(pgData);
+            // 目录刚从云端合并，正文可能仍是旧备份；不能把旧正文当成本机新编辑。
+            if (pageContent && syncTimestamp(pageContent.updatedAt) <
+                syncTimestamp(page?.updatedAt || page?.createdAt)) return;
+            let conditions = {};
+            if (!pageContent && page) {
+                // 云端独有页尚未下载时必须保留；真正的新空白页只允许创建，不覆盖。
+                if (await r2GetObject('notebooks/pages/nbpage_' + pageId)) return;
+                pageContent = { strokes: [], texts: [], media: [], recognized: null };
+                conditions = { ifNoneMatch: '*' };
+            }
             if (pageContent) {
                 if (!pageContent.updatedAt) {
                     pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
@@ -14931,8 +14870,13 @@
                     saveData();
                 }
                 pgData = JSON.stringify(pageContent);
-                await saveFileData('nbpage_' + pageId, pgData);
-                await r2PutObject('notebooks/pages/nbpage_' + pageId, pgData, 'application/json');
+                if (!conditions.ifNoneMatch) await saveFileData('nbpage_' + pageId, pgData);
+                try {
+                    await r2PutObject('notebooks/pages/nbpage_' + pageId, pgData, 'application/json', conditions);
+                } catch (error) {
+                    if (!conditions.ifNoneMatch || error?.status !== 412) throw error;
+                    return; // 另一设备已创建正文，后续 pull 会下载，不能重发空白。
+                }
                 (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
             }
             if (page && page.bgImage) mediaIds.add(page.bgImage);
@@ -16941,65 +16885,9 @@
                                 } catch(e) { console.warn('启动拉取习题文件失败:', sf.id, e); }
                             }
                         }
-                        for (const q of (task.questions || [])) {
-                            if (q.status === 'done') {
-                                for (const drawKey of exGradedPageKeys(`exercise_drawing_${task.id}_${q.index}`, q.userDrawingPages)) {
-                                    const localDraw = await getFileData(drawKey).catch(() => null);
-                                    if (!localDraw) {
-                                        try {
-                                            const cloudDraw = await r2GetObject('exercises/drawings/' + drawKey);
-                                            if (cloudDraw) await exSaveCloudDrawingIfMissing(drawKey, cloudDraw);
-                                        } catch(e) {}
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
-                for (const fId of Object.keys(appData.exercises?.wrongByFolder || {})) {
-                    for (const wt of (appData.exercises.wrongByFolder[fId] || [])) {
-                        for (const q of (wt.questions || [])) {
-                            for (const wrongDrawKey of exGradedPageKeys(`exercise_drawing_${wt.taskId}_${q.questionIndex}`, q.userDrawingPages)) {
-                                const localWD = await getFileData(wrongDrawKey).catch(() => null);
-                                if (!localWD) {
-                                    try { const cd = await r2GetObject('exercises/drawings/' + wrongDrawKey); if (cd) await exSaveCloudDrawingIfMissing(wrongDrawKey, cd); } catch(e) {}
-                                }
-                            }
-                            for (let ri = 0; ri < (q.redoDrawings || []).length; ri++) {
-                                const rd = q.redoDrawings[ri];
-                                const redoBaseKeys = exRedoDrawingBaseKeys(
-                                    wt.taskId, q.questionIndex, rd, ri);
-                                const redoPageCount = Math.max(1, Number(rd && rd.pages) || 0);
-                                for (let p = 0; p < redoPageCount; p++) {
-                                    let redoData = await exReadRedoPageFromLocal(redoBaseKeys, rd, p);
-                                    if (!redoData) redoData = await exReadRedoPageFromCloud(redoBaseKeys, p);
-                                    if (redoData) await exWriteRedoPageAliases(redoBaseKeys, p, redoData);
-                                }
-                            }
-                        }
-                    }
-                }
-                for (const fId of Object.keys(appData.exercises?.archivedWrong || {})) {
-                    for (const item of (appData.exercises.archivedWrong[fId] || [])) {
-                        for (const archDrawKey of exGradedPageKeys(`exercise_drawing_${item.taskId}_${item.questionIndex}`, item.userDrawingPages)) {
-                            const localAD = await getFileData(archDrawKey).catch(() => null);
-                            if (!localAD) {
-                                try { const cd = await r2GetObject('exercises/drawings/' + archDrawKey); if (cd) await exSaveCloudDrawingIfMissing(archDrawKey, cd); } catch(e) {}
-                            }
-                        }
-                        for (let ri = 0; ri < (item.redoDrawings || []).length; ri++) {
-                            const rd = item.redoDrawings[ri];
-                            const redoBaseKeys = exRedoDrawingBaseKeys(
-                                item.taskId, item.questionIndex, rd, ri);
-                            const redoPageCount = Math.max(1, Number(rd && rd.pages) || 0);
-                            for (let p = 0; p < redoPageCount; p++) {
-                                let redoData = await exReadRedoPageFromLocal(redoBaseKeys, rd, p);
-                                if (!redoData) redoData = await exReadRedoPageFromCloud(redoBaseKeys, p);
-                                if (redoData) await exWriteRedoPageAliases(redoBaseKeys, p, redoData);
-                            }
-                        }
-                    }
-                }
+                await exSyncCachedGradedPages();
 
                 // 拉取本地缺失的笔记本页面和媒体（与习题同样的模式）
                 const pulledNotebooks = await r2PullNotebookAssetsFromCloud({ missingOnly: true });
@@ -25499,10 +25387,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
         }
 
-        function exCollectUncommittedGradedCloudEntries(exercises) {
+        function exCollectUncommittedGradedCloudEntries(exercises, includeCommitted = false) {
             const byBaseKey = new Map();
             const add = (baseKey, pageCount, record, mirrorBaseKeys = []) => {
-                if (!record || record.gradedDrawingCloudCommitted !== false) return;
+                if (!record || (!includeCommitted && record.gradedDrawingCloudCommitted !== false)) return;
                 let entry = byBaseKey.get(baseKey);
                 if (!entry) {
                     entry = { baseKey, baseKeys: [baseKey], pageCount: 1, records: [] };
@@ -25809,9 +25697,61 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
+        // 正常新评分由持久化待上传标记负责提交。启动/定时同步中的已评分图片是缓存，
+        // 只能读取云端或条件创建缺失对象，不能凭“本地有图片”覆盖云端。
+        async function exSyncCachedGradedPages() {
+            const generation = _exGradedCloudCommitCounter;
+            const exercises = appData.exercises;
+            const unchanged = () => exercises === appData.exercises &&
+                generation === _exGradedCloudCommitCounter &&
+                !exHasPendingGradedPagesCloudCommit() &&
+                exCollectUncommittedGradedCloudEntries(appData.exercises).length === 0;
+            for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises, true)) {
+                for (let p = 0; p < entry.pageCount; p++) {
+                    if (!unchanged()) return;
+                    const keys = entry.baseKeys.map(base => exPageKey(base, p));
+                    const local = await Promise.all(keys.map(key => getFileData(key)));
+                    try {
+                        let data = null;
+                        for (const key of keys) {
+                            data = await r2GetObject('exercises/drawings/' + key);
+                            if (data) break;
+                        }
+                        if (!unchanged()) return;
+                        if (!data) {
+                            data = local.find(Boolean);
+                            if (!data) continue;
+                            for (let i = 0; i < keys.length; i++) {
+                                if (!unchanged()) return;
+                                const key = keys[i];
+                                try {
+                                    await r2PutObject('exercises/drawings/' + key, data,
+                                        'image/png', { ifNoneMatch: '*' });
+                                } catch (error) {
+                                    if (error?.status !== 412) throw error;
+                                    // 稳定 key 始终优先，旧数组下标 alias 不能反向覆盖它。
+                                    if (i === 0) {
+                                        data = await r2GetObject('exercises/drawings/' + key);
+                                        if (!data) throw error;
+                                    }
+                                }
+                            }
+                        }
+                        for (let i = 0; i < keys.length; i++) {
+                            if (!unchanged()) return;
+                            if (local[i] !== data) await exSaveCloudDrawingIfMissing(keys[i], data,
+                                { expected: local[i], guard: unchanged });
+                        }
+                    } catch (error) {
+                        console.warn('[sync] 习题图片恢复失败，保留本地缓存:', keys[0], error);
+                    }
+                }
+            }
+        }
+
         // missing-only 云下载必须在同一个读写事务里重新判空：若新评分 B 先提交，
         // 旧云快照 A 会看到 key 已存在并跳过；若 A 事务先创建，B 随后的事务仍会最后覆盖。
-        async function exSaveCloudDrawingIfMissing(key, data) {
+        async function exSaveCloudDrawingIfMissing(key, data, options = {}) {
             if (!data) return false;
             if (!await ensureFileDB()) throw new Error(i18n('indexeddb_unavailable'));
             return new Promise((resolve, reject) => {
@@ -25822,7 +25762,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     const request = store.get(key);
                     let inserted = false;
                     request.onsuccess = () => {
-                        if (request.result !== undefined) return;
+                        if (options.guard && !options.guard()) return;
+                        if ('expected' in options) {
+                            if ((request.result?.data ?? null) !== options.expected) return;
+                        } else if (request.result !== undefined) return;
                         inserted = true;
                         store.put({ id: key, data });
                     };

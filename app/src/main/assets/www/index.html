@@ -14416,6 +14416,8 @@
         }
 
         async function r2PublishMetadataWithCas(localMetadata, classroomIntent, options = {}) {
+            // 导入的离线评分也必须先有完整图片，不能先发布只有分数的索引。
+            await exEnsureImportedGradedPages();
             // 这是 metadata.json 所有发布路径的最后一道门（包括手动全量同步和
             // 云端尚无 metadata 时的课堂首传）。刷新 exercises 快照，确保刚上传
             // 完成的持久标记也进入本次 CAS。
@@ -16740,6 +16742,10 @@
                     if (exPreserveActiveExercisePageCount()) repairMetadataAfterStartup = true;
                 }
                 if (!appData.exercises) appData.exercises = { folders: [], wrongByFolder: {}, archivedWrong: {} };
+                if (exCollectUncommittedGradedCloudEntries(appData.exercises, true)
+                    .some(entry => entry.records.some(record => record.gradedDrawingCloudCommitted === 'imported'))) {
+                    repairMetadataAfterStartup = true;
+                }
                 appData.settings = { ...metadata.settings, ...localApiSettings, r2Config: localR2Config };
                 appDataLoaded = true;
                 saveData();
@@ -17883,10 +17889,9 @@
                     _callNativeRecording('deleteRecording', id);
                     await deleteFileData('classroom_' + id).catch(() => {});
                 }
-                // 备份中的待上传标记属于导出时的旧状态；导入后按 PR88 从云端恢复。
-                // 保留评分和图片，以及正常本机新评分的断点补传。
-                for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises)) {
-                    for (const record of entry.records) delete record.gradedDrawingCloudCommitted;
+                // 导入来源单独标记：不压过云端已有评分，但独有评分必须先补齐图片再发布。
+                for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises, true)) {
+                    for (const record of entry.records) record.gradedDrawingCloudCommitted = 'imported';
                 }
                 if (typeof saveExercisesToIDB === 'function') await saveExercisesToIDB();
                 const metadataSaved = saveData();
@@ -25694,6 +25699,30 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     }
                 }
                 return { exercisesForPublish, uploadedSignatures };
+            }
+        }
+
+        async function exEnsureImportedGradedPages() {
+            for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises, true)) {
+                const imported = entry.records.filter(record => record.gradedDrawingCloudCommitted === 'imported');
+                if (!imported.length) continue;
+                for (let p = 0; p < entry.pageCount; p++) {
+                    for (const baseKey of entry.baseKeys) {
+                        const key = exPageKey(baseKey, p);
+                        if (await r2GetObject('exercises/drawings/' + key)) continue;
+                        const data = await exReadRedoPageFromLocal(entry.baseKeys, null, p);
+                        if (!data) throw new Error('Imported exercise drawing is missing: ' + key);
+                        try {
+                            await r2PutObject('exercises/drawings/' + key, data,
+                                'image/png', { ifNoneMatch: '*' });
+                        } catch (error) {
+                            if (error?.status !== 412) throw error;
+                        }
+                    }
+                }
+                for (const record of imported) {
+                    if (record.gradedDrawingCloudCommitted === 'imported') record.gradedDrawingCloudCommitted = true;
+                }
             }
         }
 

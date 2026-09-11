@@ -112,6 +112,7 @@ async function checkImport(html) {
         { questionIndex: 0, score: 1 }, { questionIndex: 0, score: 2 }
     ] }];
     const h = harness(html, local, remote);
+    h.idb.set('exercise_drawing_task_0', 'IMPORTED WRONG ANSWER');
     await h.context.importDataZip({ target: { value: 'old.zip', files: [{}] } });
     await h.drainTimers();
     assert.ok(h.toasts.includes('import_complete_files'), 'ZIP import completed');
@@ -185,10 +186,10 @@ async function checkOldGrading(html) {
             await h.drainTimers();
             assert.ok(h.toasts.includes('import_complete_files'));
             assert.equal(h.context.appData.exercises.folders[0].tasks[0].questions[0].gradedDrawingCloudCommitted,
-                undefined, 'backup import discards old pending upload intent');
+                'imported', 'backup intent remains distinct from a new local grading commit');
             const persisted = JSON.parse(h.idb.get('__exercises_data__'));
-            assert.equal(persisted.folders[0].tasks[0].questions[0].gradedDrawingCloudCommitted, undefined,
-                'immediate refresh cannot reload old pending intent from IndexedDB');
+            assert.equal(persisted.folders[0].tasks[0].questions[0].gradedDrawingCloudCommitted, 'imported',
+                'the import origin survives an immediate restart');
             assert.deepEqual(h.calls, [], 'import does not publish the old pending drawing');
         }
         await h.context.autoSyncFromR2OnStartup();
@@ -240,6 +241,50 @@ async function checkNotebookUploads(html) {
             if (mode !== 'new-blank') assert.equal(result.texts[0].text, 'NEW CONTENT', mode);
             if (mode === 'create-race') assert.equal(h.idb.has('nbpage_p'), false,
                 'a failed blank create must not leave a blank local cache hiding the winning page');
+        }
+    }
+}
+async function checkImportedOfflineGrading(html) {
+    for (const mode of ['complete', 'upload-fails', 'missing-image']) {
+        const local = data(), remote = data(true);
+        local.exercises.folders[0].tasks = [{ id: 'offline', questions: [{ index: 0, status: 'done',
+            score: 10, userDrawingPages: 2, gradedDrawingCloudCommitted: false }] }];
+        local.exercises.wrongByFolder.folder = [{ taskId: 'offline', questions: [{ questionIndex: 0,
+            score: 10, userDrawingPages: 2, gradedDrawingCloudCommitted: false,
+            redoDrawings: [{ drawingId: 'redo1', pages: 2, gradedDrawingCloudCommitted: false }] }] }];
+        const h = harness(html, local, remote);
+        const keys = ['exercise_drawing_offline_0', 'exercise_drawing_offline_0_p1',
+            'exercise_redo_drawing_offline_0_id_redo1', 'exercise_redo_drawing_offline_0_id_redo1_p1',
+            'exercise_redo_drawing_offline_0_0', 'exercise_redo_drawing_offline_0_0_p1'];
+        for (const key of keys) if (mode !== 'missing-image' || !key.endsWith('_p1')) h.idb.set(key, 'ANSWER ' + key);
+        await h.context.importDataZip({ target: { value: 'offline.zip', files: [{}] } });
+        await h.drainTimers();
+        assert.deepEqual(h.calls, [], 'offline import itself does not connect to cloud');
+        const put = h.context.r2PutObject;
+        let completeAtPublication = false;
+        h.context.r2PutObject = async (key, ...args) => {
+            if (mode === 'upload-fails' && key.endsWith('_p1')) throw new Error('upload failed');
+            if (key === 'metadata.json') {
+                completeAtPublication = keys.every(k => h.cloud.has('exercises/drawings/' + k));
+                assert.ok(completeAtPublication, 'all pages and aliases must exist before the first metadata PUT');
+            }
+            return put(key, ...args);
+        };
+        await h.context.autoSyncFromR2OnStartup();
+        await h.drainTimers();
+        if (mode === 'complete') {
+            assert.deepEqual(h.errors, []);
+            assert.equal(completeAtPublication, true);
+            const published = JSON.parse(h.cloud.get('metadata.json'));
+            assert.equal(published.exercises.folders[0].tasks[0].questions[0].score, 10);
+            assert.equal(published.exercises.folders[0].tasks[0].questions[0].gradedDrawingCloudCommitted, true);
+        } else {
+            assert.equal(h.calls.includes('PUT metadata.json'), false, 'incomplete imported answers must not publish');
+            assert.deepEqual(JSON.parse(h.cloud.get('metadata.json')), remote);
+            assert.equal(h.errors.length, 1);
+            const stored = JSON.parse(h.idb.get('__exercises_data__'));
+            assert.equal(stored.folders[0].tasks[0].questions[0].gradedDrawingCloudCommitted, 'imported',
+                'failed restoration remains resumable after restarting');
         }
     }
 }
@@ -324,6 +369,7 @@ async function checkCacheRecovery(html) {
         await checkImport(html);
         await checkStartup(html);
         await checkOldGrading(html);
+        await checkImportedOfflineGrading(html);
         await checkNotebookUploads(html);
         await checkCacheRecovery(html);
         console.log(file + ': import/startup/periodic recovery, offline edits, conditional creates and concurrent writes passed');

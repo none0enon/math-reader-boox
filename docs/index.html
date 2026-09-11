@@ -17385,6 +17385,7 @@
             return new TextEncoder().encode(String(value ?? ''));
         }
         async function dataZipCreate(files) {
+            if (files.length > 0xffff) throw new Error(i18n('backup_file_too_large'));
             const chunks = [], central = [];
             let offset = 0;
             const dt = dataZipDosDate();
@@ -17392,7 +17393,10 @@
                 const name = new TextEncoder().encode(f.name);
                 const data = f.data instanceof Blob ? f.data : dataZipEncode(f.data);
                 const size = data instanceof Blob ? data.size : data.length;
-                if (size > 0xffffffff) throw new Error(i18n('backup_file_too_large'));
+                if (name.length > 0xffff || size > 0xffffffff ||
+                    offset + 30 + name.length + size > 0xffffffff) {
+                    throw new Error(i18n('backup_file_too_large'));
+                }
                 const crc = data instanceof Blob ? await dataZipCrc32Blob(data) : dataZipCrc32(data);
                 const local = new Uint8Array([0x50,0x4b,3,4, ...dataZipU16(20), ...dataZipU16(0x0800), ...dataZipU16(0), ...dataZipU16(dt.time), ...dataZipU16(dt.date), ...dataZipU32(crc), ...dataZipU32(size), ...dataZipU32(size), ...dataZipU16(name.length), 0,0, ...name]);
                 chunks.push(local, data);
@@ -17401,7 +17405,8 @@
             }
             const centralStart = offset;
             for (const c of central) {
-                const hdr = new Uint8Array([0x50,0x4b,1,2, ...dataZipU16(20), ...dataZipU16(20), ...dataZipU16(0x0800), ...dataZipU16(0), ...dataZipU16(dt.time), ...dataZipU16(dt.date), ...dataZipU32(c.crc), ...dataZipU32(c.size), ...dataZipU32(c.size), ...dataZipU16(c.name.length), 0,0, 0,0, 0,0, 0,0,0,0, ...dataZipU32(c.offset), ...c.name]);
+                if (offset + 46 + c.name.length > 0xffffffff) throw new Error(i18n('backup_file_too_large'));
+                const hdr = new Uint8Array([0x50,0x4b,1,2, ...dataZipU16(20), ...dataZipU16(20), ...dataZipU16(0x0800), ...dataZipU16(0), ...dataZipU16(dt.time), ...dataZipU16(dt.date), ...dataZipU32(c.crc), ...dataZipU32(c.size), ...dataZipU32(c.size), ...dataZipU16(c.name.length), 0,0, 0,0, 0,0, 0,0, 0,0,0,0, ...dataZipU32(c.offset), ...c.name]);
                 chunks.push(hdr); offset += hdr.length;
             }
             chunks.push(new Uint8Array([0x50,0x4b,5,6, 0,0, 0,0, ...dataZipU16(central.length), ...dataZipU16(central.length), ...dataZipU32(offset - centralStart), ...dataZipU32(centralStart), 0,0]));
@@ -17821,16 +17826,22 @@
                     });
                 }
                 const blob = await dataZipCreate(files);
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'math-reader-full-export-' + new Date().toISOString().slice(0,10) + '.zip';
-                a.click();
-                setTimeout(() => URL.revokeObjectURL(url), 30000);
+                const name = 'math-reader-full-export-' + new Date().toISOString().slice(0,10) + '.zip';
+                let savedLocation = '';
+                if (typeof window.__booxDownloadBlob === 'function') {
+                    savedLocation = await window.__booxDownloadBlob(blob, name);
+                } else {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = name;
+                    a.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 30000);
+                }
                 showToast(i18n('toast_export_success') + i18n('export_local_files_detail', files.length - 1) +
                     (exportedMissingRecordings.length
                         ? i18n('export_missing_recordings_detail', exportedMissingRecordings.length)
-                        : ''));
+                        : '') + (savedLocation ? '\n' + savedLocation : ''));
             } catch (err) {
                 console.error('导出 ZIP 失败:', err);
                 showToast(i18n('export_failed') + err.message);
@@ -17861,6 +17872,9 @@
                     archived: imported.archived || [],
                     settings: { ...(imported.settings || {}), ...pickApiSettingsFrom(oldSettings) },
                     lectures: imported.lectures || {},
+                    lectureDrafts: imported.lectureDrafts || {},
+                    lectureDrawings: imported.lectureDrawings || {},
+                    lectureStrokesData: imported.lectureStrokesData || {},
                     drafts: imported.drafts || {},
                     classroom: imported.classroom || { courses: [], seminars: [] },
                     classroomTombstones: mergeClassroomTombstones(imported.classroomTombstones),

@@ -58,22 +58,50 @@
     /* ---------------- blob 下载桥接（与手写 SDK 无关，始终启用） ---------------- */
     var dl = window.BooxDownloadNative;
     if (dl) {
+        window.__booxDownloadBlob = async function (blob, name) {
+            var session = JSON.parse(dl.beginSave(name, blob.type || 'application/octet-stream', blob.size));
+            if (session.error) { throw new Error(session.error); }
+            try {
+                // Keep both WebView and Java allocations bounded, including large ZIP backups.
+                var step = 256 * 1024;
+                for (var offset = 0; offset < blob.size; offset += step) {
+                    var base64 = await new Promise(function (resolve, reject) {
+                        var fr = new FileReader();
+                        fr.onload = function () {
+                            var data = String(fr.result || '');
+                            var comma = data.indexOf(',');
+                            if (comma < 0) { reject(new Error('Invalid download data')); return; }
+                            resolve(data.slice(comma + 1));
+                        };
+                        fr.onerror = function () { reject(fr.error || new Error('Cannot read download data')); };
+                        fr.onabort = function () { reject(new Error('Download read cancelled')); };
+                        fr.readAsDataURL(blob.slice(offset, offset + step));
+                    });
+                    var error = dl.appendBase64(session.id, base64);
+                    if (error) { throw new Error(error); }
+                }
+                var result = JSON.parse(dl.finishSave(session.id));
+                if (result.error) { throw new Error(result.error); }
+                return result.location;
+            } catch (error) {
+                try { dl.abortSave(session.id); } catch (ignored) { /* retain the original error */ }
+                throw error;
+            }
+        };
         var handleBlobAnchor = function (a) {
             var name = a.getAttribute('download') || 'download.bin';
             fetch(a.href)
                 .then(function (r) { return r.blob(); })
-                .then(function (blob) {
-                    var fr = new FileReader();
-                    fr.onload = function () {
-                        var s = String(fr.result || '');
-                        var i = s.indexOf(',');
-                        if (i >= 0) {
-                            dl.saveBase64(name, blob.type || 'application/octet-stream', s.slice(i + 1));
-                        }
-                    };
-                    fr.readAsDataURL(blob);
+                .then(function (blob) { return window.__booxDownloadBlob(blob, name); })
+                .then(function (location) {
+                    if (typeof showToast === 'function') { showToast(location); }
                 })
-                .catch(function (e) { console.warn('boox-pen: blob download failed', e); });
+                .catch(function (e) {
+                    console.warn('boox-pen: blob download failed', e);
+                    var message = (typeof i18n === 'function' ? i18n('export_failed') : 'Export failed: ') + e.message;
+                    if (typeof showToast === 'function') { showToast(message); }
+                    else { alert(message); }
+                });
         };
         // PWA 多处用 a.click() 触发下载，且 anchor 可能未挂到 DOM，必须打补丁
         var origClick = HTMLAnchorElement.prototype.click;

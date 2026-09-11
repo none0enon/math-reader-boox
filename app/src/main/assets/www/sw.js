@@ -12,5 +12,9 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// 不拦截任何请求——全部走网络
-// （如果将来需要离线功能，可以在这里加回来）
+// 兼容旧版 Chromium 的 PWA 安装检查；仅转发页面导航，不缓存内容。
+self.addEventListener('fetch', (event) => {
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request));
+  }
+});

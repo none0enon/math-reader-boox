@@ -35,6 +35,12 @@ jobs:
           cmp app/src/main/assets/www/classroom-storage.js docs/classroom-storage.js
           cmp app/src/main/assets/www/recording-ai.js docs/recording-ai.js
 
+      - name: Check bounded native data recovery
+        run: |
+          mkdir -p /tmp/raw-recovery-check
+          javac -d /tmp/raw-recovery-check app/src/main/java/com/mathreader/boox/RawDataBackup.java tests/RawDataBackupCheck.java
+          java -ea -Xmx32m -cp /tmp/raw-recovery-check RawDataBackupCheck
+
       - name: Calculate APK version
         id: version
         shell: bash

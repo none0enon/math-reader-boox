@@ -21,6 +21,10 @@ jobs:
           node tests/notebook-input.test.js
           node tests/native-selection.test.js
           node tests/boox-pen.test.js
+          node tests/notebook-save.test.js
+          node tests/notebook-merge.test.js
+          node tests/notebook-sync.test.js
+          node tests/notebook-recovery.test.js
           cmp app/src/main/assets/www/index.html docs/index.html
 
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4

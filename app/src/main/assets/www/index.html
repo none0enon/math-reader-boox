@@ -31764,13 +31764,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!d) return;
             nbState.drawing = null;
             _nbActivePointerId = null;
-            let changed = false;
             if (d.mode === 'erase') {
                 // i 是每次删除当时的索引；必须逆着删除顺序恢复。
-                changed = d.removed.length > 0;
                 d.removed.slice().reverse().forEach(({ s, i }) => nbState.content.strokes.splice(i, 0, s));
             } else if (d.mode === 'move') {
-                changed = d.moved;
                 const before = new Map(d.before.map(s => [s.id, s]));
                 for (const s of nbState.content.strokes) {
                     if (before.has(s.id)) { Object.assign(s, before.get(s.id)); delete s._bb; }
@@ -31778,7 +31775,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (nbState.selection) nbState.selection.bbox = nbSelBBox(nbState.selection.ids);
                 nbPositionSelToolbar();
             } else if (d.mode === 'boxdrag') {
-                changed = true; // 旧自动保存可能已写入拖动中途的位置，即使后来拖回起点也要重存。
                 Object.assign(d.obj, d.before);
                 const el = document.querySelector(`#nbTextLayer [data-id="${d.obj.id}"]`);
                 if (el) { el.style.left = d.obj.x + 'px'; el.style.top = d.obj.y + 'px'; }
@@ -31787,7 +31783,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 d.cancel();
             }
             nbRedraw();
-            if (changed) nbScheduleSave();
         }
 
         function nbPointerDown(e) {
@@ -32352,7 +32347,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         box.x = ox; box.y = oy;
                         el.style.left = ox + 'px'; el.style.top = oy + 'px';
                         nbPositionTextToolbar(box.id);
-                        nbScheduleSave();
                         return;
                     }
                     if (moved) {
@@ -32428,7 +32422,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                             el.style.cssText = styleBefore;
                             inner.style.fontSize = fontBefore;
                             nbPositionTextToolbar(box.id);
-                            nbScheduleSave();
                             return;
                         }
                         nbScheduleSave();
@@ -32591,7 +32584,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     if (ev.type === 'pointercancel') {
                         m.x = ox; m.y = oy;
                         el.style.left = ox + 'px'; el.style.top = oy + 'px';
-                        nbScheduleSave();
                         return;
                     }
                     if (moved) nbScheduleSave();

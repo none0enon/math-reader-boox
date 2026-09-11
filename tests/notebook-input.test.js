@@ -63,7 +63,7 @@ const context = vm.createContext({
     nbHidePanel: noop, nbHideOutline: noop, nbHideTextToolbar: noop,
     nbHitBoxAt: () => null, nbUid: () => 'stroke', nbPushOp: op => context.operations.push(op), operations: [],
     nbRedraw: noop, nbDrawOverlay: noop, nbDrawBg: noop, nbRenderTexts: noop,
-    nbScheduleSave: () => { context.nbState.dirty = true; }, nbNativeRefresh: noop,
+    nbScheduleSave: () => { context.saveRequests++; context.nbState.dirty = true; }, saveRequests: 0, nbNativeRefresh: noop,
     nbHideSelToolbar: noop, nbPositionSelToolbar: noop, nbPositionTextToolbar: noop,
     nbSelectTextBox: noop, nbShowTextToolbar: noop, nbGetMediaData: async () => null,
     nbFinishLasso: noop, nbEraseAt: noop, nbShapePaths: () => [[0, 0], [10, 10]],
@@ -185,6 +185,7 @@ function reset(tool = 'pen') {
     Object.assign(context.nbState, { tool, zoom: 1, fitScale: 1, drawing: null,
         selection: null, dirty: false, content: { strokes: [], texts: [], media: [] } });
     context.operations.length = 0;
+    context.saveRequests = 0;
     context.nbHitBoxAt = () => null;
     wrap.scrollLeft = 200; wrap.scrollTop = 200;
 }
@@ -244,10 +245,10 @@ context.nbState.content.strokes.push(...original);
 startFinger(10, 10);
 context.nbPointerMove(pointer('touch', 11, 60, 20));
 assert.deepEqual(context.nbState.content.strokes.map(s => s.id), ['b']);
-context.nbState.dirty = false; // A previous autosave may have written the partial edit.
 startPinch();
 assert.deepEqual(context.nbState.content.strokes, original, 'restore exact pre-gesture stroke order');
-assert.equal(context.nbState.dirty, true, 'persist the restored content after an earlier autosave');
+assert.equal(context.nbState.dirty, false, 'cancelled erasure must not schedule a page upload');
+assert.equal(context.saveRequests, 0);
 assert.equal(context.operations.length, 0);
 
 reset('lasso');
@@ -263,7 +264,8 @@ startPinch();
 assert.equal(JSON.stringify(context.nbState.content.strokes), beforeMove);
 assert.equal(JSON.stringify(context.nbState.selection.bbox), beforeBounds);
 assert.equal(context.operations.length, 0);
-assert.equal(context.nbState.dirty, true);
+assert.equal(context.nbState.dirty, false);
+assert.equal(context.saveRequests, 0);
 context.nbApplyOp(addSelectionOp, true);
 context.nbApplyOp(addSelectionOp, false);
 assert.equal(JSON.stringify(context.nbState.content.strokes), beforeMove, 'undo/redo keeps the restored stroke reference');
@@ -274,11 +276,11 @@ context.nbHitBoxAt = () => ({ kind: 'text', obj: hitBox });
 startFinger();
 context.nbPointerMove(pointer('touch', 11, 30, 40));
 assert.equal(hitBox.x, 30);
-context.nbState.dirty = false; // Autosave ran while the box was away from its origin.
 context.nbPointerMove(pointer('touch', 11, 10, 20));
 startPinch();
 assert.deepEqual(hitBox, { id: 'hit', x: 10, y: 20 });
-assert.equal(context.nbState.dirty, true);
+assert.equal(context.nbState.dirty, false);
+assert.equal(context.saveRequests, 0);
 
 // Text/media DOM drags and resize handles participate in the same cancellation,
 // including removing their document listeners so later pointer events cannot move them.
@@ -292,18 +294,44 @@ for (const kind of ['text', 'image', 'audio', 'resize']) {
     dispatch('touchstart', [touch(10, 20)], target);
     docPointer('pointermove', 50, 70);
     assert.notEqual(JSON.stringify(obj), before, kind + ' actually moved');
-    context.nbState.dirty = false; // A prior save may contain the transient position/size.
     docPointer('pointermove', 10, 20);
     startPinch(target);
     assert.equal(JSON.stringify(obj), before, kind + ' restored');
     assert.equal(context.nbState.drawing, null);
-    assert.equal(context.nbState.dirty, true);
+    assert.equal(context.nbState.dirty, false);
+    assert.equal(context.saveRequests, 0);
     for (const type of ['pointermove', 'pointerup', 'pointercancel']) assert.equal(documentListeners[type].length, 0);
     docPointer('pointermove', 90, 100);
     assert.equal(JSON.stringify(obj), before);
     dispatch('touchmove', [touch(100, 50), touch(200, 50, 'direct', 2)], target);
     assert.equal(wrap.scrollTop, 250, kind + ' surface allows navigation');
     assert.equal(context.operations.length, 0);
+}
+
+// A stale open page must not become a fresh save merely by touching an object
+// and cancelling or starting navigation. Existing unsaved edits stay dirty.
+for (const dirty of [false, true]) {
+    for (const kind of ['canvas-box', 'text', 'image', 'audio', 'resize']) {
+        for (const cancel of ['pinch', 'pointercancel']) {
+            if (kind === 'canvas-box' && cancel === 'pointercancel') continue;
+            reset();
+            context.nbState.dirty = dirty;
+            const obj = { id: 'cancel-' + kind, x: 10, y: 20, w: 220, fontSize: 18, type: kind };
+            let target;
+            if (kind === 'canvas-box') {
+                context.nbHitBoxAt = () => ({ kind: 'text', obj });
+                startFinger();
+            } else {
+                const el = (kind === 'text' || kind === 'resize') ? context.nbBuildTextEl(obj) : context.nbBuildMediaEl(obj);
+                target = kind === 'resize' ? el.children.find(c => c.dataset.c === 'br') : el;
+                target.listeners.pointerdown[0]({ ...pointer('touch', 11), target });
+            }
+            if (cancel === 'pinch') startPinch(target);
+            else docPointer('pointercancel', 10, 20);
+            assert.equal(context.saveRequests, 0, kind + ' ' + cancel + ' must not request a save');
+            assert.equal(context.nbState.dirty, dirty, 'cancellation preserves the previous dirty state');
+        }
+    }
 }
 
 // A real pen stroke or object drag is never rolled back by two fingers, even
@@ -318,6 +346,7 @@ for (const pencilOnly of [false, true]) {
     assert.equal(context.nbState.drawing, penDrawing);
     assert.equal(wrap.scrollTop, 200);
     context.nbPointerUp(pointer('pen', 11));
+    assert.equal(context.saveRequests, 1, 'completed pen stroke still saves');
 
     reset();
     context.applePencilMode = pencilOnly;
@@ -330,6 +359,7 @@ for (const pencilOnly of [false, true]) {
     docPointer('pointermove', 40, 50, 'pen');
     docPointer('pointerup', 40, 50, 'pen');
     assert.equal(obj.x, 40);
+    assert.equal(context.saveRequests, 1, 'completed object drag still saves');
 }
 
 reset('text');
@@ -347,4 +377,5 @@ startFinger();
 context.nbPointerMove(pointer('touch', 11, 30, 40));
 context.nbPointerUp(pointer('touch', 11));
 assert.equal(context.nbState.content.strokes.length, 1, 'single-finger writing still commits');
+assert.equal(context.saveRequests, 1, 'completed finger stroke still saves');
 console.log('Notebook input checks passed');

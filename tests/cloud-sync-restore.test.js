@@ -170,6 +170,196 @@ async function checkStartup(html) {
     assert.equal(h.context.appData.drafts.draft.html, remote.drafts.draft.html);
     assert.ok(h.context.appData.exercises.folders.some(folder => folder.id === 'cloud-only-folder'));
 }
+async function checkEmptyShelf(html) {
+    for (const shelf of ['books', 'papers']) {
+        const local = data(), remote = data(true);
+        local[shelf] = [{ id: 'backup-pdf', addedAt: local.syncedAt }];
+        remote.notes.cloudOnly = 'CLOUD ONLY NOTE';
+        local.notebooks = remote.notebooks = { items: [{ id: 'nb', updatedAt: remote.syncedAt,
+            pages: [{ id: 'p', updatedAt: remote.syncedAt }] }], reviews: [] };
+        const h = harness(html, local, remote);
+        h.idb.set('backup-pdf', 'LOCAL PDF');
+        h.idb.set('nbpage_p', JSON.stringify({ updatedAt: local.syncedAt, texts: [{ text: 'BACKUP PAGE' }] }));
+        const newPage = JSON.stringify({ updatedAt: remote.syncedAt, texts: [{ text: 'CLOUD PAGE' }] });
+        h.cloud.set('notebooks/pages/nbpage_p', newPage);
+        await h.context.importDataZip({ target: { value: 'old.zip', files: [{}] } });
+        await h.drainTimers();
+        assert.deepEqual(h.calls, []);
+        const put = h.context.r2PutObject;
+        let publications = 0;
+        h.context.r2PutObject = async (key, value, ...args) => {
+            if (key === 'metadata.json') {
+                const published = JSON.parse(value);
+                assert.deepEqual(published.notes, remote.notes, 'first shelf repair must keep newer cloud notes');
+                assert.deepEqual(published.drafts, remote.drafts);
+                assert.deepEqual(published.exercises, remote.exercises);
+                assert.equal(published[shelf][0].id, 'backup-pdf');
+                publications++;
+            }
+            return put(key, value, ...args);
+        };
+        await h.context.autoSyncFromR2OnStartup();
+        await h.drainTimers();
+        assert.equal(publications, 1, 'startup repairs the shelf after all cloud modules merge');
+        assert.equal(h.idb.get('backup-pdf'), 'LOCAL PDF');
+        assert.equal(h.calls.some(call => call.startsWith('PUT notebooks/')), false);
+        assert.equal(h.idb.get('nbpage_p'), newPage);
+        await h.context.performAutoSync();
+        await h.drainTimers();
+        assert.equal(publications, 2);
+        assert.equal(h.errors.filter(error => !error.includes('云端书籍索引为空')).length, 0,
+            h.errors.join('\n'));
+    }
+    const local = data(), remote = data(true);
+    local.books = [{ id: 'deleted', addedAt: local.syncedAt }];
+    remote.books = [{ id: 'kept', addedAt: remote.syncedAt }];
+    const h = harness(html, local, remote);
+    h.idb.set('deleted', 'OLD PDF');
+    await h.context.autoSyncFromR2OnStartup();
+    assert.equal(h.idb.has('deleted'), false, 'nonempty cloud shelf still applies deletions');
+    assert.equal(h.context.appData.books[0].id, 'kept');
+    assert.deepEqual(h.errors, []);
+}
+async function checkNotebookDownloadRace(html) {
+    for (const mode of ['periodic', 'manual-pull', 'idb-write', 'reimport']) {
+        const local = data(), remote = data(true);
+        local.notebooks = remote.notebooks = { items: [{ id: 'nb', updatedAt: remote.syncedAt,
+            pages: [{ id: 'p', updatedAt: remote.syncedAt }] }], reviews: [] };
+        const h = harness(html, local, remote), key = 'notebooks/pages/nbpage_p';
+        h.idb.set('nbpage_p', JSON.stringify({ updatedAt: local.syncedAt, texts: [{ text: 'BACKUP' }] }));
+        h.cloud.set(key, JSON.stringify({ updatedAt: remote.syncedAt, texts: [{ text: 'CLOUD' }] }));
+        Object.assign(h.context, { _nbSaveTimer: null, nbSnippetCache: {}, nbThumbCache: {},
+            nbState: { notebookId: 'nb', pageIndex: 0, dirty: true,
+                content: { strokes: [], texts: [{ text: 'JUST SAVED' }], media: [] } } });
+        const get = h.context.r2GetObject;
+        let downloaded = false;
+        h.context.r2GetObject = async (...args) => {
+            const result = await get(...args);
+            if (args[0] === key && !downloaded) {
+                downloaded = true;
+                if (mode === 'reimport' || mode === 'idb-write') {
+                    if (mode === 'reimport') h.context.appData.notebooks = clone(h.context.appData.notebooks);
+                    h.idb.set('nbpage_p', JSON.stringify({ texts: [{ text: 'NEW IMPORT' }] }));
+                } else {
+                    await h.context.nbSavePageNow();
+                    assert.equal(JSON.parse(h.idb.get('nbpage_p')).texts[0].text, 'JUST SAVED');
+                }
+            }
+            return result;
+        };
+        if (mode === 'periodic') await h.context.performAutoSync();
+        else await h.context.r2PullNotebookAssetsFromCloud({ missingOnly: false });
+        await h.drainTimers();
+        assert.equal(downloaded, true);
+        assert.deepEqual(h.errors, []);
+        assert.equal(JSON.parse(h.idb.get('nbpage_p')).texts[0].text,
+            ['reimport', 'idb-write'].includes(mode) ? 'NEW IMPORT' : 'JUST SAVED', 'slow download cannot overwrite a newer local save');
+        if (mode === 'periodic' || mode === 'manual-pull') {
+            assert.equal(JSON.parse(h.cloud.get(key)).texts[0].text, 'JUST SAVED', 'queued edit still uploads');
+        }
+    }
+}
+async function checkLegacyEmbeddedGrading(html) {
+    for (const stable of [true, false]) {
+        const local = data(), remote = data(true);
+        const question = taskId => ({ taskId, questionIndex: 0, score: 10,
+            userDrawing: 'ANSWER 0', userDrawingExtra: ['ANSWER 1'],
+            redoDrawings: [{ ...(stable ? { drawingId: 'r1' } : {}), drawing: 'REDO 0', extra: ['REDO 1'] }] });
+        local.exercises.wrongByFolder.folder = [{ taskId: 'wrong', questions: [question('wrong')] }];
+        local.exercises.archivedWrong.folder = [question('archived')];
+        const h = harness(html, local, remote);
+        await h.context.importDataZip({ target: { value: 'legacy.zip', files: [{}] } });
+        await h.drainTimers();
+        assert.deepEqual(h.errors, []);
+        assert.ok(h.toasts.includes('import_complete_files'));
+        assert.deepEqual(h.calls, [], 'legacy migration is entirely local');
+        const expected = new Map();
+        for (const task of ['wrong', 'archived']) for (let p = 0; p < 2; p++) {
+            const suffix = p ? '_p1' : '';
+            expected.set('exercise_drawing_' + task + '_0' + suffix, 'ANSWER ' + p);
+            expected.set('exercise_redo_drawing_' + task + '_0_0' + suffix, 'REDO ' + p);
+            if (stable) expected.set('exercise_redo_drawing_' + task + '_0_id_r1' + suffix, 'REDO ' + p);
+        }
+        for (const [key, value] of expected) assert.equal(h.idb.get(key), value, 'durable legacy page: ' + key);
+        // Simulate reopening from stripped metadata and the durable image store.
+        h.context.appData.exercises = JSON.parse(h.idb.get('__exercises_data__'));
+        assert.equal(h.context.appData.exercises.wrongByFolder.folder[0].questions[0].redoDrawings[0].drawing, undefined);
+        const put = h.context.r2PutObject;
+        h.context.r2PutObject = async (key, ...args) => {
+            if (key === 'metadata.json') for (const [k, value] of expected) {
+                assert.equal(h.cloud.get('exercises/drawings/' + k), value, 'legacy images precede metadata');
+            }
+            return put(key, ...args);
+        };
+        await h.context.autoSyncFromR2OnStartup();
+        await h.drainTimers();
+        await h.context.performAutoSync();
+        await h.drainTimers();
+        assert.deepEqual(h.errors, []);
+        assert.ok(h.calls.includes('PUT metadata.json'));
+    }
+}
+async function checkLegacyNotebook(html) {
+    for (const mode of ['missing', 'existing', 'create-race', 'get-fails']) {
+        const local = data(), remote = data(true);
+        local.notebooks = { items: [{ id: 'nb', pages: [{ id: 'p', createdAt: local.syncedAt }] }], reviews: [] };
+        const h = harness(html, local, remote), key = 'notebooks/pages/nbpage_p';
+        h.idb.set('nbpage_p', JSON.stringify({ strokes: [{ points: [1, 2] }], texts: [], media: [] }));
+        const cloudPage = JSON.stringify({ updatedAt: remote.syncedAt, texts: [{ text: 'NEW CLOUD' }] });
+        if (mode === 'existing') h.cloud.set(key, cloudPage);
+        if (mode === 'create-race') {
+            const put = h.context.r2PutObject;
+            h.context.r2PutObject = async (...args) => {
+                if (args[0] === key) h.cloud.set(key, cloudPage);
+                return put(...args);
+            };
+        }
+        if (mode === 'get-fails') {
+            const get = h.context.r2GetObject;
+            h.context.r2GetObject = async (...args) => {
+                if (args[0] === key) throw new Error('download unavailable');
+                return get(...args);
+            };
+        }
+        await h.context.syncToR2();
+        await h.drainTimers();
+        if (mode === 'get-fails') {
+            assert.equal(h.calls.includes('PUT metadata.json'), false);
+            assert.equal(h.cloud.has(key), false);
+            assert.equal(h.errors.length, 1);
+        } else {
+            assert.deepEqual(h.errors, []);
+            assert.ok(h.calls.includes('PUT metadata.json'));
+            if (mode === 'missing') {
+                assert.deepEqual(JSON.parse(h.cloud.get(key)).strokes, [{ points: [1, 2] }]);
+                assert.equal(JSON.parse(h.cloud.get(key)).updatedAt, local.syncedAt);
+            } else assert.equal(h.cloud.get(key), cloudPage, 'undated backup must not overwrite an existing cloud body');
+        }
+    }
+}
+async function checkPdfBackgroundRetry(html) {
+    const local = data(), remote = data(true);
+    local.notebooks = { items: [{ id: 'nb', pages: [{ id: 'p', createdAt: local.syncedAt, bgImage: 'bg' }] }], reviews: [] };
+    const h = harness(html, local, remote), key = 'notebooks/pages/nbpage_p', mediaKey = 'notebooks/media/nbmedia_bg';
+    h.idb.set('nbmedia_bg', 'PDF BACKGROUND');
+    const put = h.context.r2PutObject;
+    let fail = true;
+    h.context.r2PutObject = async (k, ...args) => {
+        if (k === mediaKey && fail) { fail = false; throw new Error('background upload failed'); }
+        if (k === 'metadata.json') assert.equal(h.cloud.get(mediaKey), 'PDF BACKGROUND', 'retry sends background before metadata');
+        return put(k, ...args);
+    };
+    await h.context.syncToR2();
+    assert.ok(h.cloud.has(key));
+    assert.equal(h.calls.includes('PUT metadata.json'), false);
+    assert.equal(h.errors.length, 1);
+    h.errors.length = 0;
+    await h.context.syncToR2();
+    await h.drainTimers();
+    assert.deepEqual(h.errors, []);
+    assert.equal(h.cloud.get(mediaKey), 'PDF BACKGROUND');
+    assert.ok(h.calls.includes('PUT metadata.json'));
+}
 async function checkOldGrading(html) {
     for (const imported of [true, false]) {
         const local = data(), remote = data(true);
@@ -368,10 +558,15 @@ async function checkCacheRecovery(html) {
         const html = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
         await checkImport(html);
         await checkStartup(html);
+        await checkEmptyShelf(html);
+        await checkNotebookDownloadRace(html);
+        await checkLegacyEmbeddedGrading(html);
+        await checkLegacyNotebook(html);
+        await checkPdfBackgroundRetry(html);
         await checkOldGrading(html);
         await checkImportedOfflineGrading(html);
         await checkNotebookUploads(html);
         await checkCacheRecovery(html);
-        console.log(file + ': import/startup/periodic recovery, offline edits, conditional creates and concurrent writes passed');
+        console.log(file + ': import/startup/periodic recovery, legacy data, concurrent edits and PDF retry passed');
     }
 })().catch(error => { console.error(error); process.exitCode = 1; });

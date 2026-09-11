@@ -14849,20 +14849,28 @@
                 .flatMap(nb => nb.pages || [])
                 .find(pg => pg && pg.id === pageId);
             const mediaIds = new Set();
-            let pgData = await getFileData('nbpage_' + pageId).catch(() => null);
+            const localPageJson = await getFileData('nbpage_' + pageId);
+            let pgData = localPageJson;
             let pageContent = null;
             if (pgData) pageContent = JSON.parse(pgData);
             // 目录刚从云端合并，正文可能仍是旧备份；不能把旧正文当成本机新编辑。
-            if (pageContent && syncTimestamp(pageContent.updatedAt) <
+            if (pageContent && syncTimestamp(pageContent.updatedAt) > 0 && syncTimestamp(pageContent.updatedAt) <
                 syncTimestamp(page?.updatedAt || page?.createdAt)) return;
             let conditions = {};
-            if (!pageContent && page) {
-                // 云端独有页尚未下载时必须保留；真正的新空白页只允许创建，不覆盖。
-                if (await r2GetObject('notebooks/pages/nbpage_' + pageId)) return;
-                pageContent = { strokes: [], texts: [], media: [], recognized: null };
-                conditions = { ifNoneMatch: '*' };
+            let uploadBody = !!pageContent;
+            if ((!pageContent && page) || (pageContent && !syncTimestamp(pageContent.updatedAt))) {
+                // 无时间戳的旧正文不能判断新旧；云端存在时保留，缺失时只允许条件创建。
+                const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + pageId);
+                if (cloudPage) {
+                    pageContent = JSON.parse(cloudPage);
+                    uploadBody = false;
+                } else {
+                    pageContent = pageContent || { strokes: [], texts: [], media: [], recognized: null };
+                    conditions = { ifNoneMatch: '*' };
+                    uploadBody = true;
+                }
             }
-            if (pageContent) {
+            if (uploadBody) {
                 if (!pageContent.updatedAt) {
                     pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
                 }
@@ -14872,15 +14880,20 @@
                     saveData();
                 }
                 pgData = JSON.stringify(pageContent);
-                if (!conditions.ifNoneMatch) await saveFileData('nbpage_' + pageId, pgData);
                 try {
                     await r2PutObject('notebooks/pages/nbpage_' + pageId, pgData, 'application/json', conditions);
+                    if (localPageJson && pgData !== localPageJson) {
+                        await saveCloudFileIfUnchanged('nbpage_' + pageId, pgData, { expected: localPageJson });
+                    }
                 } catch (error) {
                     if (!conditions.ifNoneMatch || error?.status !== 412) throw error;
-                    return; // 另一设备已创建正文，后续 pull 会下载，不能重发空白。
+                    // 另一设备创建成功后不重发正文，但仍需补齐它引用的本地媒体。
+                    const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + pageId);
+                    if (!cloudPage) throw error;
+                    pageContent = JSON.parse(cloudPage);
                 }
-                (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
             }
+            (pageContent?.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
             if (page && page.bgImage) mediaIds.add(page.bgImage);
             for (const mid of mediaIds) {
                 const mData = await getFileData('nbmedia_' + mid).catch(() => null);
@@ -14910,8 +14923,9 @@
 
         async function r2PullNotebookAssetsFromCloud(options = {}) {
             const missingOnly = options.missingOnly !== false;
+            const notebooks = appData.notebooks;
             let pages = 0, media = 0;
-            for (const nb of (appData.notebooks?.items || [])) {
+            for (const nb of (notebooks?.items || [])) {
                 for (const page of (nb.pages || [])) {
                     if (!page || !page.id) continue;
                     let pageJson = await getFileData('nbpage_' + page.id).catch(() => null);
@@ -14923,12 +14937,18 @@
                     const shouldPullPage = !missingOnly || !pageJson ||
                         (cloudPageUpdatedAt > 0 && cloudPageUpdatedAt > localPageUpdatedAt);
                     if (shouldPullPage) {
+                        const pageVersion = page.updatedAt;
                         try {
                             const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + page.id);
                             if (cloudPage) {
-                                pageJson = cloudPage;
-                                await saveFileData('nbpage_' + page.id, cloudPage);
-                                pages++;
+                                const saved = await saveCloudFileIfUnchanged('nbpage_' + page.id, cloudPage, {
+                                    expected: pageJson,
+                                    guard: () => appData.notebooks === notebooks &&
+                                        (notebooks.items || []).includes(nb) && (nb.pages || []).includes(page) &&
+                                        page.updatedAt === pageVersion
+                                });
+                                if (saved) pages++;
+                                pageJson = saved ? cloudPage : await getFileData('nbpage_' + page.id);
                             }
                         } catch (e) { console.warn('[startup-sync] 拉取笔记页失败:', page.id, e); }
                     }
@@ -16587,30 +16607,27 @@
                 const cloudPapers = metadata.papers || [];
                 const cloudSyncedAtMs = metadata.syncedAt ? Date.parse(metadata.syncedAt) : 0;
                 let repairMetadataAfterStartup = false;
-                if ((cloudBooks.length + cloudPapers.length) === 0 && (localBooks.length + localPapers.length) > 0) {
+                const repairBooksAfterStartup = (cloudBooks.length + cloudPapers.length) === 0 &&
+                    (localBooks.length + localPapers.length) > 0;
+                if (repairBooksAfterStartup) {
                     console.warn('[startup-sync] 云端书籍索引为空但本地有 ' + (localBooks.length + localPapers.length) + ' 条，保留本地数据并回传云端');
-                    try {
-                        await r2SyncMetadataOnly();
-                        showToast(i18n('cloud_index_repaired'));
-                    } catch (e) { console.warn('[startup-sync] 回传修复失败:', e); }
-                    finishR2StartupMetadataSync();
-                    return;
+                } else {
+                    const cloudIds = new Set([...cloudBooks, ...cloudPapers].map(d => d && d.id).filter(Boolean));
+                    const removedIds = [...localBooks, ...localPapers]
+                        .filter(d => {
+                            if (!d || !d.id) return false;
+                            if (cloudIds.has(d.id)) return false;
+                            const addedAtMs = d.addedAt ? Date.parse(d.addedAt) : NaN;
+                            if (!isNaN(addedAtMs) && addedAtMs > cloudSyncedAtMs) return false;
+                            return true;
+                        })
+                        .map(d => d.id);
+                    for (const id of removedIds) {
+                        try { await deleteFileData(id); } catch (e) { console.warn('deleteFileData failed for', id, e); }
+                    }
+                    appData.books = mergeDocsPreferringLocalProgress(cloudBooks, localBooks, cloudSyncedAtMs);
+                    appData.papers = mergeDocsPreferringLocalProgress(cloudPapers, localPapers, cloudSyncedAtMs);
                 }
-                const cloudIds = new Set([...cloudBooks, ...cloudPapers].map(d => d && d.id).filter(Boolean));
-                const removedIds = [...localBooks, ...localPapers]
-                    .filter(d => {
-                        if (!d || !d.id) return false;
-                        if (cloudIds.has(d.id)) return false;
-                        const addedAtMs = d.addedAt ? Date.parse(d.addedAt) : NaN;
-                        if (!isNaN(addedAtMs) && addedAtMs > cloudSyncedAtMs) return false;
-                        return true;
-                    })
-                    .map(d => d.id);
-                for (const id of removedIds) {
-                    try { await deleteFileData(id); } catch (e) { console.warn('deleteFileData failed for', id, e); }
-                }
-                appData.books = mergeDocsPreferringLocalProgress(cloudBooks, localBooks, cloudSyncedAtMs);
-                appData.papers = mergeDocsPreferringLocalProgress(cloudPapers, localPapers, cloudSyncedAtMs);
                 appData.notes = mergePreferNonEmpty(metadata.notes, appData.notes);
                 appData.archived = (metadata.archived && metadata.archived.length > 0) ? metadata.archived : (appData.archived || []);
                 const mergedLectures = mergeLecturesData(
@@ -16750,11 +16767,12 @@
                 appDataLoaded = true;
                 saveData();
                 refreshAllUIFromAppData();
-                if (repairMetadataAfterStartup) {
+                if (repairMetadataAfterStartup || repairBooksAfterStartup) {
                     // 修复只补齐云端缺的那部分：正文按版本增量上传，不把本机旧正文回传。
                     await r2SyncChangedLectureContents();
                     if (repairNotebookPagesAfterStartup) await r2SyncAllNotebookPages();
                     await r2SyncMetadataOnly();
+                    if (repairBooksAfterStartup) showToast(i18n('cloud_index_repaired'));
                 }
                 if (config.lastSyncTime || metadata.syncedAt) {
                     r2LastSyncTime = metadata.syncedAt || config.lastSyncTime;
@@ -17891,7 +17909,17 @@
                 }
                 // 导入来源单独标记：不压过云端已有评分，但独有评分必须先补齐图片再发布。
                 for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises, true)) {
-                    for (const record of entry.records) record.gradedDrawingCloudCommitted = 'imported';
+                    // 旧包的内嵌图片必须先落盘，随后 saveData 才能安全剔除大字段。
+                    for (let p = 0; p < entry.pageCount; p++) {
+                        const image = entry.records.map(record => exPageImageOf(
+                            record.userDrawing || record.drawing, record.userDrawingExtra || record.extra, p)).find(Boolean);
+                        if (image) await exWriteRedoPageAliases(entry.baseKeys, p, image);
+                    }
+                    for (const record of entry.records) {
+                        if (record.userDrawing) record.userDrawingPages = entry.pageCount;
+                        else if (record.drawing) record.pages = entry.pageCount;
+                        record.gradedDrawingCloudCommitted = 'imported';
+                    }
                 }
                 if (typeof saveExercisesToIDB === 'function') await saveExercisesToIDB();
                 const metadataSaved = saveData();
@@ -25406,7 +25434,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         entry.baseKeys.push(mirrorBaseKey);
                     }
                 }
-                entry.pageCount = Math.max(entry.pageCount, Number(pageCount) || 1);
+                entry.pageCount = Math.max(entry.pageCount, Number(pageCount) || 1,
+                    record.userDrawing ? 1 + (record.userDrawingExtra || []).length : 0,
+                    record.drawing ? 1 + (record.extra || []).length : 0);
                 if (!entry.records.includes(record)) entry.records.push(record);
             };
 
@@ -25545,7 +25575,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     // 原子覆盖它。主 key 只在从 legacy 恢复且仍为空时补齐。
                     if (targetBaseKey === aliases[0]) {
                         if (readBaseKey !== targetBaseKey) {
-                            await exSaveCloudDrawingIfMissing(key, drawData);
+                            await saveCloudFileIfUnchanged(key, drawData);
                         }
                     } else {
                         await saveFileData(key, drawData);
@@ -25710,7 +25740,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     for (const baseKey of entry.baseKeys) {
                         const key = exPageKey(baseKey, p);
                         if (await r2GetObject('exercises/drawings/' + key)) continue;
-                        const data = await exReadRedoPageFromLocal(entry.baseKeys, null, p);
+                        const embedded = entry.records.map(record => exPageImageOf(
+                            record.userDrawing || record.drawing, record.userDrawingExtra || record.extra, p)).find(Boolean);
+                        const data = embedded || await exReadRedoPageFromLocal(entry.baseKeys, null, p);
                         if (!data) throw new Error('Imported exercise drawing is missing: ' + key);
                         try {
                             await r2PutObject('exercises/drawings/' + key, data,
@@ -25768,7 +25800,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         }
                         for (let i = 0; i < keys.length; i++) {
                             if (!unchanged()) return;
-                            if (local[i] !== data) await exSaveCloudDrawingIfMissing(keys[i], data,
+                            if (local[i] !== data) await saveCloudFileIfUnchanged(keys[i], data,
                                 { expected: local[i], guard: unchanged });
                         }
                     } catch (error) {
@@ -25778,9 +25810,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
-        // missing-only 云下载必须在同一个读写事务里重新判空：若新评分 B 先提交，
-        // 旧云快照 A 会看到 key 已存在并跳过；若 A 事务先创建，B 随后的事务仍会最后覆盖。
-        async function exSaveCloudDrawingIfMissing(key, data, options = {}) {
+        // 云下载在同一个读写事务内检查原值，不能覆盖等待下载期间的新编辑或新评分。
+        // 不传 expected 时只补本地缺失的文件。
+        async function saveCloudFileIfUnchanged(key, data, options = {}) {
             if (!data) return false;
             if (!await ensureFileDB()) throw new Error(i18n('indexeddb_unavailable'));
             return new Promise((resolve, reject) => {
@@ -28669,7 +28701,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     try { cloudGradedImage = await r2GetObject('exercises/drawings/' + gradedKey); } catch (e) {}
                     if (cloudGradedImage && restoreGradingGuard()) {
                         try {
-                            const inserted = await exSaveCloudDrawingIfMissing(gradedKey, cloudGradedImage);
+                            const inserted = await saveCloudFileIfUnchanged(gradedKey, cloudGradedImage);
                             if (restoreGradingGuard()) {
                                 if (inserted) {
                                     gradedImage = cloudGradedImage;

@@ -7021,6 +7021,7 @@
         };
         Object.assign(I18N.zh, {
             ai_personal_greeting:'你好，{0}！{1}',
+            cloud_version_unavailable:'云端版本号不可读，已停止覆盖。请在 R2 CORS 的 ExposeHeaders 中加入 ETag；本地内容仍保留。',
             app_title:'数学阅读', notification_enabled_body:'通知已开启',
             file_write_verify_failed:'文件写入校验失败', archived_label:'已归档', unsupported_online_format:'暂不支持在线阅读 {0} 格式', pdf_render_hint:'请转换为 PDF 后阅读', pdf_load_failed:'PDF 加载失败', pdf_load_failed_detail:'PDF 加载失败：', html2canvas_load_failed:'截图组件加载失败',
             generating:'生成中…', section_progress:'{0}/{1} 节', planning_lecture_chapters:'正在规划讲义章节…', failed:'失败',
@@ -7040,6 +7041,7 @@
         });
         Object.assign(I18N.en, {
             ai_personal_greeting:'Hi, {0}! {1}',
+            cloud_version_unavailable:'Cloud version is unavailable; overwrite stopped. Add ETag to R2 CORS ExposeHeaders. Local content is retained.',
             app_title:'Math Reader', notification_enabled_body:'Notifications are enabled',
             file_write_verify_failed:'File write verification failed', archived_label:'Archived', unsupported_online_format:'Online reading is not supported for {0} files', pdf_render_hint:'Convert the file to PDF to read it here', pdf_load_failed:'Failed to load PDF', pdf_load_failed_detail:'Failed to load PDF: ', html2canvas_load_failed:'Failed to load the screenshot component',
             generating:'Generating…', section_progress:'{0}/{1} sections', planning_lecture_chapters:'Planning lecture sections…', failed:'Failed',
@@ -7059,6 +7061,7 @@
         });
         Object.assign(I18N.fr, {
             ai_personal_greeting:'Bonjour, {0} ! {1}',
+            cloud_version_unavailable:'Version cloud inaccessible : remplacement bloqué. Ajoutez ETag à ExposeHeaders dans CORS R2. Le contenu local est conservé.',
             app_title:'Lecteur de mathématiques', notification_enabled_body:'Les notifications sont activées',
             file_write_verify_failed:"Échec de la vérification d’écriture du fichier", archived_label:'Archivé', unsupported_online_format:'La lecture en ligne des fichiers {0} n’est pas prise en charge', pdf_render_hint:'Convertissez le fichier en PDF pour le lire ici', pdf_load_failed:'Échec du chargement du PDF', pdf_load_failed_detail:'Échec du chargement du PDF : ', html2canvas_load_failed:'Échec du chargement du composant de capture',
             generating:'Génération…', section_progress:'{0}/{1} sections', planning_lecture_chapters:'Planification des sections du cours…', failed:'Échec',
@@ -7233,6 +7236,8 @@
             // 请求持久化存储，防止浏览器自动清理 IndexedDB
             await requestStoragePersist();
             await loadData();
+            await nbRecoverNotebookConflicts();
+            await nbRecoverPageOnLeave();
             // 照片/文件和 AI 讲义都有独立恢复清单；先恢复索引，再让任何云同步运行。
             await recoverDurableClassroomEntries();
             // 旧版本已有 IndexedDB 正文但没有恢复清单/提交标记；云合并前补齐并重传。
@@ -13948,18 +13953,9 @@
                             appData.classroom = mergedClassroom;
                         }
 
-                        // 合并笔记本数据（元数据；页面内容按需拉取）；同样防止空云端清掉本地
-                        const cloudNbCount = (((metadata.notebooks || {}).items) || []).length;
-                        const localNbCount = (((appData.notebooks || {}).items) || []).length;
-                        if (cloudNbCount === 0 && localNbCount > 0) {
-                            console.warn('[auto-sync] 云端笔记本索引为空但本地有数据，保留本地笔记本');
-                        } else {
-                            appData.notebooks = mergeNotebooksData(
-                                metadata.notebooks,
-                                appData.notebooks,
-                                cloudSyncedAtMs
-                            );
-                        }
+                        // 空索引本身不删除数据；明确删除记录仍须合并，包括删除最后一本。
+                        appData.notebooks = mergeNotebooksData(
+                            metadata.notebooks, appData.notebooks, cloudSyncedAtMs);
 
                         // 收集本地新加但云端还没有的课堂素材 id
                         const cloudMatIds = new Set();
@@ -14226,25 +14222,16 @@
                     }
                 }
 
-                // 同步笔记本页面和媒体（本地有云端没有 → 上传，本地没有云端有 → 拉取）
+                // 正文上传统一经过基线比较与条件写；不能绕过冲突保护。
                 for (const nb of (appData.notebooks?.items || [])) {
-                    for (const page of (nb.pages || [])) {
+                    for (const page of [...(nb.pages || [])]) {
                         if (!page || !page.id) continue;
+                        await r2SyncNotebookPageBundle(page.id);
                         let pgData = await getFileData('nbpage_' + page.id).catch(() => null);
-                        if (pgData) {
-                            try { await r2PutObject('notebooks/pages/nbpage_' + page.id, pgData, 'application/json'); } catch(e) {}
-                        } else {
-                            try {
-                                const cd = await r2GetObject('notebooks/pages/nbpage_' + page.id);
-                                if (cd) { pgData = cd; await saveFileData('nbpage_' + page.id, cd); }
-                            } catch(e) {}
-                        }
                         const mediaIds = r2NotebookMediaIdsFromPage(page, pgData);
                         for (const mid of mediaIds) {
                             const localMedia = await getFileData('nbmedia_' + mid).catch(() => null);
-                            if (localMedia) {
-                                try { await r2PutObject('notebooks/media/nbmedia_' + mid, localMedia, 'application/octet-stream'); } catch(e) {}
-                            } else {
+                            if (!localMedia) {
                                 try {
                                     const cd = await r2GetObject('notebooks/media/nbmedia_' + mid);
                                     if (cd) await saveFileData('nbmedia_' + mid, cd);
@@ -14442,7 +14429,11 @@
                 console.error('[sync] 本地书籍/论文为空但云端有 ' + cloudCounts.docs + ' 条，已阻止覆盖云端 metadata.json');
                 return false;
             }
-            if (localCounts.notebooks === 0 && cloudCounts.notebooks > 0) {
+            const remainingCloudNotebooks = mergeNotebooksData(cloud.notebooks, {
+                items: [], reviews: [], tombstones: localMeta?.notebooks?.tombstones
+            }, 0);
+            if (localCounts.notebooks === 0 &&
+                (remainingCloudNotebooks.items.length || remainingCloudNotebooks.reviews.length)) {
                 console.error('[sync] 本地笔记本为空但云端有 ' + cloudCounts.notebooks + ' 条，已阻止覆盖云端 metadata.json');
                 return false;
             }
@@ -14450,7 +14441,8 @@
                 console.error('[sync] 本地讲义为空但云端有 ' + cloudCounts.lectures + ' 条，已阻止覆盖云端 metadata.json');
                 return false;
             }
-            if (localCounts.total === 0 && cloudCounts.total > 0) {
+            if (localCounts.total === 0 && cloudCounts.total - cloudCounts.notebooks +
+                remainingCloudNotebooks.items.length + remainingCloudNotebooks.reviews.length > 0) {
                 console.error('[sync] 本地核心数据为空但云端非空，已阻止覆盖云端 metadata.json');
                 return false;
             }
@@ -14498,6 +14490,9 @@
             let lastConflict = null;
             for (let attempt = 0; attempt < 5; attempt++) {
                 const remoteResult = await r2GetObject('metadata.json', { withMetadata: true });
+                if (!remoteResult?.missing && !remoteResult?.etag) {
+                    throw new Error(i18n('cloud_version_unavailable'));
+                }
                 let remoteMetadata = null;
                 if (remoteResult?.data) {
                     try {
@@ -14551,15 +14546,14 @@
                 }
                 const mergedNotebooks = mergeNotebooksData(
                     remoteMetadata?.notebooks,
-                    candidateBase?.notebooks,
+                    {
+                        ...candidateBase?.notebooks,
+                        // 明确删除记录始终携带，课堂单独发布也不能丢失离线删页意图。
+                        tombstones: mergeNotebookTombstones(candidateBase?.notebooks?.tombstones,
+                            appData.notebooks?.tombstones)
+                    },
                     remoteBaseline
                 );
-                if (options.notebookDeletedId) {
-                    mergedNotebooks.items = (mergedNotebooks.items || [])
-                        .filter(notebook => notebook?.id !== options.notebookDeletedId);
-                    mergedNotebooks.reviews = (mergedNotebooks.reviews || [])
-                        .filter(review => review?.notebookId !== options.notebookDeletedId);
-                }
                 const candidate = {
                     ...candidateBase,
                     lectures: mergeLecturesData(
@@ -14578,14 +14572,10 @@
                     throw new Error(i18n('empty_local_cloud_nonempty_blocked'));
                 }
 
-                // Newer CORS policies expose ETag and get optimistic concurrency control.
-                // Existing installations did not require ExposeHeaders, so preserve their
-                // working sync path instead of disabling every metadata write.
+                // 版本不可读时在上方停止；不能把条件写降级为可能覆盖并发新增项的盲写。
                 const conditions = remoteResult?.missing
                     ? { ifNoneMatch: '*' }
-                    : remoteResult?.etag
-                        ? { ifMatch: remoteResult.etag }
-                        : {};
+                    : { ifMatch: remoteResult.etag };
                 try {
                     await r2PutObject('metadata.json', JSON.stringify(candidate), 'application/json', conditions);
 
@@ -14911,40 +14901,240 @@
             return e;
         }
 
+        const _nbPageStoreLocks = new Map();
+        const _nbPageUploadLocks = new Map();
+
+        function nbWithPageStoreLock(pageId, operation) {
+            const prior = _nbPageStoreLocks.get(pageId) || Promise.resolve();
+            const next = prior.catch(() => {}).then(operation);
+            _nbPageStoreLocks.set(pageId, next);
+            const clear = () => { if (_nbPageStoreLocks.get(pageId) === next) _nbPageStoreLocks.delete(pageId); };
+            next.then(clear, clear);
+            return next;
+        }
+
+        async function nbPageFingerprint(raw) {
+            const content = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!content || typeof content !== 'object' || Array.isArray(content) ||
+                !['strokes', 'texts', 'media'].every(key => Array.isArray(content[key]))) throw new Error('Invalid notebook page');
+            const canonical = value => {
+                if (Array.isArray(value)) return value.map(canonical);
+                if (!value || typeof value !== 'object') return value;
+                const result = {};
+                for (const key of Object.keys(value).sort()) {
+                    if (key !== 'updatedAt' && !key.startsWith('_')) result[key] = canonical(value[key]);
+                }
+                return result;
+            };
+            return sha256Hex(JSON.stringify(canonical(content)));
+        }
+
+        // 调用者持有原页的本地锁；副本正文与恢复索引先落盘，最后才改变活动页归属。
+        async function nbPreserveNotebookConflict(pageId, raw, base = '', rebind = true) {
+            const notebook = (appData.notebooks?.items || []).find(nb => (nb.pages || []).some(pg => pg.id === pageId));
+            const source = notebook?.pages.find(pg => pg.id === pageId);
+            if (!source) throw new Error('Notebook conflict source is missing');
+            if ((appData.notebooks?.tombstones || []).some(item =>
+                (item.kind === 'page' && item.id === pageId) || (item.kind === 'notebook' && item.id === notebook.id))) {
+                throw new Error('Notebook conflict source was deleted');
+            }
+            const fingerprint = await nbPageFingerprint(raw);
+            let copyId = 'nbp_conflict_' + await sha256Hex(pageId + '\n' + fingerprint);
+            const tombstones = appData.notebooks?.tombstones || [];
+            if (tombstones.some(item => item.kind === 'page' && item.id === copyId)) copyId = nbUid('nbp_conflict');
+            let page, copyBase;
+            while (true) {
+                page = { ...source, id: copyId, conflictOf: pageId, title: '冲突副本' };
+                const manifest = JSON.stringify({ notebookId: notebook.id, page, sourceBase: base || '' });
+                copyBase = await nbWithPageStoreLock(copyId, async () => {
+                    const existing = await getFileData('nbpage_' + copyId);
+                    if (existing && await nbPageFingerprint(existing) !== fingerprint) return null;
+                    if (!existing) {
+                        await saveFilePairAtomic('nbpage_' + copyId, raw, 'nbconflict_' + copyId, manifest);
+                        // 独立新对象尚未与云端建立基线，不能继承原页的版本。
+                        await saveFileData('nbpagebase_' + copyId, '');
+                    } else if (!await getFileData('nbconflict_' + copyId)) {
+                        await saveFileData('nbconflict_' + copyId, manifest);
+                    }
+                    return await getFileData('nbpagebase_' + copyId) || '';
+                });
+                if (copyBase !== null) break;
+                // 旧冲突副本也可能已被继续编辑，不能用最初版本覆盖它。
+                copyId += '_' + nbUid('v');
+            }
+            const live = (appData.notebooks?.items || []).find(nb => nb.id === notebook.id);
+            if (!live || (appData.notebooks?.tombstones || []).some(item => item.kind === 'notebook' && item.id === live.id)) {
+                throw new Error('Notebook was deleted while preserving a conflict');
+            }
+            if (!live.pages.some(pg => pg.id === copyId)) live.pages.push(page);
+            if (saveData() === false) throw new Error('Could not save notebook conflict index');
+            if (rebind && nbState.pageId === pageId && nbState.notebookId === live.id &&
+                nbState.content && (nbState.content._cloudBase || '') === (base || '')) {
+                nbState.pageId = copyId;
+                nbState.pageIndex = live.pages.findIndex(pg => pg.id === copyId);
+                nbState.content._cloudBase = copyBase;
+                nbUpdatePageNo();
+            }
+            showToast('笔记存在不同版本，已保留可打开的冲突副本');
+            return copyId;
+        }
+
+        async function nbRecoverNotebookConflicts() {
+            let changed = false;
+            const tombstones = new Set((appData.notebooks?.tombstones || []).map(item => item.kind + ':' + item.id));
+            for (const key of await listFileKeys()) {
+                if (typeof key !== 'string' || !key.startsWith('nbconflict_')) continue;
+                let manifest;
+                try { manifest = JSON.parse(await getFileData(key)); }
+                catch (error) { console.warn('[nb] 无法读取冲突恢复索引，原记录已保留:', key, error); continue; }
+                const notebook = (appData.notebooks?.items || []).find(nb => nb.id === manifest?.notebookId);
+                const page = manifest?.page;
+                if (!notebook || !page?.id || tombstones.has('notebook:' + notebook.id) || tombstones.has('page:' + page.id)) continue;
+                if (!notebook.pages.some(pg => pg.id === page.id) && await getFileData('nbpage_' + page.id)) {
+                    notebook.pages.push(page);
+                    changed = true;
+                }
+            }
+            if (changed && saveData() === false) {
+                // 正文和恢复清单仍在 IDB；保留内存目录让用户能打开和导出，稍后重试持久化。
+                console.error('[nb] 冲突副本目录保存失败，恢复清单仍保留');
+                showToast('笔记副本目录尚未保存，恢复记录仍保留在本机');
+            }
+        }
+
+        async function nbAcceptCloudPage(pageId, cloudRaw, expectedBase, forceConflict = false) {
+            const cloudHash = await nbPageFingerprint(cloudRaw);
+            return nbWithPageStoreLock(pageId, async () => {
+                const localRaw = await getFileData('nbpage_' + pageId);
+                const localBase = await getFileData('nbpagebase_' + pageId) || '';
+                const notebook = (appData.notebooks?.items || []).find(nb => (nb.pages || []).some(pg => pg.id === pageId));
+                if (!notebook || (appData.notebooks?.tombstones || []).some(item =>
+                    (item.kind === 'page' && item.id === pageId) || (item.kind === 'notebook' && item.id === notebook.id))) {
+                    return { accepted: false, content: localRaw, base: localBase, conflictPageId: null, conflictPageIds: [] };
+                }
+                const localHash = localRaw ? await nbPageFingerprint(localRaw) : '';
+                // GET 等待期间本机可能已经确认了较新云版本；旧回包不能把正文和基线倒退。
+                if (expectedBase !== undefined && localBase !== (expectedBase || '') && localHash !== cloudHash) {
+                    return { accepted: false, content: localRaw, base: localBase, conflictPageId: null, conflictPageIds: [] };
+                }
+                // 云端仍是本地编辑的基线：保留待上传编辑，不制造冲突副本或回退主正文。
+                if (!forceConflict && localRaw && cloudHash === localBase && localHash !== cloudHash) {
+                    return { accepted: false, content: localRaw, base: localBase, conflictPageId: null, conflictPageIds: [] };
+                }
+                let conflictPageId = null;
+                const conflictPageIds = [];
+                const active = nbState.pageId === pageId && nbState.content;
+                const activeRaw = active ? nbSerializePageContent() : null;
+                const activeBase = active ? active._cloudBase || '' : '';
+                const activeHash = activeRaw ? await nbPageFingerprint(activeRaw) : '';
+                if ((localHash !== cloudHash && localRaw && localHash !== localBase) ||
+                    (active && activeHash !== cloudHash)) {
+                    if (localRaw && localHash !== cloudHash && localHash !== localBase) {
+                        conflictPageId = await nbPreserveNotebookConflict(pageId, localRaw, localBase, !active);
+                        conflictPageIds.push(conflictPageId);
+                    }
+                    // 活动页可能还有未保存编辑；复制已提交内容，不能复制正在拖动的预览。
+                    if (active && activeHash !== cloudHash) {
+                        conflictPageId = await nbPreserveNotebookConflict(pageId, activeRaw, activeBase);
+                        if (!conflictPageIds.includes(conflictPageId)) conflictPageIds.push(conflictPageId);
+                    }
+                }
+                // 不用时间戳决定胜负；分歧版本已保存在可见副本后才接收云端。
+                await saveFilePairAtomic('nbpage_' + pageId, cloudRaw, 'nbpagebase_' + pageId, cloudHash);
+                if (nbState.pageId === pageId && nbState.content &&
+                    (nbState.content._cloudBase || '') === activeBase && activeHash === cloudHash) {
+                    nbState.content._cloudBase = cloudHash;
+                }
+                return { accepted: true, content: cloudRaw, base: cloudHash, conflictPageId, conflictPageIds };
+            });
+        }
+
+        async function nbConfirmCloudPage(pageId, sentRaw, previousBase) {
+            const sentHash = await nbPageFingerprint(sentRaw);
+            await nbWithPageStoreLock(pageId, async () => {
+                const currentRaw = await getFileData('nbpage_' + pageId);
+                if (!currentRaw) return;
+                const base = await getFileData('nbpagebase_' + pageId) || '';
+                // 后续本地编辑沿用同一基线；确认已发送版本，不把它写回盖掉新编辑。
+                // 未知基线下也可能是导入等独立正文，不能把任意后续内容认作本次上传的延续。
+                if ((base !== (previousBase || '') || !previousBase) && await nbPageFingerprint(currentRaw) !== sentHash) return;
+                await saveFilePairAtomic('nbpage_' + pageId, currentRaw, 'nbpagebase_' + pageId, sentHash);
+                if (nbState.pageId === pageId && nbState.content &&
+                    (nbState.content._cloudBase || '') === (previousBase || '') &&
+                    (previousBase || await nbPageFingerprint(nbSerializePageContent()) === sentHash)) {
+                    nbState.content._cloudBase = sentHash;
+                }
+            });
+        }
+
         async function r2SyncNotebookPageBundle(pageId) {
             if (!pageId) return;
-            const page = (appData.notebooks?.items || [])
-                .flatMap(nb => nb.pages || [])
-                .find(pg => pg && pg.id === pageId);
-            const mediaIds = new Set();
-            let pgData = await getFileData('nbpage_' + pageId).catch(() => null);
-            let pageContent = null;
-            try { pageContent = pgData ? JSON.parse(pgData) : null; } catch (e) {}
-            if (!pageContent && page) pageContent = { strokes: [], texts: [], media: [], recognized: null };
-            if (pageContent) {
-                if (!pageContent.updatedAt) {
-                    pageContent.updatedAt = page?.updatedAt || page?.createdAt || new Date().toISOString();
+            const previous = _nbPageUploadLocks.get(pageId) || Promise.resolve();
+            const next = previous.catch(() => {}).then(async () => {
+                const notebook = (appData.notebooks?.items || []).find(nb => (nb.pages || []).some(pg => pg.id === pageId));
+                const page = notebook?.pages.find(pg => pg.id === pageId);
+                const deleted = () => !(appData.notebooks?.items || []).some(nb => nb.id === notebook?.id &&
+                    (nb.pages || []).some(pg => pg.id === pageId)) || (appData.notebooks?.tombstones || []).some(item =>
+                    (item.kind === 'page' && item.id === pageId) || (item.kind === 'notebook' && item.id === notebook?.id));
+                if (!page || deleted()) return;
+                for (let attempt = 0; attempt < 5; attempt++) {
+                    const snapshot = await nbWithPageStoreLock(pageId, async () => ({
+                        raw: await getFileData('nbpage_' + pageId),
+                        base: await getFileData('nbpagebase_' + pageId) || ''
+                    }));
+                    const remote = await r2GetObject('notebooks/pages/nbpage_' + pageId, { withMetadata: true });
+                    if (deleted()) return;
+                    if (!snapshot.raw) {
+                        // 本地缺正文不代表空白，不能用空对象覆盖云端。
+                        if (!remote.missing) {
+                            const accepted = await nbAcceptCloudPage(pageId, remote.data, snapshot.base);
+                            if (!accepted.accepted) continue;
+                        }
+                        for (const mid of r2NotebookMediaIdsFromPage(page, remote.data)) {
+                            const data = await getFileData('nbmedia_' + mid);
+                            if (data) await r2PutObject('notebooks/media/nbmedia_' + mid, data, 'application/octet-stream');
+                        }
+                        return;
+                    }
+                    const localHash = await nbPageFingerprint(snapshot.raw);
+                    const remoteHash = remote.missing ? '' : await nbPageFingerprint(remote.data);
+                    for (const mid of r2NotebookMediaIdsFromPage(page, snapshot.raw)) {
+                        const data = await getFileData('nbmedia_' + mid);
+                        if (data) await r2PutObject('notebooks/media/nbmedia_' + mid, data, 'application/octet-stream');
+                    }
+                    if (localHash === remoteHash) {
+                        await nbConfirmCloudPage(pageId, snapshot.raw, snapshot.base);
+                        return;
+                    }
+                    if (!remote.missing && (remoteHash !== snapshot.base || !remote.etag)) {
+                        // 未知基线、另一设备已编辑或服务器未暴露版本号：保留两份，不盲写原对象。
+                        const accepted = await nbAcceptCloudPage(pageId, remote.data, snapshot.base, !remote.etag);
+                        if (!accepted.accepted) continue;
+                        for (const copyId of accepted.conflictPageIds) await r2SyncNotebookPageBundle(copyId);
+                        return;
+                    }
+                    try {
+                        if (deleted()) return;
+                        await r2PutObject('notebooks/pages/nbpage_' + pageId, snapshot.raw, 'application/json',
+                            remote.missing ? { ifNoneMatch: '*' } : { ifMatch: remote.etag });
+                        await nbConfirmCloudPage(pageId, snapshot.raw, snapshot.base);
+                        return;
+                    } catch (error) {
+                        if (error?.status !== 412) throw error;
+                        // 重新读取正文并比较编辑基线，不能只换 ETag 重发旧内容。
+                    }
                 }
-                if (page && (!page.updatedAt || syncTimestamp(pageContent.updatedAt) >
-                    syncTimestamp(page.updatedAt || page.createdAt))) {
-                    page.updatedAt = pageContent.updatedAt;
-                    saveData();
-                }
-                pgData = JSON.stringify(pageContent);
-                await saveFileData('nbpage_' + pageId, pgData);
-                await r2PutObject('notebooks/pages/nbpage_' + pageId, pgData, 'application/json');
-                (pageContent.media || []).forEach(m => { if (m.mediaId) mediaIds.add(m.mediaId); });
-            }
-            if (page && page.bgImage) mediaIds.add(page.bgImage);
-            for (const mid of mediaIds) {
-                const mData = await getFileData('nbmedia_' + mid).catch(() => null);
-                if (mData) await r2PutObject('notebooks/media/nbmedia_' + mid, mData, 'application/octet-stream');
-            }
+                throw new Error('Notebook page changed repeatedly; local edits are retained');
+            });
+            _nbPageUploadLocks.set(pageId, next);
+            const clear = () => { if (_nbPageUploadLocks.get(pageId) === next) _nbPageUploadLocks.delete(pageId); };
+            next.then(clear, clear);
+            return next;
         }
 
         async function r2SyncAllNotebookPages() {
             for (const nb of (appData.notebooks?.items || [])) {
-                for (const pg of (nb.pages || [])) {
+                for (const pg of [...(nb.pages || [])]) {
                     if (pg && pg.id) await r2SyncNotebookPageBundle(pg.id);
                 }
             }
@@ -14966,26 +15156,22 @@
             const missingOnly = options.missingOnly !== false;
             let pages = 0, media = 0;
             for (const nb of (appData.notebooks?.items || [])) {
-                for (const page of (nb.pages || [])) {
+                for (const page of [...(nb.pages || [])]) {
                     if (!page || !page.id) continue;
-                    let pageJson = await getFileData('nbpage_' + page.id).catch(() => null);
-                    let localPageUpdatedAt = 0;
+                    const snapshot = await nbWithPageStoreLock(page.id, async () => ({
+                        raw: await getFileData('nbpage_' + page.id),
+                        base: await getFileData('nbpagebase_' + page.id) || ''
+                    }));
+                    let pageJson = snapshot.raw;
+                    // 设备时钟不决定正文新旧；每页比较内容基线，missingOnly 仅用于媒体补齐。
                     try {
-                        localPageUpdatedAt = syncTimestamp(pageJson && JSON.parse(pageJson).updatedAt);
-                    } catch (e) {}
-                    const cloudPageUpdatedAt = syncTimestamp(page.updatedAt);
-                    const shouldPullPage = !missingOnly || !pageJson ||
-                        (cloudPageUpdatedAt > 0 && cloudPageUpdatedAt > localPageUpdatedAt);
-                    if (shouldPullPage) {
-                        try {
-                            const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + page.id);
-                            if (cloudPage) {
-                                pageJson = cloudPage;
-                                await saveFileData('nbpage_' + page.id, cloudPage);
-                                pages++;
-                            }
-                        } catch (e) { console.warn('[startup-sync] 拉取笔记页失败:', page.id, e); }
-                    }
+                        const cloudPage = await r2GetObject('notebooks/pages/nbpage_' + page.id);
+                        if (cloudPage) {
+                            const accepted = await nbAcceptCloudPage(page.id, cloudPage, snapshot.base);
+                            pageJson = accepted.content;
+                            if (accepted.accepted) pages++;
+                        }
+                    } catch (e) { console.warn('[startup-sync] 拉取笔记页失败:', page.id, e); }
                     const mediaIds = r2NotebookMediaIdsFromPage(page, pageJson);
                     for (const mediaId of mediaIds) {
                         const localMedia = await getFileData('nbmedia_' + mediaId).catch(() => null);
@@ -15160,7 +15346,8 @@
                     metadataPublishResult = await r2SyncMetadataOnly({ classroomOnly: true });
                 } else {
                     const notebookWasDeleted = action === 'notebook_metadata_update' && fileId &&
-                        !(appData.notebooks?.items || []).some(notebook => notebook?.id === fileId);
+                        mergeNotebookTombstones(appData.notebooks?.tombstones).some(item =>
+                            item.kind === 'notebook' && item.id === fileId);
                     // 删除类任务带着专属发布选项，必须自己提交；其余的完整快照发布可以
                     // 合并到队列中后面的任务，一批变更只同步一次 metadata。
                     const canDeferPublish = !notebookWasDeleted &&
@@ -15172,8 +15359,7 @@
                         metadataPublishResult = await r2SyncMetadataOnly({
                             allowEmpty: notebookWasDeleted || ['classroom_delete', 'classroom_note_delete',
                                 'recording_delete', 'classroom_folder_delete'].includes(action),
-                            classroomOnly: CLASSROOM_DELETE_ACTIONS.includes(action),
-                            notebookDeletedId: notebookWasDeleted ? fileId : null
+                            classroomOnly: CLASSROOM_DELETE_ACTIONS.includes(action)
                         });
                     }
                 }
@@ -15353,12 +15539,10 @@
                 if (readBack?.missing || readBack?.data !== testData) {
                     throw new Error(i18n('r2_read_verification_failed'));
                 }
-                // ETag 暴露时额外验证条件写；旧 CORS 未暴露时仍可正常同步。
-                if (readBack.etag) {
-                    await r2PutObject(testKey, 'test-conditional', 'text/plain', {
-                        ifMatch: readBack.etag
-                    });
-                }
+                if (!readBack.etag) throw new Error(i18n('cloud_version_unavailable'));
+                await r2PutObject(testKey, 'test-conditional', 'text/plain', {
+                    ifMatch: readBack.etag
+                });
                 
                 showToast(i18n('toast_connection_success'));
             } catch (err) {
@@ -16286,15 +16470,30 @@
         }
 
         // ==================== Notebooks 数据合并 ====================
-        // 合并笔记本数据（notebooks.items / notebooks.reviews）：
-        //   - 按 id 合并；两边都有 → 取 updatedAt 较新的整个对象
-        //   - 最后打开页按 lastOpenedPageUpdatedAt 独立合并，不让浏览位置覆盖页面结构
-        //   - 本地有云端没有 → createdAt/updatedAt > cloudSyncedAtMs 视为本地新建保留，否则视为云端已删除丢弃
-        //   - 云端有本地没有 → 直接采用云端（另一设备新建）
+        function mergeNotebookTombstones(...sources) {
+            const merged = new Map();
+            for (const source of sources) {
+                for (const item of (Array.isArray(source) ? source : [])) {
+                    if (typeof item?.id !== 'string' || !item.id ||
+                        !['notebook', 'page', 'review'].includes(item.kind) ||
+                        !syncTimestamp(item.deletedAt)) continue;
+                    const key = item.kind + ':' + item.id;
+                    if (syncTimestamp(item.deletedAt) >= syncTimestamp(merged.get(key)?.deletedAt)) {
+                        merged.set(key, { kind: item.kind, id: item.id, deletedAt: item.deletedAt });
+                    }
+                }
+            }
+            // 删除记录不能按时间过期：离线旧设备没有确认前，过期会使已删除条目复活。
+            return [...merged.values()];
+        }
+
+        // 缺失可能只是尚未同步，只凭明确删除记录移除条目；整本更新时间不代表删页。
+        // 最后打开页独立合并，页面保留各自的版本和本地插页相对顺序。
         function mergeNotebooksData(cloudNb, localNb, cloudSyncedAtMs) {
             const cloud = cloudNb || { items: [], reviews: [] };
             const local = localNb || { items: [], reviews: [] };
-            const baseline = Number(cloudSyncedAtMs) || 0;
+            const tombstones = mergeNotebookTombstones(cloud.tombstones, local.tombstones);
+            const deleted = new Set(tombstones.map(item => item.kind + ':' + item.id));
             const ts = (obj) => {
                 let maxTs = Date.parse(obj && (obj.updatedAt || obj.createdAt) || '');
                 if (isNaN(maxTs)) maxTs = 0;
@@ -16315,16 +16514,11 @@
                     .filter(page => page?.id)
                     .map(page => [page.id, page]));
                 const cloudPageIds = new Set();
-                const cloudNotebookUpdatedAt = syncTimestamp(cloudItem?.updatedAt || cloudItem?.createdAt);
-                const localNotebookUpdatedAt = syncTimestamp(localItem?.updatedAt || localItem?.createdAt);
                 result.pages = (cloudItem?.pages || []).map(cloudPage => {
                     if (!cloudPage?.id) return cloudPage;
                     cloudPageIds.add(cloudPage.id);
                     const localPage = localPages.get(cloudPage.id);
-                    if (!localPage) {
-                        return syncTimestamp(cloudPage.updatedAt || cloudPage.createdAt) >
-                            localNotebookUpdatedAt ? cloudPage : null;
-                    }
+                    if (!localPage) return cloudPage;
                     return syncTimestamp(localPage.updatedAt || localPage.createdAt) >
                         syncTimestamp(cloudPage.updatedAt || cloudPage.createdAt)
                         ? localPage : cloudPage;
@@ -16333,34 +16527,29 @@
                 for (let localIndex = 0; localIndex < localPageOrder.length; localIndex++) {
                     const localPage = localPageOrder[localIndex];
                     if (!localPage?.id || cloudPageIds.has(localPage.id)) continue;
-                    if (!(cloudItem?.pages || []).length ||
-                        syncTimestamp(localPage.updatedAt || localPage.createdAt) > cloudNotebookUpdatedAt ||
-                        localNotebookUpdatedAt > cloudNotebookUpdatedAt) {
-                        // 云端列表是合并基底，但本地新插入页必须保持其相对位置；
-                        // 直接 push 会把“在当前页后插入”错误地移动到笔记本末尾。
-                        let insertAt = result.pages.length;
-                        let anchoredAfterPrevious = false;
-                        for (let i = localIndex - 1; i >= 0; i--) {
-                            const previousId = localPageOrder[i]?.id;
-                            const previousIndex = result.pages.findIndex(page => page?.id === previousId);
-                            if (previousIndex >= 0) {
-                                insertAt = previousIndex + 1;
-                                anchoredAfterPrevious = true;
+                    // 云端列表是合并基底，但本地新插入页必须保持其相对位置。
+                    let insertAt = result.pages.length;
+                    let anchoredAfterPrevious = false;
+                    for (let i = localIndex - 1; i >= 0; i--) {
+                        const previousId = localPageOrder[i]?.id;
+                        const previousIndex = result.pages.findIndex(page => page?.id === previousId);
+                        if (previousIndex >= 0) {
+                            insertAt = previousIndex + 1;
+                            anchoredAfterPrevious = true;
+                            break;
+                        }
+                    }
+                    if (!anchoredAfterPrevious) {
+                        for (let i = localIndex + 1; i < localPageOrder.length; i++) {
+                            const nextId = localPageOrder[i]?.id;
+                            const nextIndex = result.pages.findIndex(page => page?.id === nextId);
+                            if (nextIndex >= 0) {
+                                insertAt = nextIndex;
                                 break;
                             }
                         }
-                        if (!anchoredAfterPrevious) {
-                            for (let i = localIndex + 1; i < localPageOrder.length; i++) {
-                                const nextId = localPageOrder[i]?.id;
-                                const nextIndex = result.pages.findIndex(page => page?.id === nextId);
-                                if (nextIndex >= 0) {
-                                    insertAt = nextIndex;
-                                    break;
-                                }
-                            }
-                        }
-                        result.pages.splice(insertAt, 0, localPage);
                     }
+                    result.pages.splice(insertAt, 0, localPage);
                 }
                 const cloudPositionTs = positionTs(cloudItem);
                 const localPositionTs = positionTs(localItem);
@@ -16391,13 +16580,27 @@
                 }).filter(Boolean);
                 (localList || []).forEach(li => {
                     if (!li || !li.id || cloudIds.has(li.id)) return;
-                    if (ts(li) > baseline) merged.push(li); // 本地新建还未上传
+                    merged.push(li);
                 });
                 return merged;
             };
             return {
-                items: mergeList(cloud.items, local.items, mergeNotebookItem),
-                reviews: mergeList(cloud.reviews, local.reviews)
+                items: mergeList(cloud.items, local.items, mergeNotebookItem)
+                    .filter(item => !deleted.has('notebook:' + item.id))
+                    .map(item => {
+                        const pages = (item.pages || []).filter(page => !deleted.has('page:' + page.id));
+                        const result = { ...item, pages };
+                        if (item.outline) result.outline = item.outline.filter(entry => !deleted.has('page:' + entry.pageId));
+                        if (!pages.some(page => page.id === result.lastOpenedPageId)) {
+                            delete result.lastOpenedPageId;
+                            delete result.lastOpenedPageUpdatedAt;
+                        }
+                        return result;
+                    }),
+                reviews: mergeList(cloud.reviews, local.reviews).filter(review =>
+                    !deleted.has('review:' + review.id) && !deleted.has('page:' + review.pageId) &&
+                    !deleted.has('notebook:' + review.notebookId)),
+                tombstones
             };
         }
 
@@ -16704,18 +16907,8 @@
                 }
                 appData.lectureDrafts = mergePreferNonEmpty(metadata.lectureDrafts, appData.lectureDrafts);
                 // 笔记本：只合并元数据索引，不拉取页面内容/媒体（由 performAutoSync 按需处理）
-                const cloudNbCount = (((metadata.notebooks || {}).items) || []).length;
-                const localNbCount = (((appData.notebooks || {}).items) || []).length;
-                if (cloudNbCount === 0 && localNbCount > 0) {
-                    console.warn('[startup-sync] 云端笔记本索引为空但本地有数据，保留本地笔记本');
-                    repairMetadataAfterStartup = true;
-                } else {
-                    appData.notebooks = mergeNotebooksData(
-                        metadata.notebooks,
-                        appData.notebooks,
-                        cloudSyncedAtMs
-                    );
-                }
+                appData.notebooks = mergeNotebooksData(
+                    metadata.notebooks, appData.notebooks, cloudSyncedAtMs);
                 if (JSON.stringify(appData.notebooks || { items: [], reviews: [] }) !==
                     JSON.stringify(metadata.notebooks || { items: [], reviews: [] })) {
                     repairMetadataAfterStartup = true;
@@ -17837,6 +18030,19 @@
             }
         }
 
+        async function importBackupAsset(id, value) {
+            if (typeof id === 'string' && id.startsWith('nbpagebase_')) return;
+            if (typeof id === 'string' && id.startsWith('nbpage_')) {
+                const pageId = id.slice('nbpage_'.length);
+                const raw = typeof value === 'string' ? value : JSON.stringify(value);
+                await nbPageFingerprint(raw);
+                // 备份不是当前云端编辑的后继；不能继承本机或备份内的同步基线。
+                await nbWithPageStoreLock(pageId, () => saveFilePairAtomic(id, raw, 'nbpagebase_' + pageId, ''));
+            } else {
+                await saveFileData(id, value);
+            }
+        }
+
         async function importDataZip(event) {
             const input = event.target;
             const file = input.files && input.files[0];
@@ -17850,6 +18056,11 @@
                 const imported = JSON.parse(await dataZipText(entries['metadata.json']));
                 if (imported.exportFormat && !['math-reader-full-zip-v1', 'math-reader-full-zip-v2'].includes(imported.exportFormat)) {
                     console.warn('未知导出格式:', imported.exportFormat);
+                }
+                // 待保存的活动页先写稳并关闭，不能在导入后用旧编辑对象覆盖同 ID 的正文。
+                if (nbState.notebookId) {
+                    await nbCloseEditor();
+                    if (nbState.notebookId) throw new Error(i18n('storage_save_failed'));
                 }
                 // 后续会替换整包数据；旧习题位置同步不得跨过这条边界写入导入内容。
                 exInvalidatePositionSyncs();
@@ -17930,7 +18141,7 @@
                         if (item.kind === 'blob') value = new Blob([entry], { type: item.mime || 'application/octet-stream' });
                         else if (item.kind === 'json') value = JSON.parse(await dataZipText(entry));
                         else value = await dataZipText(entry);
-                        await saveFileData(item.id, value);
+                        await importBackupAsset(item.id, value);
                         restored++;
                     }
                 } else {
@@ -17938,7 +18149,7 @@
                     for (const [name, bytes] of Object.entries(entries)) {
                         if (!name.startsWith('idb/') || !name.endsWith('.json')) continue;
                         const rec = JSON.parse(await dataZipText(bytes));
-                        if (rec && rec.id !== undefined) { await saveFileData(rec.id, rec.data); restored++; }
+                        if (rec && rec.id !== undefined) { await importBackupAsset(rec.id, rec.data); restored++; }
                     }
                 }
                 if (recordingIndex.length) {
@@ -18021,6 +18232,14 @@
                 };
                 initRecordingStore();
                 const classroomBeforeClear = appData.classroom || { courses: [], seminars: [] };
+                const notebooksBeforeClear = nbData();
+                const notebookDeletedAt = new Date().toISOString();
+                const notebooksAfterClear = mergeNotebooksData(null, {
+                    ...notebooksBeforeClear,
+                    tombstones: mergeNotebookTombstones(notebooksBeforeClear.tombstones,
+                        notebooksBeforeClear.items.map(item => ({ kind: 'notebook', id: item.id, deletedAt: notebookDeletedAt })),
+                        notebooksBeforeClear.reviews.map(item => ({ kind: 'review', id: item.id, deletedAt: notebookDeletedAt })))
+                }, 0);
                 const priorTombstones = appData.classroomTombstones || [];
                 const priorOutbox = appData.classroomSyncOutbox || [];
                 const durableKeys = await listFileKeys().catch(() => []);
@@ -18075,6 +18294,7 @@
                 // This is the classroom deletion commit point. Recovery scans after a crash
                 // see every tombstone before any body/manifest is removed.
                 appData.classroom = { courses: [], seminars: [] };
+                appData.notebooks = notebooksAfterClear;
                 appData.classroomSyncOutbox = pendingDeletions;
                 appData.classroomTombstones = deletionTombstones;
                 if (!saveData()) {
@@ -18082,6 +18302,7 @@
                     // body deletion crash-safe. Keep every byte and restore the live
                     // index when localStorage could not record that intent.
                     appData.classroom = classroomBeforeClear;
+                    appData.notebooks = notebooksBeforeClear;
                     appData.classroomSyncOutbox = priorOutbox;
                     appData.classroomTombstones = priorTombstones;
                     console.error('[clearAllData] 删除意图持久化失败，已取消正文清理');
@@ -18138,7 +18359,7 @@
                     books: [], papers: [], notes: {}, archived: [], settings,
                     lectures: {}, drafts: {}, classroom: { courses: [], seminars: [] },
                     exercises: { folders: [], wrongByFolder: {}, archivedWrong: {} },
-                    notebooks: { items: [], reviews: [] },
+                    notebooks: notebooksAfterClear,
                     classroomSyncOutbox: pendingDeletions,
                     classroomTombstones: deletionTombstones
                 };
@@ -18146,6 +18367,10 @@
                 exClearLocalPositionShadows();
                 for (const item of appData.classroomSyncOutbox) {
                     triggerSyncOnFileChange(item.fileId, item.action);
+                }
+                if (notebooksAfterClear.tombstones.length) {
+                    const deletedNotebook = notebooksAfterClear.tombstones.find(item => item.kind === 'notebook');
+                    triggerSyncOnFileChange(deletedNotebook?.id || null, 'notebook_metadata_update');
                 }
                 renderLibrary();
                 renderNotesPage();
@@ -30842,6 +31067,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return appData.notebooks;
         }
         function nbGetNotebook(id) { return nbData().items.find(n => n.id === id); }
+        function nbCommitDeletion(kind, id) {
+            const before = nbData();
+            const tombstones = mergeNotebookTombstones(before.tombstones,
+                [{ kind, id, deletedAt: new Date().toISOString() }]);
+            appData.notebooks = mergeNotebooksData(null, { ...before, tombstones }, 0);
+            let saved = false;
+            try { saved = saveData(); }
+            finally { if (!saved) appData.notebooks = before; }
+            return saved;
+        }
         function nbTouch(nb) { nb.updatedAt = new Date().toISOString(); }
         function nbLocalPositionKey(notebookId) {
             return 'mathReaderNotebookPosition_' + notebookId;
@@ -30920,38 +31155,126 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // ---------- 页面内容存取（IndexedDB + 云端回退） ----------
         function nbEmptyContent() { return { strokes: [], texts: [], media: [], recognized: null }; }
 
+        const NB_PAGE_RECOVERY_PREFIX = 'mathReaderNotebookRecovery_';
+        function nbSavePageOnLeave() {
+            nbFinishPageInput();
+            const page = nbCurrentPage(), content = nbState.content;
+            let key, record;
+            if (page && content && (nbState.dirty || _nbPageStoreLocks.has(page.id))) {
+                try {
+                    key = NB_PAGE_RECOVERY_PREFIX + page.id;
+                    record = JSON.stringify({ notebookId: nbState.notebookId, pageId: page.id,
+                        base: content._cloudBase || '', content: nbSerializePageContent() });
+                    // 生命周期事件结束后浏览器可能立即退出，必须先同步留下已提交内容。
+                    localStorage.setItem(key, record);
+                } catch (error) {
+                    key = null;
+                    nbState.dirty = true;
+                    console.error('[nb] 保存退出恢复记录失败:', error);
+                    showToast('笔记恢复记录保存失败，请保持当前页面打开并释放设备空间');
+                }
+            }
+            return nbSavePageNow().then(saved => {
+                // 写入期间有新编辑或切换页面时保留记录；不能清理另一轮留下的快照。
+                if (saved && key && nbState.content === content && !nbState.dirty &&
+                    localStorage.getItem(key) === record) localStorage.removeItem(key);
+                return saved;
+            }).catch(error => {
+                console.error('[nb] 退出时保存失败，恢复记录仍保留:', error);
+                return false;
+            });
+        }
+
+        async function nbRecoverPageOnLeave() {
+            let keys;
+            try {
+                keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
+                    .filter(key => key && key.startsWith(NB_PAGE_RECOVERY_PREFIX));
+            } catch (error) {
+                console.error('[nb] 无法读取退出恢复记录:', error);
+                return;
+            }
+            for (const key of keys) {
+                try {
+                    const serialized = localStorage.getItem(key), record = JSON.parse(serialized);
+                    if (!record || typeof record.notebookId !== 'string' || typeof record.pageId !== 'string' ||
+                        typeof record.content !== 'string' || typeof record.base !== 'string' ||
+                        key !== NB_PAGE_RECOVERY_PREFIX + record.pageId) throw new Error('Invalid notebook recovery record');
+                    const hash = await nbPageFingerprint(record.content);
+                    const deleted = (appData.notebooks?.tombstones || []).some(item =>
+                        (item.kind === 'notebook' && item.id === record.notebookId) ||
+                        (item.kind === 'page' && item.id === record.pageId));
+                    if (deleted) continue;
+                    const notebook = nbGetNotebook(record.notebookId);
+                    if (!notebook?.pages.some(page => page.id === record.pageId)) {
+                        throw new Error('Notebook recovery index is missing');
+                    }
+                    await nbWithPageStoreLock(record.pageId, async () => {
+                        const stored = await getFileData('nbpage_' + record.pageId);
+                        const storedHash = stored ? await nbPageFingerprint(stored) : '';
+                        if (storedHash === hash) return;
+                        if (!stored || storedHash === record.base) {
+                            await saveFilePairAtomic('nbpage_' + record.pageId, record.content,
+                                'nbpagebase_' + record.pageId, record.base);
+                        } else {
+                            // 已落盘正文发生分歧，恢复快照只能成为副本，不能覆盖原页。
+                            await nbPreserveNotebookConflict(record.pageId, record.content, record.base, false);
+                        }
+                    });
+                    if (localStorage.getItem(key) === serialized) localStorage.removeItem(key);
+                } catch (error) {
+                    console.error('[nb] 恢复退出笔记失败，原记录仍保留:', key, error);
+                    showToast('有笔记尚未恢复，恢复记录仍保留在本机');
+                }
+            }
+        }
+
+        async function nbStoreNewPage(page) {
+            try {
+                await nbWithPageStoreLock(page.id, async () => {
+                    if (await getFileData('nbpage_' + page.id)) throw new Error('Notebook page ID already exists');
+                    const raw = JSON.stringify({ ...nbEmptyContent(), updatedAt: page.updatedAt });
+                    await saveFilePairAtomic('nbpage_' + page.id, raw, 'nbpagebase_' + page.id, '');
+                });
+                return true;
+            } catch (e) {
+                console.error('[nb] 新建页保存失败:', e);
+                showToast(i18n('storage_save_failed'));
+                return false;
+            }
+        }
+
         async function nbLoadPageContent(pageId) {
-            let raw = null;
-            try { raw = await getFileData('nbpage_' + pageId); } catch (e) { /* IDB 异常 */ }
-            let localUpdatedAt = 0;
-            try { localUpdatedAt = syncTimestamp(raw && JSON.parse(raw).updatedAt); } catch (e) {}
-            const page = (appData.notebooks?.items || [])
-                .flatMap(notebook => notebook.pages || [])
-                .find(item => item?.id === pageId);
-            const cloudUpdatedAt = syncTimestamp(page?.updatedAt);
-            if (!raw || (cloudUpdatedAt > 0 && cloudUpdatedAt > localUpdatedAt)) {
-                // 本地没有或云端页面时间戳更新 → 拉取另一设备保存的内容
+            let { raw, base } = await nbWithPageStoreLock(pageId, async () => ({
+                raw: await getFileData('nbpage_' + pageId),
+                base: await getFileData('nbpagebase_' + pageId) || ''
+            }));
+            {
+                // 打开时比较正文版本；设备时间不能证明本地内容较新。
                 const cfg = appData.settings && appData.settings.r2Config;
                 if (cfg && cfg.accessKeyId) {
                     try {
-                        const cloud = await r2GetObject('notebooks/pages/nbpage_' + pageId);
+                        const cloud = await r2GetObjectWithTimeout('notebooks/pages/nbpage_' + pageId, 5000);
                         if (cloud) {
-                            raw = cloud;
-                            await saveFileData('nbpage_' + pageId, cloud).catch(() => {});
+                            const accepted = await nbAcceptCloudPage(pageId, cloud, base);
+                            raw = accepted.content;
+                            base = accepted.base;
                         }
                     } catch (e) { /* 云端也没有 */ }
                 }
             }
-            if (!raw) return nbEmptyContent();
+            if (!raw) throw new Error(i18n('content_load_failed'));
             try {
+                await nbPageFingerprint(raw);
                 const c = JSON.parse(raw);
                 if (!Array.isArray(c.strokes)) c.strokes = [];
                 if (!Array.isArray(c.texts)) c.texts = [];
                 if (!Array.isArray(c.media)) c.media = [];
+                c._cloudBase = base || '';
                 return c;
             } catch (e) {
                 console.error('[nb] 页面内容损坏:', pageId, e);
-                return nbEmptyContent();
+                throw new Error(i18n('content_load_failed'));
             }
         }
 
@@ -31015,7 +31338,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             document.querySelectorAll('#nbCreateTplRow .nb-panel-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
         }
-        function nbConfirmCreate() {
+        async function nbConfirmCreate() {
             const name = document.getElementById('nbCreateName').value.trim() || i18n('unnamed_notebook');
             const tplBtn = document.querySelector('#nbCreateTplRow .nb-panel-btn.active');
             const template = tplBtn ? tplBtn.dataset.tpl : 'blank';
@@ -31025,8 +31348,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 createdAt: now, updatedAt: now,
                 pages: [{ id: nbUid('nbp'), template, createdAt: now, updatedAt: now }]
             };
+            if (!await nbStoreNewPage(nb.pages[0])) return;
             nbData().items.unshift(nb);
-            saveData();
+            if (saveData() === false) return;
             nbSyncNotebookEvent('notebook_metadata_update', nb.id);
             hideModal('nbCreateModal');
             renderNotebooksPage();
@@ -31080,13 +31404,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const nb = nbGetNotebook(nbId);
             if (!nb) return;
             if (!confirm(i18n('confirm_delete_notebook', nb.name, (nb.pages || []).length))) return;
-            const d = nbData();
-            d.items = d.items.filter(n => n.id !== nbId);
-            appData.notebooks.items = d.items;
-            // 该笔记本的复习计划一并移除
-            appData.notebooks.reviews = d.reviews.filter(r => r.notebookId !== nbId);
+            // 删除记录和目录一起先落盘，之后才允许清理正文。
+            if (!nbCommitDeletion('notebook', nbId)) return;
             try { localStorage.removeItem(nbLocalPositionKey(nbId)); } catch (e) {}
-            saveData();
             nbSyncNotebookEvent('notebook_metadata_update', nbId);
             renderNotebooksPage();
             showToast(i18n('deleted'));
@@ -31109,8 +31429,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         const nbState = {
             notebookId: null,
             pageIndex: 0,
+            pageId: null,
             content: null,          // 当前页内容
             dirty: false,
+            switching: false,
             tool: 'pen',            // pen | eraser | lasso | text | shape
             prevTool: 'pen',
             brushIndex: 0,
@@ -31138,9 +31460,23 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function nbCurrentNotebook() { return nbGetNotebook(nbState.notebookId); }
         function nbCurrentPage() {
             const nb = nbCurrentNotebook();
-            return nb ? (nb.pages || [])[nbState.pageIndex] : null;
+            if (!nb) return null;
+            if (nbState.pageId) {
+                const index = (nb.pages || []).findIndex(page => page.id === nbState.pageId);
+                if (index < 0) return null;
+                nbState.pageIndex = index;
+            }
+            return (nb.pages || [])[nbState.pageIndex] || null;
         }
         function nbDisplayScale() { return nbState.fitScale * nbState.zoom; }
+
+        function nbFinishPageInput() {
+            const d = nbState.drawing;
+            if (!d) return;
+            if (d.mode === 'object') nbCancelDrawing();
+            else nbPointerUp({ pointerId: _nbActivePointerId, type: 'pointerup' });
+            _nbTouchGesture = null;
+        }
 
         // ==================== 编辑器打开 / 关闭 ====================
         async function nbOpenNotebook(id, pageIndex) {
@@ -31151,13 +31487,19 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 r2StartupMetadataReady
             ]);
             if (openToken !== _nbOpenRequestToken) return;
+            nbState.switching = true;
+            try {
+            nbFinishPageInput();
+            if (await nbSavePageNow() === false || openToken !== _nbOpenRequestToken) return;
             const nb = nbGetNotebook(id);
             if (!nb) return;
             if (!nb.pages || !nb.pages.length) {
                 const now = new Date().toISOString();
-                nb.pages = [{ id: nbUid('nbp'), template: nb.template || 'blank', createdAt: now, updatedAt: now }];
+                const page = { id: nbUid('nbp'), template: nb.template || 'blank', createdAt: now, updatedAt: now };
+                if (!await nbStoreNewPage(page) || openToken !== _nbOpenRequestToken || nbGetNotebook(id) !== nb) return;
+                nb.pages = [page];
                 nbTouch(nb);
-                saveData();
+                if (saveData() === false) return;
                 nbSyncNotebookEvent('notebook_page_add', nb.pages[0].id);
             }
             nbRestoreLocalPosition(nb);
@@ -31180,6 +31522,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const positionChanged = !!openingPage && nb.lastOpenedPageId !== openingPage.id;
             nbState.notebookId = id;
             nbState.pageIndex = openingIndex;
+            nbState.pageId = null;
+            nbState.content = null;
+            nbState.dirty = false;
             nbState.zoom = 1;
             nbState.undoStack = [];
             nbState.redoStack = [];
@@ -31192,19 +31537,27 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const loaded = await nbLoadPage(nbState.pageIndex, false);
             if (!loaded || openToken !== _nbOpenRequestToken) return;
             if (positionChanged) nbSchedulePositionSync(id);
+            } finally {
+                if (openToken === _nbOpenRequestToken) nbState.switching = false;
+            }
         }
 
         async function nbCloseEditor() {
-            ++_nbOpenRequestToken;
+            const closeToken = ++_nbOpenRequestToken;
             ++_nbPageLoadToken;
+            nbState.switching = true;
+            try {
+            nbFinishPageInput();
             const closingPageId = nbCurrentPage() && nbCurrentPage().id;
             nbFlushPositionSync();
-            await nbSavePageNow();
+            if (await nbSavePageNow() === false) return;
+            if (closeToken !== _nbOpenRequestToken) return;
             nbHidePanel();
             nbHideOutline();
             nbClearSelection();
             document.getElementById('nbEditor').classList.remove('show');
             nbState.notebookId = null;
+            nbState.pageId = null;
             nbState.content = null;
             nbState.bgImageCache = {};
             nbState.undoStack = [];
@@ -31214,6 +31567,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             renderNotebooksPage();
             // 关闭笔记本时做一次可见同步
             nbSyncNotebookEvent('notebook_close', closingPageId);
+            } finally {
+                if (closeToken === _nbOpenRequestToken) nbState.switching = false;
+            }
         }
 
         // ==================== 页面加载 / 保存 ====================
@@ -31225,38 +31581,90 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             _nbSaveTimer = setTimeout(() => { nbSavePageNow(); }, 1200);
         }
 
+        function nbSerializePageContent() {
+            // 旧编辑的自动保存可能撞上新手势；只保存已提交内容，不能带上可取消的预览。
+            const content = { ...nbState.content };
+            const d = nbState.drawing;
+            if (d?.mode === 'erase') {
+                content.strokes = content.strokes.slice();
+                d.removed.slice().reverse().forEach(({ s, i }) => content.strokes.splice(i, 0, s));
+            } else if (d?.mode === 'move') {
+                const before = new Map(d.before.map(s => [s.id, s]));
+                content.strokes = content.strokes.map(s => before.get(s.id) || s);
+            } else if (d?.obj && d.before) {
+                for (const key of ['texts', 'media']) {
+                    content[key] = content[key].map(obj => obj === d.obj ? { ...obj, ...d.before } : obj);
+                }
+            }
+            // 下划线开头的运行时缓存字段（如 _bb 包围盒）不落盘。
+            return JSON.stringify(content, (k, v) => k.startsWith('_') ? undefined : v);
+        }
+
         async function nbSavePageNow() {
             clearTimeout(_nbSaveTimer);
-            if (!nbState.dirty || !nbState.content) return;
             const page = nbCurrentPage();
-            if (!page) return;
-            nbState.dirty = false;
+            if (!page || !nbState.content) return !nbState.dirty;
             const pageId = page.id;
-            nbSnippetCache[pageId] = undefined;
-            delete nbThumbCache[pageId];
+            // 翻页/关闭也必须等候已经开始的写入，不能因 dirty 已清就越过它。
+            if (!nbState.dirty) {
+                await nbWithPageStoreLock(pageId, () => true);
+                return nbState.dirty ? nbSavePageNow() : true;
+            }
+            const content = nbState.content;
+            const base = content._cloudBase || '';
             try {
-                // 下划线开头的运行时缓存字段（如 _bb 包围盒）不落盘
                 const updatedAt = new Date().toISOString();
-                nbState.content.updatedAt = updatedAt;
-                await saveFileData('nbpage_' + pageId, JSON.stringify(nbState.content, (k, v) => k.startsWith('_') ? undefined : v));
-                page.updatedAt = updatedAt;
-                const notebook = nbCurrentNotebook();
-                if (notebook) nbTouch(notebook);
-                saveData();
-                nbSyncNotebookEvent('notebook_page_update', pageId);
+                content.updatedAt = updatedAt;
+                const raw = nbSerializePageContent();
+                nbState.dirty = false;
+                await nbWithPageStoreLock(pageId, async () => {
+                    let targetId = pageId;
+                    let expectedBase = nbState.content === content && nbState.pageId === pageId
+                        ? content._cloudBase || '' : base;
+                    const storedBase = await getFileData('nbpagebase_' + pageId) || '';
+                    const stored = await getFileData('nbpage_' + pageId);
+                    if (stored && storedBase !== expectedBase) {
+                        if (await nbPageFingerprint(stored) !== await nbPageFingerprint(raw)) {
+                            targetId = await nbPreserveNotebookConflict(pageId, raw, expectedBase);
+                            expectedBase = '';
+                        } else {
+                            expectedBase = storedBase;
+                            if (nbState.content === content) content._cloudBase = storedBase;
+                        }
+                    }
+                    // 冲突 helper 已写稳副本再改绑编辑器；不能在原页锁内重写副本，
+                    // 否则会覆盖改绑后在副本自身锁里刚保存的新笔迹。
+                    if (targetId === pageId) {
+                        await saveFilePairAtomic('nbpage_' + targetId, raw, 'nbpagebase_' + targetId, expectedBase);
+                    }
+                    nbSnippetCache[targetId] = undefined;
+                    delete nbThumbCache[targetId];
+                    const notebook = nbData().items.find(nb => (nb.pages || []).some(pg => pg.id === targetId));
+                    const savedPage = notebook?.pages.find(pg => pg.id === targetId);
+                    if (savedPage) savedPage.updatedAt = updatedAt;
+                    if (notebook) nbTouch(notebook);
+                    if (saveData() === false) throw new Error(i18n('storage_save_failed'));
+                    nbSyncNotebookEvent('notebook_page_update', targetId);
+                });
             } catch (e) {
                 console.error('[nb] 页面保存失败:', e);
                 showToast(i18n('storage_save_failed'));
-                nbState.dirty = true;
-                return;
+                if (nbState.content === content) nbState.dirty = true;
+                return false;
             }
-            // 页面正文与元数据使用同一更新时间戳同步。
+            // 等待期间的新笔迹也先落盘，调用方才可安全替换当前页。
+            if (nbState.content === content) await nbWithPageStoreLock(nbState.pageId || pageId, () => true);
+            if (nbState.content === content && nbState.dirty) return nbSavePageNow();
+            return true;
         }
 
         async function nbLoadPage(index, syncPosition = true) {
             const loadToken = ++_nbPageLoadToken;
             const notebookId = nbState.notebookId;
-            await nbSavePageNow();
+            nbState.switching = true;
+            try {
+            nbFinishPageInput();
+            if (await nbSavePageNow() === false) return false;
             if (loadToken !== _nbPageLoadToken || nbState.notebookId !== notebookId) return false;
             const nb = nbGetNotebook(notebookId);
             if (!nb) return false;
@@ -31264,14 +31672,22 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const page = nb.pages[nextIndex];
             const content = await nbLoadPageContent(page.id);
             if (loadToken !== _nbPageLoadToken || nbState.notebookId !== notebookId) return false;
-            nbState.pageIndex = nextIndex;
+            if (await nbSavePageNow() === false) return false;
+            if (loadToken !== _nbPageLoadToken || nbState.notebookId !== notebookId) return false;
+            const liveNotebook = nbGetNotebook(notebookId);
+            const liveIndex = liveNotebook?.pages.findIndex(pg => pg.id === page.id) ?? -1;
+            if (liveIndex < 0) return false;
+            // 点击当前页时，异步读取期间可能又写了字；保留刚写稳的活动对象。
+            const nextContent = nbState.pageId === page.id && nbState.content ? nbState.content : content;
+            nbState.pageIndex = liveIndex;
+            nbState.pageId = page.id;
             nbClearSelection();
             nbHideTextToolbar();
             nbState.undoStack = [];
             nbState.redoStack = [];
-            nbState.content = content;
+            nbState.content = nextContent;
             nbState.dirty = false;
-            if (nbRememberOpenedPage(nb, page) && syncPosition) {
+            if (nbRememberOpenedPage(liveNotebook, liveNotebook.pages[liveIndex]) && syncPosition) {
                 nbSchedulePositionSync(notebookId);
             }
             nbUpdatePageNo();
@@ -31281,31 +31697,47 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             // 翻页后的画布重绘/页码变化同样被原生直渲染冻结，主动刷新上屏
             nbNativeRefresh();
             return true;
+            } catch (e) {
+                console.error('[nb] 页面加载失败:', e);
+                showToast(i18n('content_load_failed'));
+                return false;
+            } finally {
+                if (loadToken === _nbPageLoadToken) nbState.switching = false;
+            }
         }
 
         function nbUpdatePageNo() {
             const nb = nbCurrentNotebook();
             if (!nb) return;
+            nbCurrentPage();
             document.getElementById('nbPageNo').textContent = (nbState.pageIndex + 1) + ' / ' + nb.pages.length;
             nbUpdateUndoBtns();
         }
 
-        function nbPrevPage() { if (nbState.pageIndex > 0) nbLoadPage(nbState.pageIndex - 1); }
+        function nbPrevPage() { nbCurrentPage(); if (nbState.pageIndex > 0) nbLoadPage(nbState.pageIndex - 1); }
         async function nbNextPage() {
-            const nb = nbCurrentNotebook();
+            let nb = nbCurrentNotebook();
             if (!nb) return;
+            nbCurrentPage();
             if (nbState.pageIndex < nb.pages.length - 1) {
                 nbLoadPage(nbState.pageIndex + 1);
                 return;
             }
             // 已是最后一页 → 自动以当前页模板追加新页
-            await nbSavePageNow();
+            const notebookId = nb.id;
+            nbFinishPageInput();
+            if (await nbSavePageNow() === false) return;
+            nb = nbGetNotebook(notebookId);
+            if (!nb || nbState.notebookId !== notebookId) return;
             const cur = nbCurrentPage();
             const now = new Date().toISOString();
             const page = { id: nbUid('nbp'), template: (cur && cur.template) || nb.template || 'blank', createdAt: now, updatedAt: now };
+            if (!await nbStoreNewPage(page)) return;
+            nb = nbGetNotebook(notebookId);
+            if (!nb || nbState.notebookId !== notebookId) return;
             nb.pages.push(page);
             nbTouch(nb);
-            saveData();
+            if (saveData() === false) return;
             nbSyncNotebookEvent('notebook_page_add', page.id);
             nbLoadPage(nb.pages.length - 1);
             showToast(i18n('page_created'));
@@ -31764,13 +32196,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!d) return;
             nbState.drawing = null;
             _nbActivePointerId = null;
-            let changed = false;
             if (d.mode === 'erase') {
                 // i 是每次删除当时的索引；必须逆着删除顺序恢复。
-                changed = d.removed.length > 0;
                 d.removed.slice().reverse().forEach(({ s, i }) => nbState.content.strokes.splice(i, 0, s));
             } else if (d.mode === 'move') {
-                changed = d.moved;
                 const before = new Map(d.before.map(s => [s.id, s]));
                 for (const s of nbState.content.strokes) {
                     if (before.has(s.id)) { Object.assign(s, before.get(s.id)); delete s._bb; }
@@ -31778,7 +32207,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (nbState.selection) nbState.selection.bbox = nbSelBBox(nbState.selection.ids);
                 nbPositionSelToolbar();
             } else if (d.mode === 'boxdrag') {
-                changed = true; // 旧自动保存可能已写入拖动中途的位置，即使后来拖回起点也要重存。
                 Object.assign(d.obj, d.before);
                 const el = document.querySelector(`#nbTextLayer [data-id="${d.obj.id}"]`);
                 if (el) { el.style.left = d.obj.x + 'px'; el.style.top = d.obj.y + 'px'; }
@@ -31787,11 +32215,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 d.cancel();
             }
             nbRedraw();
-            if (changed) nbScheduleSave();
         }
 
         function nbPointerDown(e) {
-            if (e.button === 2 || nbState.drawing) return;
+            if (e.button === 2 || nbState.drawing || nbState.switching) return;
             if (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture)) return;
             if (applePencilMode && !booxReaderIsPen(e)) return;
             _nbTouchGesture = null;
@@ -32320,7 +32747,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (e.target.classList.contains('nb-tb-corner') || e.target.classList.contains('nb-media-del')) return;
                 const editing = document.activeElement === inner;
                 if (editing && e.target === inner) return;   // 编辑中不拦截光标操作
-                if (nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
+                if (nbState.switching || nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
                 if (applePencilMode && !booxReaderIsPen(e)) return;
                 _nbTouchGesture = null;
                 _nbActivePointerId = e.pointerId;
@@ -32352,7 +32779,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         box.x = ox; box.y = oy;
                         el.style.left = ox + 'px'; el.style.top = oy + 'px';
                         nbPositionTextToolbar(box.id);
-                        nbScheduleSave();
                         return;
                     }
                     if (moved) {
@@ -32370,7 +32796,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         } catch (err) {}
                     }
                 };
-                nbState.drawing = { mode: 'object', cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
+                nbState.drawing = { mode: 'object', obj: box, before: { x: ox, y: oy }, cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
                 document.addEventListener('pointermove', mv);
                 document.addEventListener('pointerup', up);
                 document.addEventListener('pointercancel', up);
@@ -32382,7 +32808,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 h.className = 'nb-tb-corner';
                 h.dataset.c = c;
                 h.addEventListener('pointerdown', (e) => {
-                    if (nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
+                    if (nbState.switching || nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
                     if (applePencilMode && !booxReaderIsPen(e)) return;
                     _nbTouchGesture = null;
                     _nbActivePointerId = e.pointerId;
@@ -32428,13 +32854,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                             el.style.cssText = styleBefore;
                             inner.style.fontSize = fontBefore;
                             nbPositionTextToolbar(box.id);
-                            nbScheduleSave();
                             return;
                         }
                         nbScheduleSave();
                         nbShowTextToolbar(box.id);   // 刷新工具条上的字号状态
                     };
-                    nbState.drawing = { mode: 'object', cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
+                    nbState.drawing = { mode: 'object', obj: box, before, cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
                     document.addEventListener('pointermove', mv);
                     document.addEventListener('pointerup', up);
                     document.addEventListener('pointercancel', up);
@@ -32560,7 +32985,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             el.appendChild(del);
             el.addEventListener('pointerdown', (e) => {
                 if (e.target.tagName === 'BUTTON') return;
-                if (nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
+                if (nbState.switching || nbState.drawing || (e.pointerType === 'touch' && (e.isPrimary === false || _nbTouchGesture))) return;
                 if (applePencilMode && !booxReaderIsPen(e)) return;
                 _nbTouchGesture = null;
                 _nbActivePointerId = e.pointerId;
@@ -32591,12 +33016,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     if (ev.type === 'pointercancel') {
                         m.x = ox; m.y = oy;
                         el.style.left = ox + 'px'; el.style.top = oy + 'px';
-                        nbScheduleSave();
                         return;
                     }
                     if (moved) nbScheduleSave();
                 };
-                nbState.drawing = { mode: 'object', cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
+                nbState.drawing = { mode: 'object', obj: m, before: { x: ox, y: oy }, cancel: () => up({ pointerId: e.pointerId, type: 'pointercancel' }) };
                 document.addEventListener('pointermove', mv);
                 document.addEventListener('pointerup', up);
                 document.addEventListener('pointercancel', up);
@@ -32705,8 +33129,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const notebookId = nbState.notebookId;
             const anchorPageId = nbCurrentPage()?.id;
             if (!notebookId || !anchorPageId) return;
-            await nbSavePageNow();
-            const nb = nbGetNotebook(notebookId);
+            nbFinishPageInput();
+            if (await nbSavePageNow() === false) return;
+            let nb = nbGetNotebook(notebookId);
             if (!nb || nbState.notebookId !== notebookId) return;
             const anchorIndex = (nb.pages || []).findIndex(page => page?.id === anchorPageId);
             if (anchorIndex < 0) {
@@ -32718,10 +33143,15 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const tpl = (!sel || sel.value === '__cur__') ? (anchorPage.template || 'blank') : sel.value;
             const now = new Date().toISOString();
             const page = { id: nbUid('nbp'), template: tpl, createdAt: now, updatedAt: now };
-            const at = anchorIndex + (after ? 1 : 0);
+            if (!await nbStoreNewPage(page)) return;
+            nb = nbGetNotebook(notebookId);
+            if (!nb || nbState.notebookId !== notebookId) return;
+            const liveAnchorIndex = nb.pages.findIndex(pg => pg.id === anchorPageId);
+            if (liveAnchorIndex < 0) return;
+            const at = liveAnchorIndex + (after ? 1 : 0);
             nb.pages.splice(at, 0, page);
             nbTouch(nb);
-            saveData();
+            if (saveData() === false) return;
             nbHidePanel();
             nbSyncNotebookEvent('notebook_page_add', page.id);
             nbLoadPage(at);
@@ -32729,7 +33159,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
         async function nbDeleteCurrentPage() {
             nbHidePanel();
-            await nbDeletePageAt(nbState.pageIndex);
+            const page = nbCurrentPage();
+            if (page) await nbDeletePageAt(page.id);
         }
 
         function nbPanelZoom() {
@@ -32764,12 +33195,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const grid = document.getElementById('nbExportThumbs');
             const nb = nbCurrentNotebook();
             if (!grid || !nb) return;
-            await nbSavePageNow();
+            if (await nbSavePageNow() === false) return;
             document.getElementById('nbExportCount').textContent = i18n('pages_total', nb.pages.length);
             grid.innerHTML = nb.pages.map((pg, i) => `
                 <div class="nb-thumb" data-idx="${i}" onclick="this.querySelector('.chk').checked = !this.querySelector('.chk').checked">
                     <div class="nb-thumb-placeholder">${i18n('page_number_label', i + 1)}</div>
-                    <span class="pn">${i + 1}</span>
+                    <span class="pn">${i + 1}${pg.conflictOf ? ' · ' + escapeHtml(pg.title) : ''}</span>
                     <input type="checkbox" class="chk" checked>
                 </div>`).join('');
             const modal = document.getElementById('nbExportModal');
@@ -32801,7 +33232,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!idxs.length) { showToast(i18n('select_pages_to_print')); return; }
             showToast(i18n('preparing_print'));
             try {
-                await nbSavePageNow();
+                if (await nbSavePageNow() === false) return;
                 const imgs = [];
                 for (const i of idxs) {
                     const page = nb.pages[i];
@@ -32839,7 +33270,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const idxs = nbExportSelectedIdxs();
             if (!idxs.length) { showToast(i18n('select_pages_to_export')); return; }
             if (!window.PDFLib) { showToast(i18n('pdf_lib_not_loaded')); return; }
-            await nbSavePageNow();
+            if (await nbSavePageNow() === false) return;
             showToast(i18n('exporting_pages', idxs.length));
             nbHideExportModal();
             try {
@@ -33013,17 +33444,19 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         async function nbInsertPdf(file) {
             const nb = nbCurrentNotebook();
             if (!nb || !window.pdfjsLib) { showToast(i18n('pdf_renderer_not_loaded')); return; }
+            const anchorPageId = nbCurrentPage()?.id;
             nbHidePanel();
             showToast(i18n('importing_pdf'));
             try {
+                nbFinishPageInput();
+                if (await nbSavePageNow() === false) return;
                 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
                     pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
                 }
                 const bytes = new Uint8Array(await file.arrayBuffer());
                 const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
                 const count = Math.min(pdf.numPages, 60);
-                let at = nbState.pageIndex + 1;
-                const firstAt = at;
+                const addedPages = [];
                 for (let i = 1; i <= count; i++) {
                     const pg = await pdf.getPage(i);
                     const vp0 = pg.getViewport({ scale: 1 });
@@ -33037,14 +33470,19 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     const mediaId = nbUid('m');
                     await saveFileData('nbmedia_' + mediaId, dataUrl);
                     const now = new Date().toISOString();
-                    nb.pages.splice(at, 0, { id: nbUid('nbp'), template: 'blank', bgImage: mediaId, createdAt: now, updatedAt: now });
-                    at++;
+                    const page = { id: nbUid('nbp'), template: 'blank', bgImage: mediaId, createdAt: now, updatedAt: now };
+                    if (!await nbStoreNewPage(page)) return;
+                    addedPages.push(page);
                     if (i % 5 === 0) showToast(i18n('pdf_import_progress', i, count));
                 }
-                nbTouch(nb);
-                saveData();
+                const live = nbGetNotebook(nb.id);
+                const anchorIndex = live?.pages.findIndex(page => page.id === anchorPageId) ?? -1;
+                if (anchorIndex < 0) { showToast(i18n('page_deleted')); return; }
+                live.pages.splice(anchorIndex + 1, 0, ...addedPages);
+                nbTouch(live);
+                if (saveData() === false) return;
                 nbSyncNotebookEvent('notebook_page_add');
-                await nbLoadPage(firstAt);
+                if (nbState.notebookId === nb.id) await nbLoadPage(anchorIndex + 1);
                 showToast(i18n('pdf_pages_inserted', count));
             } catch (e) {
                 console.error('[nb] PDF 导入失败:', e);
@@ -33074,7 +33512,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (el.classList.contains('show')) { nbHideOutline(); return; }
             const nb = nbCurrentNotebook();
             if (!nb) return;
-            await nbSavePageNow();
+            if (await nbSavePageNow() === false) return;
             if (!nb.outline) nb.outline = [];
             nb.outline = nb.outline.filter(o => nb.pages.some(p => p.id === o.pageId));
             const view = nbState.outlineView || 'thumbs';
@@ -33101,7 +33539,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     nb.pages.map((pg, i) => `
                         <div class="nb-thumb ${i === nbState.pageIndex ? 'current' : ''}" data-pid="${pg.id}">
                             <div class="nb-thumb-placeholder">${i18n('page_number_label', i + 1)}</div>
-                            <span class="pn">${i + 1}</span>
+                            <span class="pn">${i + 1}${pg.conflictOf ? ' · ' + escapeHtml(pg.title) : ''}</span>
                             ${nb.outline.some(o => o.pageId === pg.id) ? `<span class="toc-mark">${i18n('outline')}</span>` : ''}
                         </div>`).join('') + '</div>';
             }
@@ -33216,7 +33654,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const menu = document.getElementById('nbCtxMenu');
             menu.innerHTML = `
                 <button onclick="nbTogglePageInToc('${pageId}')">${i18n(inToc ? 'remove_from_outline' : 'add_to_outline')}</button>
-                <button class="danger" onclick="nbDeletePageAt(${idx})">${i18n('delete_page')}</button>`;
+                <button class="danger" onclick="nbDeletePageAt('${pageId}')">${i18n('delete_page')}</button>`;
             menu.style.display = 'block';
             menu.style.left = Math.min(x, window.innerWidth - 148) + 'px';
             menu.style.top = Math.min(y, window.innerHeight - 104) + 'px';
@@ -33256,16 +33694,22 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 删除任意页（缩略图菜单 / 页面+面板共用）
         async function nbDeletePageAt(idx) {
             document.getElementById('nbCtxMenu').style.display = 'none';
-            const nb = nbCurrentNotebook();
+            let nb = nbCurrentNotebook();
+            if (typeof idx === 'string') idx = nb?.pages.findIndex(page => page.id === idx) ?? -1;
             if (!nb || idx < 0 || idx >= nb.pages.length) return;
             if (nb.pages.length <= 1) { showToast(i18n('keep_one_page')); return; }
             if (!confirm(i18n('confirm_delete_page', idx + 1))) return;
             const page = nb.pages[idx];
-            const wasCurrent = idx === nbState.pageIndex;
-            nb.pages.splice(idx, 1);
-            nb.outline = (nb.outline || []).filter(o => o.pageId !== page.id);
+            const activePage = nbCurrentPage();
+            const wasCurrent = page.id === activePage?.id;
+            if (!nbCommitDeletion('page', page.id)) return;
+            nb = nbCurrentNotebook();
             delete nbThumbCache[page.id];
-            if (wasCurrent) nbState.dirty = false;   // 别把已删除页面又存回去
+            if (wasCurrent) {
+                nbState.dirty = false;   // 别把已删除页面又存回去
+                nbState.content = null;
+                nbState.pageId = null;
+            }
             else if (idx < nbState.pageIndex) nbState.pageIndex--;
             const nextIndex = Math.min(wasCurrent ? idx : nbState.pageIndex, nb.pages.length - 1);
             nbState.pageIndex = nextIndex;
@@ -33316,7 +33760,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!q) { out.innerHTML = ''; return; }
             const nb = nbCurrentNotebook();
             if (!nb) return;
-            await nbSavePageNow();
+            if (await nbSavePageNow() === false) return;
             out.innerHTML = `<div style="font-size:12px;color:var(--text-muted);">${i18n('searching')}</div>`;
             const hits = [];
             for (let i = 0; i < nb.pages.length; i++) {
@@ -33345,14 +33789,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                        <span>${i18n('page_number_label', h.i + 1)}</span><span class="snippet">${escapeHtml(h.ctxStr)}</span></div>`).join('')
                 : `<div style="font-size:12px;color:var(--text-muted);">${i18n('no_search_results')}</div>`;
         }
-        function nbStrokeSig(c) {
-            const n = (c.strokes || []).length;
-            return n + ':' + (n ? c.strokes[n - 1].id : '');
+        async function nbStrokeSig(c) {
+            return sha256Hex(JSON.stringify(c.strokes || [], (k, v) => k.startsWith('_') ? undefined : v));
         }
         async function nbBuildHandwritingIndex() {
             const nb = nbCurrentNotebook();
             if (!nb) return;
-            await nbSavePageNow();
+            if (await nbSavePageNow() === false) return;
             let done = 0, skipped = 0;
             showToast(i18n('recognizing_handwriting_start'));
             for (let i = 0; i < nb.pages.length; i++) {
@@ -33363,7 +33806,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     c = raw ? JSON.parse(raw) : null;
                 } catch (e) { c = null; }
                 if (!c || !(c.strokes || []).some(s => s.tool === 'pen' || s.tool === 'hl')) { skipped++; continue; }
-                const sig = nbStrokeSig(c);
+                const sig = await nbStrokeSig(c);
                 if (c.recognized && c.recognized.sig === sig) { skipped++; continue; }
                 try {
                     const cv = await nbRenderPageToCanvas(pg, c, 1000);
@@ -33374,10 +33817,21 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                             { type: 'text', text: i18n('prompt_handwriting_index_user') }
                         ] }]
                     );
-                    c.recognized = { text, sig, at: new Date().toISOString() };
+                    const recognized = { text, sig, at: new Date().toISOString() };
+                    const applied = await nbWithPageStoreLock(pg.id, async () => {
+                        const raw = await getFileData('nbpage_' + pg.id);
+                        if (!raw) return false;
+                        const latest = JSON.parse(raw);
+                        if (await nbStrokeSig(latest) !== sig) return false;
+                        latest.recognized = recognized;
+                        const base = await getFileData('nbpagebase_' + pg.id) || '';
+                        await saveFilePairAtomic('nbpage_' + pg.id, JSON.stringify(latest), 'nbpagebase_' + pg.id, base);
+                        if (nbState.pageId === pg.id && nbState.content &&
+                            await nbStrokeSig(nbState.content) === sig) nbState.content.recognized = recognized;
+                        return true;
+                    });
+                    if (!applied) { skipped++; continue; }
                     nbSnippetCache[pg.id] = undefined;
-                    await saveFileData('nbpage_' + pg.id, JSON.stringify(c));
-                    if (i === nbState.pageIndex && nbState.content) nbState.content.recognized = c.recognized;
                     done++;
                     showToast(i18n('handwriting_progress', done));
                 } catch (e) {
@@ -33617,10 +34071,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         function nbDeleteReviewQuiz(r) {
             if (!r || !confirm(i18n('confirm_delete_review_quiz'))) return;
-            const reviews = nbData().reviews;
-            const idx = reviews.findIndex(x => x.id === r.id);
-            if (idx >= 0) reviews.splice(idx, 1);
-            saveData();
+            if (!nbCommitDeletion('review', r.id)) return;
             nbUpdateReviewBtn();
             renderNbReviewList();
             triggerSyncOnFileChange(r.pageId, 'notebook_review_update');
@@ -33664,7 +34115,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // 点击「加入复习」：记录时间，页面发给 AI 生成当晚 quiz，排入复习计划
         async function nbAddToReview(page) {
-            await nbSavePageNow();
+            if (await nbSavePageNow() === false) return;
             const now = new Date().toISOString();
             const r = {
                 id: nbUid('rev'),
@@ -34342,10 +34793,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 document.addEventListener('visibilitychange', () => {
                     if (document.visibilityState === 'hidden') {
                         nbSaveQuizDraftToReview(true);
-                        nbSavePageNow();
+                        nbSavePageOnLeave();
                     }
                 });
-                window.addEventListener('beforeunload', () => { nbSaveQuizDraftToReview(true); nbSavePageNow(); });
+                window.addEventListener('pagehide', () => { nbSaveQuizDraftToReview(true); nbSavePageOnLeave(); });
+                window.addEventListener('beforeunload', () => { nbSaveQuizDraftToReview(true); nbSavePageOnLeave(); });
                 // 每小时刷新一次逾期状态
                 setInterval(() => {
                     nbRefreshReviewStates();

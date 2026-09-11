@@ -14133,9 +14133,13 @@
                 await r2SyncAllNotebookPages();
 
                 // 再把合并后的结果推回云端
-                const metadataPublishResult = await r2SyncMetadataOnly();
-                if (metadataPublishResult.casCommitted) {
-                    await flushClassroomDeletionOutboxAfterMetadata();
+                let metadataPublishError = null;
+                try {
+                    const metadataPublishResult = await r2SyncMetadataOnly();
+                    if (metadataPublishResult.casCommitted) await flushClassroomDeletionOutboxAfterMetadata();
+                } catch (error) {
+                    // 补传失败不能跳过后续资源下载；恢复完成后仍向调用方报告发布失败。
+                    metadataPublishError = error;
                 }
 
                 // 把本地新加、云端还没有的 PDF 文件一起上传
@@ -14185,6 +14189,7 @@
                 await r2PullNotebookAssetsFromCloud({ missingOnly: true });
 
                 // 更新上次同步时间
+                if (metadataPublishError) throw metadataPublishError;
                 config.lastSyncTime = new Date().toISOString();
                 r2LastSyncTime = config.lastSyncTime;
                 saveData();
@@ -14416,15 +14421,18 @@
         }
 
         async function r2PublishMetadataWithCas(localMetadata, classroomIntent, options = {}) {
+            const hadImportedGrading = !options.classroomOnly &&
+                exCollectUncommittedGradedCloudEntries(appData.exercises, true)
+                    .some(entry => entry.records.some(record => record.gradedDrawingCloudCommitted === 'imported'));
             if (!options.classroomOnly) {
-                // 发布本地评分前必须先有完整图片；课堂专用请求不携带本地习题。
-                await exEnsureImportedGradedPages();
                 const gradingFlush = await exFlushGradedDrawingCloudCommits();
                 localMetadata = {
                     ...localMetadata,
                     exercises: gradingFlush.exercisesForPublish
                 };
             }
+            const gradingSource = appData.exercises;
+            const gradingGeneration = _exGradedCloudCommitCounter;
             const frozenClassroom = classroomIntent || stripClassroomData(appData.classroom, false);
             let lastConflict = null;
             for (let attempt = 0; attempt < 5; attempt++) {
@@ -14455,16 +14463,20 @@
                 const mergedIntent = remoteClassroomCount === 0 && localClassroomCount > 0
                     ? localClassroom
                     : mergeClassroomData(remoteClassroom, localClassroom, remoteBaseline);
-                // 课堂首传也只创建课堂索引，不能顺带发布未校验的本地习题和笔记。
+                // 首次建索引保留已有目录，否则新的 syncedAt 会把离线笔记误判为已删除。
+                // 未经图片校验的习题仍不能随课堂首传发布。
                 let candidateBase = options.classroomOnly
-                    ? (remoteMetadata || {})
+                    ? (remoteMetadata || { ...localMetadata, exercises: undefined })
                     : localMetadata;
                 if (!options.classroomOnly) {
+                    // 每次 CAS 重试都从原快照重建，保留导入来源，重新核对最新云端评分。
+                    candidateBase = { ...candidateBase, exercises: stripExercisesData(localMetadata.exercises) };
                     // 文件变更同步不会先跑完整的 pull。提交前把远端同一条习题的版本化
                     // redo 历史合进本次快照，避免长时间在线的旧设备覆盖另一端的清空。
                     exMergeMatchingExerciseHistories(
                         candidateBase?.exercises,
                         remoteMetadata?.exercises,
+                        true,
                         true
                     );
                     candidateBase = {
@@ -14504,6 +14516,8 @@
                     classroomTombstones: tombstones,
                     syncedAt: new Date().toISOString()
                 };
+                // 只验证合并后确实要发布的导入评分；不能拿旧分数配上已存在的云端图片。
+                if (!options.classroomOnly) await exEnsureImportedGradedPages(candidate.exercises);
 
                 if (!options.allowEmpty &&
                     !await r2ProtectMetadataOverwrite(candidate, remoteResult?.data || null, remoteMetadata)) {
@@ -14518,6 +14532,10 @@
                     : remoteResult?.etag
                         ? { ifMatch: remoteResult.etag }
                         : {};
+                if (hadImportedGrading && (appData.exercises !== gradingSource ||
+                    _exGradedCloudCommitCounter !== gradingGeneration)) {
+                    throw new Error('Exercise grading changed during import recovery; retry publication');
+                }
                 try {
                     await r2PutObject('metadata.json', JSON.stringify(candidate), 'application/json', conditions);
 
@@ -14539,7 +14557,7 @@
                             Date.parse(candidate.syncedAt) || 0);
                         // 网络等待期间本机可能又产生了更新；仍用同一套版本规则合回活对象，
                         // 既接收远端较新的清空，也不会压掉刚发生的本机重做。
-                        exMergeMatchingExerciseHistories(appData.exercises, candidate.exercises, true);
+                        exMergeMatchingExerciseHistories(appData.exercises, candidate.exercises, true, true);
                     }
                     const gradingCommitStateChanged = exMarkPublishedGradingCommits(
                         appData.exercises,
@@ -14550,6 +14568,7 @@
                         // 云端已提交成功；保留本地 false 的旧持久副本只会触发安全重试。
                         console.warn('[sync] 评分快照提交状态本地保存失败，将在下次同步重试');
                     }
+                    if (hadImportedGrading) await exSyncCachedGradedPages();
                     return { metadata: candidate, casCommitted: true };
                 } catch (e) {
                     if (e?.status !== 412) throw e;
@@ -16768,11 +16787,15 @@
                 saveData();
                 refreshAllUIFromAppData();
                 if (repairMetadataAfterStartup || repairBooksAfterStartup) {
-                    // 修复只补齐云端缺的那部分：正文按版本增量上传，不把本机旧正文回传。
-                    await r2SyncChangedLectureContents();
-                    if (repairNotebookPagesAfterStartup) await r2SyncAllNotebookPages();
-                    await r2SyncMetadataOnly();
-                    if (repairBooksAfterStartup) showToast(i18n('cloud_index_repaired'));
+                    try {
+                        // 发布失败也继续下载云端资源，不让缺图习题阻断 PDF 和笔记恢复。
+                        await r2SyncChangedLectureContents();
+                        if (repairNotebookPagesAfterStartup) await r2SyncAllNotebookPages();
+                        await r2SyncMetadataOnly();
+                        if (repairBooksAfterStartup) showToast(i18n('cloud_index_repaired'));
+                    } catch (error) {
+                        console.warn('[startup-sync] 索引补传失败，继续恢复云端资源:', error);
+                    }
                 }
                 if (config.lastSyncTime || metadata.syncedAt) {
                     r2LastSyncTime = metadata.syncedAt || config.lastSyncTime;
@@ -17910,13 +17933,18 @@
                 // 导入来源单独标记：不压过云端已有评分，但独有评分必须先补齐图片再发布。
                 for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises, true)) {
                     // 旧包的内嵌图片必须先落盘，随后 saveData 才能安全剔除大字段。
+                    // 错题的 userDrawing 是最近重做的显示缓存，不是原答图片。
+                    const embeddedRecords = entry.records.filter(record => !(record.redoDrawings || []).length);
+                    entry.pageCount = Math.max(entry.pageCount, ...embeddedRecords.map(record =>
+                        record.userDrawing ? 1 + (record.userDrawingExtra || []).length :
+                        record.drawing ? 1 + (record.extra || []).length : 0));
                     for (let p = 0; p < entry.pageCount; p++) {
-                        const image = entry.records.map(record => exPageImageOf(
+                        const image = embeddedRecords.map(record => exPageImageOf(
                             record.userDrawing || record.drawing, record.userDrawingExtra || record.extra, p)).find(Boolean);
                         if (image) await exWriteRedoPageAliases(entry.baseKeys, p, image);
                     }
                     for (const record of entry.records) {
-                        if (record.userDrawing) record.userDrawingPages = entry.pageCount;
+                        if (record.userDrawing && !(record.redoDrawings || []).length) record.userDrawingPages = entry.pageCount;
                         else if (record.drawing) record.pages = entry.pageCount;
                         record.gradedDrawingCloudCommitted = 'imported';
                     }
@@ -24958,17 +24986,26 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // 启动/周期 pull 会先以云端对象为骨架。若本地存在“metadata 已落盘、图片尚未
         // 上传”的评分事务，必须把这份结果一起保住，否则进程重启恰好会抹掉补传标记。
-        function exPreserveUncommittedGrading(targetQ, localQ) {
-            if (!targetQ || !localQ || localQ.gradedDrawingCloudCommitted !== false) return false;
+        function exPreserveUncommittedGrading(targetQ, localQ, restoreImported = false) {
+            if (!targetQ || !localQ) return false;
+            const restoring = restoreImported && targetQ.gradedDrawingCloudCommitted === 'imported';
+            if (!restoring && localQ.gradedDrawingCloudCommitted !== false) return false;
             const fields = [
                 'status', 'score', 'userDrawing', 'userDrawingExtra',
                 'userDrawingPages', 'pageCount', 'aiComment',
                 'timeUsedSeconds', 'remainingSeconds', 'gradedDrawingCommitId',
-                'gradedDrawingCloudCommitted'
+                'gradedDrawingCloudCommitted',
+                ...(restoring ? ['drawing', 'extra', 'pages', 'comment'] : [])
             ];
             let changed = false;
             for (const field of fields) {
-                if (!Object.prototype.hasOwnProperty.call(localQ, field)) continue;
+                if (!Object.prototype.hasOwnProperty.call(localQ, field)) {
+                    if (restoring && Object.prototype.hasOwnProperty.call(targetQ, field)) {
+                        delete targetQ[field];
+                        changed = true;
+                    }
+                    continue;
+                }
                 const value = Array.isArray(localQ[field])
                     ? localQ[field].slice()
                     : localQ[field];
@@ -24984,7 +25021,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 习题目前只能加页、不能删页，因此页数合并始终取两端较大值。
         function exMergeExerciseQuestionPageCounts(targetQ, localQ, options = {}) {
             if (!targetQ || !localQ) return false;
-            let changed = options.preserveSourceUncommitted === false
+            let changed = options.restoreImported && targetQ.gradedDrawingCloudCommitted === 'imported'
+                ? exPreserveUncommittedGrading(targetQ, localQ, true)
+                : options.preserveSourceUncommitted === false
                 ? false
                 : exPreserveUncommittedGrading(targetQ, localQ);
             const gradedPages = Math.max(
@@ -25031,6 +25070,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     }
                     const targetRedo = targetRedos[targetIndex];
                     if (!targetRedo) return;
+                    if (options.restoreImported && targetRedo.gradedDrawingCloudCommitted === 'imported' &&
+                        exPreserveUncommittedGrading(targetRedo, localRedo, true)) changed = true;
                     const redoPages = Math.max(
                         1,
                         Number(targetRedo.pages) || 0,
@@ -25081,6 +25122,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     winningRedos, losingRedo, losingIndex);
                 if (winningIndex < 0) return;
                 const winningRedo = winningRedos[winningIndex];
+                if (options.restoreImported && !localWins && winningRedo.gradedDrawingCloudCommitted === 'imported' &&
+                    exPreserveUncommittedGrading(winningRedo, losingRedo, true)) changed = true;
                 const redoPages = Math.max(
                     1,
                     Number(winningRedo.pages) || 0,
@@ -25128,7 +25171,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // 只合并两份 metadata 中本来就是同一实体的题目；不补 folder/task/question，
         // 避免在没有实体 tombstone 的情况下顺手复活整道已删除错题。
-        function exMergeMatchingExerciseHistories(targetExercises, sourceExercises, preferSourceRedoOnTie = false) {
+        function exMergeMatchingExerciseHistories(targetExercises, sourceExercises, preferSourceRedoOnTie = false, restoreImported = false) {
             if (!targetExercises || !sourceExercises) return false;
             let changed = false;
 
@@ -25150,7 +25193,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                             targetQ = (targetTask.questions || [])[sourceIndex];
                         }
                         if (targetQ && exMergeExerciseQuestionPageCounts(targetQ, sourceQ,
-                            { preferSourceRedoOnTie, preserveSourceUncommitted: false })) {
+                            { preferSourceRedoOnTie, preserveSourceUncommitted: false, restoreImported })) {
                             changed = true;
                         }
                     });
@@ -25167,7 +25210,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         const targetQ = (targetTask.questions || [])
                             .find(q => q && q.questionIndex === sourceQ?.questionIndex);
                         if (targetQ && exMergeExerciseQuestionPageCounts(targetQ, sourceQ,
-                            { preferSourceRedoOnTie, preserveSourceUncommitted: false })) {
+                            { preferSourceRedoOnTie, preserveSourceUncommitted: false, restoreImported })) {
                             changed = true;
                         }
                     }
@@ -25182,7 +25225,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         item.questionIndex === sourceItem?.questionIndex &&
                         item.archivedAt === sourceItem?.archivedAt);
                     if (targetItem && exMergeExerciseQuestionPageCounts(targetItem, sourceItem,
-                        { preferSourceRedoOnTie, preserveSourceUncommitted: false })) {
+                        { preferSourceRedoOnTie, preserveSourceUncommitted: false, restoreImported })) {
                         changed = true;
                     }
                 }
@@ -25434,9 +25477,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         entry.baseKeys.push(mirrorBaseKey);
                     }
                 }
-                entry.pageCount = Math.max(entry.pageCount, Number(pageCount) || 1,
-                    record.userDrawing ? 1 + (record.userDrawingExtra || []).length : 0,
-                    record.drawing ? 1 + (record.extra || []).length : 0);
+                entry.pageCount = Math.max(entry.pageCount, Number(pageCount) || 1);
                 if (!entry.records.includes(record)) entry.records.push(record);
             };
 
@@ -25732,23 +25773,28 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
-        async function exEnsureImportedGradedPages() {
-            for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises, true)) {
+        async function exEnsureImportedGradedPages(exercises) {
+            for (const entry of exCollectUncommittedGradedCloudEntries(exercises, true)) {
                 const imported = entry.records.filter(record => record.gradedDrawingCloudCommitted === 'imported');
                 if (!imported.length) continue;
                 for (let p = 0; p < entry.pageCount; p++) {
                     for (const baseKey of entry.baseKeys) {
                         const key = exPageKey(baseKey, p);
-                        if (await r2GetObject('exercises/drawings/' + key)) continue;
-                        const embedded = entry.records.map(record => exPageImageOf(
+                        const cloudDrawing = await r2GetObject('exercises/drawings/' + key);
+                        const embedded = entry.records.filter(record => !(record.redoDrawings || []).length).map(record => exPageImageOf(
                             record.userDrawing || record.drawing, record.userDrawingExtra || record.extra, p)).find(Boolean);
                         const data = embedded || await exReadRedoPageFromLocal(entry.baseKeys, null, p);
                         if (!data) throw new Error('Imported exercise drawing is missing: ' + key);
+                        if (cloudDrawing) {
+                            if (cloudDrawing !== data) throw new Error('Imported exercise drawing conflicts with cloud: ' + key);
+                            continue;
+                        }
                         try {
                             await r2PutObject('exercises/drawings/' + key, data,
                                 'image/png', { ifNoneMatch: '*' });
                         } catch (error) {
                             if (error?.status !== 412) throw error;
+                            if (await r2GetObject('exercises/drawings/' + key) !== data) throw error;
                         }
                     }
                 }
@@ -25768,6 +25814,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 !exHasPendingGradedPagesCloudCommit() &&
                 exCollectUncommittedGradedCloudEntries(appData.exercises).length === 0;
             for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises, true)) {
+                if (entry.records.some(record => record.gradedDrawingCloudCommitted === 'imported')) continue;
                 for (let p = 0; p < entry.pageCount; p++) {
                     if (!unchanged()) return;
                     const keys = entry.baseKeys.map(base => exPageKey(base, p));

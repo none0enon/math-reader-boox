@@ -262,12 +262,15 @@ async function checkNotebookDownloadRace(html) {
 async function checkLegacyEmbeddedGrading(html) {
     for (const stable of [true, false]) {
         const local = data(), remote = data(true);
-        const question = taskId => ({ taskId, questionIndex: 0, score: 10,
-            userDrawing: 'ANSWER 0', userDrawingExtra: ['ANSWER 1'],
+        const question = taskId => ({ taskId, questionIndex: 0, score: 10, userDrawingPages: 2,
+            userDrawing: 'REDO 0', userDrawingExtra: ['REDO 1'],
             redoDrawings: [{ ...(stable ? { drawingId: 'r1' } : {}), drawing: 'REDO 0', extra: ['REDO 1'] }] });
         local.exercises.wrongByFolder.folder = [{ taskId: 'wrong', questions: [question('wrong')] }];
         local.exercises.archivedWrong.folder = [question('archived')];
         const h = harness(html, local, remote);
+        for (const task of ['wrong', 'archived']) for (let p = 0; p < 2; p++) {
+            h.idb.set('exercise_drawing_' + task + '_0' + (p ? '_p1' : ''), 'ANSWER ' + p);
+        }
         await h.context.importDataZip({ target: { value: 'legacy.zip', files: [{}] } });
         await h.drainTimers();
         assert.deepEqual(h.errors, []);
@@ -478,6 +481,205 @@ async function checkImportedOfflineGrading(html) {
         }
     }
 }
+async function checkImportedGradeOnNotebookEdit(html) {
+    for (const kind of ['normal', 'wrong', 'archived', 'redo']) for (const race of [false, true]) {
+        const local = data(), remote = data(true);
+        local.notebooks = remote.notebooks = { items: [{ id: 'nb', createdAt: local.syncedAt,
+            pages: [{ id: 'np', createdAt: local.syncedAt }] }], reviews: [] };
+        const install = (fixture, score, committed) => {
+            const q = { index: 0, questionIndex: 0, status: 'done', score, userDrawingPages: 1,
+                gradedDrawingCloudCommitted: committed, gradedDrawingCommitId: 'grade-' + score };
+            if (!committed) q.userDrawing = 'BACKUP IMAGE';
+            if (kind === 'normal') fixture.exercises.folders[0].tasks = [{ id: 'task', questions: [q] }];
+            if (kind === 'wrong' || kind === 'redo') fixture.exercises.wrongByFolder.folder = [{ taskId: 'task', questions: [q] }];
+            if (kind === 'archived') fixture.exercises.archivedWrong.folder = [{ ...q, taskId: 'task', archivedAt: local.syncedAt }];
+            if (kind === 'redo') q.redoDrawings = [{ drawingId: 'r1', pages: 1, score,
+                gradedDrawingCloudCommitted: committed, gradedDrawingCommitId: 'redo-' + score,
+                ...(!committed ? { drawing: 'BACKUP IMAGE' } : {}) }];
+        };
+        const question = exercises => kind === 'normal' ? exercises.folders[0].tasks[0].questions[0]
+            : kind === 'archived' ? exercises.archivedWrong.folder[0]
+            : exercises.wrongByFolder.folder[0].questions[0];
+        install(local, 2, false); install(remote, 9, true);
+        const h = harness(html, local, remote), base = 'exercise_drawing_task_0';
+        h.idb.set(base, 'BACKUP IMAGE');
+        h.cloud.set('exercises/drawings/' + base, 'CLOUD 9');
+        if (kind === 'redo') h.cloud.set('exercises/drawings/exercise_redo_drawing_task_0_id_r1', 'CLOUD 9');
+        await h.context.importDataZip({ target: { value: 'old.zip', files: [{}] } });
+        await h.drainTimers();
+        assert.deepEqual(h.calls, []);
+        const put = h.context.r2PutObject;
+        let conflict = race;
+        h.context.setTimeout = fn => { queueMicrotask(fn); return 1; };
+        h.context.r2PutObject = async (key, value, ...args) => {
+            if (key === 'metadata.json') {
+                if (conflict) {
+                    conflict = false;
+                    install(remote, 8, true);
+                    h.cloud.set(key, JSON.stringify(remote));
+                    h.cloud.set('exercises/drawings/' + base, 'CLOUD 8');
+                    if (kind === 'redo') h.cloud.set('exercises/drawings/exercise_redo_drawing_task_0_id_r1', 'CLOUD 8');
+                    throw Object.assign(new Error('another device graded during publication'), { status: 412 });
+                }
+                const q = question(JSON.parse(value).exercises);
+                assert.equal(q.score, race ? 8 : 9, 'first successful publication must use the cloud grading snapshot');
+                if (kind === 'redo') assert.equal(q.redoDrawings[0].score, race ? 8 : 9);
+            }
+            return put(key, value, ...args);
+        };
+        let pending;
+        Object.assign(h.context, { _nbSaveTimer: null, nbSnippetCache: {}, nbThumbCache: {},
+            nbState: { notebookId: 'nb', pageIndex: 0, dirty: true,
+                content: { strokes: [], texts: [{ text: 'NEW NOTE' }], media: [] } },
+            nbSyncNotebookEvent: (action, id) => { pending = h.context.triggerSyncOnFileChange(id, action); } });
+        await h.context.nbSavePageNow();
+        await pending;
+        await h.drainTimers();
+        assert.deepEqual(h.errors, []);
+        assert.equal(question(h.context.appData.exercises).score, race ? 8 : 9);
+        assert.equal(question(h.context.appData.exercises).userDrawing, undefined, 'stale inline display cache is cleared');
+        const imageKey = kind === 'redo' ? 'exercise_redo_drawing_task_0_id_r1' : base;
+        assert.equal(h.idb.get(imageKey), race ? 'CLOUD 8' : 'CLOUD 9');
+        assert.equal(h.calls.some(call => call === 'PUT exercises/drawings/' + imageKey), false);
+        await h.context.performAutoSync();
+        await h.drainTimers();
+        assert.deepEqual(h.errors, []);
+        assert.equal(question(JSON.parse(h.cloud.get('metadata.json')).exercises).score, race ? 8 : 9);
+        assert.equal(h.cloud.get('exercises/drawings/' + imageKey), race ? 'CLOUD 8' : 'CLOUD 9');
+    }
+}
+async function checkImportedPublicationConflicts(html) {
+    for (const mode of ['orphan-image', 'image-create-race', 'new-local-grading']) {
+        const local = data(), remote = data(true);
+        local.exercises.folders[0].tasks = [{ id: 'offline', questions: [{ index: 0, status: 'done',
+            score: 2, userDrawingPages: 1, gradedDrawingCloudCommitted: 'imported' }] }];
+        const h = harness(html, local, remote), key = 'exercises/drawings/exercise_drawing_offline_0';
+        h.idb.set('exercise_drawing_offline_0', 'BACKUP IMAGE');
+        if (mode === 'orphan-image') h.cloud.set(key, 'DIFFERENT CLOUD IMAGE');
+        const get = h.context.r2GetObject, put = h.context.r2PutObject;
+        let changed = false;
+        h.context.r2GetObject = async (...args) => {
+            const value = await get(...args);
+            if (mode === 'new-local-grading' && args[0] === key && !changed) {
+                changed = true;
+                h.context._exGradedCloudCommitCounter++;
+                Object.assign(h.context.appData.exercises.folders[0].tasks[0].questions[0], {
+                    score: 8, gradedDrawingCloudCommitted: false, gradedDrawingCommitId: 'new-grade' });
+                h.idb.set('exercise_drawing_offline_0', 'NEW LOCAL IMAGE');
+            }
+            return value;
+        };
+        h.context.r2PutObject = async (...args) => {
+            if (mode === 'image-create-race' && args[0] === key) h.cloud.set(key, 'DIFFERENT CLOUD IMAGE');
+            return put(...args);
+        };
+        await assert.rejects(h.context.r2SyncMetadataOnly());
+        assert.equal(h.calls.includes('PUT metadata.json'), false, mode + ': no mismatched grading is published');
+        assert.deepEqual(JSON.parse(h.cloud.get('metadata.json')), remote);
+        if (mode === 'new-local-grading') {
+            await h.context.r2SyncMetadataOnly();
+            assert.equal(JSON.parse(h.cloud.get('metadata.json')).exercises.folders[0].tasks[0].questions[0].score, 8);
+            assert.equal(h.cloud.get(key), 'NEW LOCAL IMAGE');
+        } else assert.equal(h.cloud.get(key), 'DIFFERENT CLOUD IMAGE');
+    }
+}
+async function checkRedoPageCountIsolation(html) {
+    const local = data();
+    // State produced by completing a two-page redo while the one-page original is still pending.
+    local.exercises.wrongByFolder.folder = [{ taskId: 'task', questions: [{ questionIndex: 0,
+        score: 9, userDrawingPages: 1, pageCount: 2, gradedDrawingCloudCommitted: false,
+        userDrawing: 'REDO 0', userDrawingExtra: ['REDO 1'], redoDrawings: [{ drawingId: 'r1',
+            pages: 2, drawing: 'REDO 0', extra: ['REDO 1'], gradedDrawingCloudCommitted: false }] }] }];
+    const h = harness(html, local, data());
+    h.idb.set('exercise_drawing_task_0', 'ORIGINAL');
+    h.idb.set('exercise_redo_drawing_task_0_id_r1', 'REDO 0');
+    h.idb.set('exercise_redo_drawing_task_0_id_r1_p1', 'REDO 1');
+    await h.context.r2SyncMetadataOnly();
+    await h.drainTimers();
+    assert.deepEqual(h.errors, []);
+    assert.equal(h.cloud.get('exercises/drawings/exercise_drawing_task_0'), 'ORIGINAL');
+    assert.equal(h.cloud.has('exercises/drawings/exercise_drawing_task_0_p1'), false);
+    for (const base of ['exercise_redo_drawing_task_0_id_r1', 'exercise_redo_drawing_task_0_0']) {
+        for (let p = 0; p < 2; p++) assert.equal(h.cloud.get('exercises/drawings/' + base + (p ? '_p1' : '')), 'REDO ' + p);
+    }
+    await h.context.r2SyncMetadataOnly();
+    assert.deepEqual(h.errors, []);
+}
+async function checkMissingDrawingStillRestores(html) {
+    for (const sync of ['autoSyncFromR2OnStartup', 'performAutoSync']) {
+        const local = data(), remote = data(true);
+        local.exercises.folders[0].tasks = [{ id: 'offline', questions: [{ index: 0, status: 'done',
+            score: 2, userDrawingPages: 1, gradedDrawingCloudCommitted: false }] }];
+        remote.books = [{ id: 'cloud-pdf', addedAt: remote.syncedAt }];
+        local.notebooks = remote.notebooks = { items: [{ id: 'nb', updatedAt: remote.syncedAt,
+            pages: [{ id: 'p', updatedAt: remote.syncedAt }] }], reviews: [] };
+        const h = harness(html, local, remote);
+        await h.context.importDataZip({ target: { value: 'missing.zip', files: [{}] } });
+        await h.drainTimers();
+        const page = JSON.stringify({ updatedAt: remote.syncedAt, texts: [{ text: 'CLOUD PAGE' }] });
+        h.cloud.set('files/cloud-pdf.pdf', 'CLOUD PDF');
+        h.cloud.set('notebooks/pages/nbpage_p', page);
+        const run = h.context[sync]();
+        if (sync === 'performAutoSync') await assert.rejects(run, /drawing is missing/);
+        else await run;
+        await h.drainTimers();
+        assert.equal(h.calls.includes('PUT metadata.json'), false, 'incomplete scores still cannot publish');
+        assert.deepEqual(JSON.parse(h.cloud.get('metadata.json')), remote);
+        assert.equal(h.idb.get('nbpage_p'), page, sync + ': missing grading image does not block notebook download');
+        if (sync === 'autoSyncFromR2OnStartup') assert.equal(h.idb.get('cloud-pdf'), 'CLOUD PDF');
+        assert.equal(h.errors.length, 1, h.errors.join('\n'));
+        // After the missing image is recovered, a normal retry can complete without restarting.
+        h.idb.set('exercise_drawing_offline_0', 'RECOVERED ANSWER');
+        h.errors.length = 0;
+        await h.context.performAutoSync();
+        await h.drainTimers();
+        assert.deepEqual(h.errors, []);
+        assert.ok(h.calls.includes('PUT metadata.json'));
+    }
+}
+async function checkClassroomFirstThenNotebookSync(html) {
+    for (const sync of ['syncToR2', 'performAutoSync', 'autoSyncFromR2OnStartup']) {
+        for (const restart of [false, true]) {
+            const local = data();
+            local.classroom.courses = [{ id: 'course', createdAt: local.syncedAt, sessions: [] }];
+            local.notebooks = { items: [{ id: 'offline-notebook', createdAt: local.syncedAt,
+                pages: ['p1', 'p2'].map(id => ({ id, createdAt: local.syncedAt })) }],
+                reviews: [{ id: 'offline-review', notebookId: 'offline-notebook', createdAt: local.syncedAt }] };
+            let h = harness(html, local, local);
+            h.cloud.delete('metadata.json');
+            const bodies = new Map(['p1', 'p2'].map(id => ['nbpage_' + id,
+                JSON.stringify({ updatedAt: local.syncedAt, strokes: [{ points: [1, 2] }],
+                    texts: [{ text: 'OFFLINE ' + id }], media: [] })]));
+            for (const [key, value] of bodies) h.idb.set(key, value);
+            await h.context.r2SyncMetadataOnly({ classroomOnly: true });
+            await h.drainTimers();
+            if (restart) {
+                const persisted = JSON.parse(h.context.localStorage.getItem('mathReader'));
+                persisted.exercises = JSON.parse(h.idb.get('__exercises_data__'));
+                const reopened = harness(html, persisted, JSON.parse(h.cloud.get('metadata.json')));
+                for (const [key, value] of h.idb) reopened.idb.set(key, value);
+                for (const [key, value] of h.cloud) reopened.cloud.set(key, value);
+                h = reopened;
+            }
+            await h.context[sync]();
+            await h.drainTimers();
+            const label = sync + (restart ? ' after restart' : ' without restart');
+            assert.deepEqual(clone(h.context.appData.notebooks), local.notebooks, label + ': local directory survives');
+            assert.deepEqual(JSON.parse(h.cloud.get('metadata.json')).notebooks, local.notebooks,
+                label + ': cloud directory survives');
+            // Startup may only restore metadata; the next ordinary sync must publish the bodies too.
+            await h.context.performAutoSync();
+            await h.drainTimers();
+            assert.deepEqual(clone(h.context.appData.notebooks), local.notebooks, label + ': next sync stays intact');
+            assert.deepEqual(JSON.parse(h.cloud.get('metadata.json')).notebooks, local.notebooks);
+            for (const [key, value] of bodies) {
+                assert.equal(h.idb.get(key), value, label + ': local page body survives');
+                assert.equal(h.cloud.get('notebooks/pages/' + key), value, label + ': page body uploads');
+            }
+            assert.deepEqual(h.errors, []);
+        }
+    }
+}
 async function checkClassroomWithoutExerciseImages(html) {
     for (const mode of ['existing', 'missing', 'conflict']) for (const committed of ['imported', false]) {
         const local = data(), remote = data(true);
@@ -518,6 +720,15 @@ async function checkClassroomWithoutExerciseImages(html) {
         await assert.rejects(h.context.r2SyncMetadataOnly(), /drawing is missing/,
             'a full publication still requires every local grading image');
         assert.equal(h.cloud.get('metadata.json'), cloudBeforeFullPublish);
+        if (mode === 'missing') {
+            h.idb.set('exercise_drawing_offline_0', 'RECOVERED ANSWER');
+            await h.context.r2SyncMetadataOnly();
+            await h.context.autoSyncFromR2OnStartup();
+            await h.drainTimers();
+            assert.deepEqual(clone(h.context.appData.notebooks), before.notebooks,
+                'repairing the missing image and continuing sync must retain the offline notebook');
+            assert.deepEqual(JSON.parse(h.cloud.get('metadata.json')).notebooks, before.notebooks);
+        }
     }
 }
 async function checkCacheRecovery(html) {
@@ -608,6 +819,11 @@ async function checkCacheRecovery(html) {
         await checkOldGrading(html);
         await checkImportedOfflineGrading(html);
         await checkClassroomWithoutExerciseImages(html);
+        await checkClassroomFirstThenNotebookSync(html);
+        await checkRedoPageCountIsolation(html);
+        await checkImportedGradeOnNotebookEdit(html);
+        await checkImportedPublicationConflicts(html);
+        await checkMissingDrawingStillRestores(html);
         await checkNotebookUploads(html);
         await checkCacheRecovery(html);
         console.log(file + ': import/startup/periodic recovery, legacy data, concurrent edits and PDF retry passed');

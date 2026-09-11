@@ -158,6 +158,9 @@ public class MainActivity extends AppCompatActivity {
                 // activity on the bookshelf instead of letting the process exit.
                 Log.e(TAG, "WebView renderer gone; didCrash=" + detail.didCrash()
                         + ", priority=" + detail.rendererPriorityAtExit());
+                if (downloadBridge != null) {
+                    downloadBridge.onDestroy();
+                }
                 if (penBridge != null) {
                     penBridge.onDestroy();
                     penBridge = null;
@@ -242,7 +245,7 @@ public class MainActivity extends AppCompatActivity {
                     Log.w(TAG, "download failed: " + url, e);
                 }
             }
-            // blob: URL 由 boox-pen.js 拦截走 DownloadBridge.saveBase64
+            // blob: URL 由 boox-pen.js 拦截，分块传给 DownloadBridge
         });
 
         penBridge = new BooxPenBridge(this, webView);
@@ -349,6 +352,9 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if (downloadBridge != null) {
+            downloadBridge.onDestroy();
+        }
         if (penBridge != null) {
             penBridge.onDestroy();
         }

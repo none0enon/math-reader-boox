@@ -15,8 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Check handwriting input and shared page
+      - name: Check local exports, handwriting input and shared page
         run: |
+          node tests/zip-export.test.js
+          node tests/boox-download.test.js
           node tests/notebook-input.test.js
           node tests/native-selection.test.js
           node tests/boox-pen.test.js

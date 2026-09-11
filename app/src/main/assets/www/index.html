@@ -16720,6 +16720,8 @@
                     JSON.stringify(metadata.notebooks || { items: [], reviews: [] })) {
                     repairMetadataAfterStartup = true;
                 }
+                // 沿用 PR88 的讲义/笔记修复范围；习题元数据补传不上传笔记正文。
+                const repairNotebookPagesAfterStartup = repairMetadataAfterStartup;
                 if (metadata.exercises) {
                     const cloudEx = metadata.exercises;
                     const localEx = appData.exercises || { folders: [], wrongByFolder: {}, archivedWrong: {} };
@@ -16801,7 +16803,7 @@
                 if (repairMetadataAfterStartup) {
                     // 修复只补齐云端缺的那部分：正文按版本增量上传，不把本机旧正文回传。
                     await r2SyncChangedLectureContents();
-                    await r2SyncAllNotebookPages();
+                    if (repairNotebookPagesAfterStartup) await r2SyncAllNotebookPages();
                     await r2SyncMetadataOnly();
                 }
                 if (config.lastSyncTime || metadata.syncedAt) {
@@ -17993,8 +17995,15 @@
                     _callNativeRecording('deleteRecording', id);
                     await deleteFileData('classroom_' + id).catch(() => {});
                 }
+                // 备份中的待上传标记属于导出时的旧状态；导入后按 PR88 从云端恢复。
+                // 保留评分和图片，以及正常本机新评分的断点补传。
+                for (const entry of exCollectUncommittedGradedCloudEntries(appData.exercises)) {
+                    for (const record of entry.records) delete record.gradedDrawingCloudCommitted;
+                }
                 if (typeof saveExercisesToIDB === 'function') await saveExercisesToIDB();
-                saveData();
+                const metadataSaved = saveData();
+                const exercisesSaved = await exWaitForExercisesDataSaves();
+                if (!metadataSaved || !exercisesSaved) throw new Error(i18n('storage_save_failed'));
                 await restoreBlobsFromIDB();
                 applySettings();
                 renderLibrary();
@@ -26090,7 +26099,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             currentExerciseFolder = null;
             currentExerciseTask = null;
             // 旧版本同一题每次评分都会并列新增一条错题，这里按题号去重只留最近一条
-            if (exDedupeWrongQuestions()) { saveData(); debouncedChatSync(); }
+            if (exDedupeWrongQuestions()) saveData();
             document.body.classList.remove('exercise-folder-active');
             document.getElementById('exercisesGrid').style.display = '';
             document.getElementById('exerciseFolderView').style.display = 'none';

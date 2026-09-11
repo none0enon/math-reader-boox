@@ -21,6 +21,8 @@ jobs:
           cp app/src/main/assets/www/manifest.json docs/
           cp app/src/main/assets/www/sw.js docs/
           cp app/src/main/assets/www/icon-infinity-white.svg docs/
+          cp app/src/main/assets/www/icon-192.png docs/
+          cp app/src/main/assets/www/icon-512.png docs/
           cp app/src/main/assets/www/recording-storage.js docs/
           cp app/src/main/assets/www/classroom-storage.js docs/
           cp app/src/main/assets/www/recording-ai.js docs/

@@ -14,6 +14,23 @@ function zipFunctions(file) {
 
 const source = zipFunctions('app/src/main/assets/www/index.html');
 assert.equal(zipFunctions('docs/index.html'), source, 'APK and web ZIP writers must match');
+for (const file of ['app/src/main/assets/www/index.html', 'docs/index.html']) {
+    const page = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    const start = page.indexOf('                appData = {', page.indexOf('async function importDataZip('));
+    const end = page.indexOf('\n                };', start) + '\n                };'.length;
+    const imported = {
+        lectureDrafts: { chapter: { html: 'draft', canvas: 'data:image/png;base64,AA==' } },
+        lectureDrawings: { chapter: 'data:image/png;base64,AA==' },
+        lectureStrokesData: { chapter: [{ points: [{ x: 4, y: 8 }] }] }
+    };
+    const ctx = vm.createContext({ imported, oldSettings: {}, pickApiSettingsFrom: () => ({}),
+        mergeClassroomTombstones: value => value || [] });
+    vm.runInContext(page.slice(start, end), ctx);
+    for (const key of Object.keys(imported)) assert.equal(ctx.appData[key], imported[key], key);
+    ctx.imported = {};
+    vm.runInContext(page.slice(start, end), ctx);
+    for (const key of Object.keys(imported)) assert.equal(JSON.stringify(ctx.appData[key]), '{}', key);
+}
 const context = vm.createContext({ Blob, Uint8Array, ArrayBuffer, TextEncoder, i18n: key => key });
 vm.runInContext(source, context);
 

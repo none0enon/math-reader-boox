@@ -14416,16 +14416,15 @@
         }
 
         async function r2PublishMetadataWithCas(localMetadata, classroomIntent, options = {}) {
-            // 导入的离线评分也必须先有完整图片，不能先发布只有分数的索引。
-            await exEnsureImportedGradedPages();
-            // 这是 metadata.json 所有发布路径的最后一道门（包括手动全量同步和
-            // 云端尚无 metadata 时的课堂首传）。刷新 exercises 快照，确保刚上传
-            // 完成的持久标记也进入本次 CAS。
-            const gradingFlush = await exFlushGradedDrawingCloudCommits();
-            localMetadata = {
-                ...localMetadata,
-                exercises: gradingFlush.exercisesForPublish
-            };
+            if (!options.classroomOnly) {
+                // 发布本地评分前必须先有完整图片；课堂专用请求不携带本地习题。
+                await exEnsureImportedGradedPages();
+                const gradingFlush = await exFlushGradedDrawingCloudCommits();
+                localMetadata = {
+                    ...localMetadata,
+                    exercises: gradingFlush.exercisesForPublish
+                };
+            }
             const frozenClassroom = classroomIntent || stripClassroomData(appData.classroom, false);
             let lastConflict = null;
             for (let attempt = 0; attempt < 5; attempt++) {
@@ -14456,8 +14455,9 @@
                 const mergedIntent = remoteClassroomCount === 0 && localClassroomCount > 0
                     ? localClassroom
                     : mergeClassroomData(remoteClassroom, localClassroom, remoteBaseline);
-                let candidateBase = options.classroomOnly && remoteMetadata
-                    ? remoteMetadata
+                // 课堂首传也只创建课堂索引，不能顺带发布未校验的本地习题和笔记。
+                let candidateBase = options.classroomOnly
+                    ? (remoteMetadata || {})
                     : localMetadata;
                 if (!options.classroomOnly) {
                     // 文件变更同步不会先跑完整的 pull。提交前把远端同一条习题的版本化
@@ -14532,11 +14532,11 @@
                         Date.parse(candidate.syncedAt) || 0);
                     await cleanupClassroomEntriesRemovedByMerge(liveBefore, applied);
                     appData.classroom = applied;
-                    appData.lectures = mergeLecturesData(candidate.lectures, appData.lectures,
-                        Date.parse(candidate.syncedAt) || 0);
-                    appData.notebooks = mergeNotebooksData(candidate.notebooks, appData.notebooks,
-                        Date.parse(candidate.syncedAt) || 0);
                     if (!options.classroomOnly) {
+                        appData.lectures = mergeLecturesData(candidate.lectures, appData.lectures,
+                            Date.parse(candidate.syncedAt) || 0);
+                        appData.notebooks = mergeNotebooksData(candidate.notebooks, appData.notebooks,
+                            Date.parse(candidate.syncedAt) || 0);
                         // 网络等待期间本机可能又产生了更新；仍用同一套版本规则合回活对象，
                         // 既接收远端较新的清空，也不会压掉刚发生的本机重做。
                         exMergeMatchingExerciseHistories(appData.exercises, candidate.exercises, true);

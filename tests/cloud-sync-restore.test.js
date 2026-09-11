@@ -478,6 +478,48 @@ async function checkImportedOfflineGrading(html) {
         }
     }
 }
+async function checkClassroomWithoutExerciseImages(html) {
+    for (const mode of ['existing', 'missing', 'conflict']) for (const committed of ['imported', false]) {
+        const local = data(), remote = data(true);
+        local.exercises.folders[0].tasks = [{ id: 'offline', questions: [{ index: 0, status: 'done',
+            score: 10, gradedDrawingCloudCommitted: committed }] }];
+        local.classroom.courses = [{ id: 'new-course', name: 'Classroom edit', sessions: [] }];
+        local.notebooks.items = [{ id: 'offline-notebook', createdAt: local.syncedAt,
+            pages: [{ id: 'offline-page', createdAt: local.syncedAt }] }];
+        local.lectures = { book: { createdAt: local.syncedAt, chapters: [] } };
+        const h = harness(html, local, remote);
+        if (mode === 'missing') h.cloud.delete('metadata.json');
+        const before = clone(h.context.appData);
+        const put = h.context.r2PutObject;
+        let conflict = mode === 'conflict';
+        h.context.setTimeout = fn => { queueMicrotask(fn); return 1; };
+        h.context.r2PutObject = async (key, ...args) => {
+            if (key === 'metadata.json' && conflict) {
+                conflict = false;
+                remote.exercises.folders.push({ id: 'concurrent-cloud-folder', tasks: [] });
+                h.cloud.set(key, JSON.stringify(remote));
+                throw Object.assign(new Error('metadata conflict'), { status: 412 });
+            }
+            return put(key, ...args);
+        };
+        await h.context.r2SyncMetadataOnly({ classroomOnly: true });
+        await h.drainTimers();
+        assert.deepEqual(h.errors, []);
+        const published = JSON.parse(h.cloud.get('metadata.json'));
+        assert.equal(published.classroom.courses[0].id, 'new-course');
+        assert.deepEqual(published.exercises, mode === 'missing' ? undefined : remote.exercises,
+            'classroom-only publication never includes unchecked local exercises, including initial cloud creation');
+        assert.equal(h.calls.some(call => call.includes('exercises/drawings/')), false,
+            'classroom-only publication neither waits for nor accesses unrelated drawings');
+        assert.deepEqual(clone(h.context.appData.exercises), before.exercises);
+        assert.deepEqual(clone(h.context.appData.notebooks), before.notebooks, 'classroom first upload preserves offline notebooks');
+        assert.deepEqual(clone(h.context.appData.lectures), before.lectures);
+        const cloudBeforeFullPublish = h.cloud.get('metadata.json');
+        await assert.rejects(h.context.r2SyncMetadataOnly(), /drawing is missing/,
+            'a full publication still requires every local grading image');
+        assert.equal(h.cloud.get('metadata.json'), cloudBeforeFullPublish);
+    }
+}
 async function checkCacheRecovery(html) {
     const local = data();
     local.exercises.folders[0].tasks = [{ id: 'task', questions: [{ index: 0, status: 'done', userDrawingPages: 2 }] }];
@@ -565,6 +607,7 @@ async function checkCacheRecovery(html) {
         await checkPdfBackgroundRetry(html);
         await checkOldGrading(html);
         await checkImportedOfflineGrading(html);
+        await checkClassroomWithoutExerciseImages(html);
         await checkNotebookUploads(html);
         await checkCacheRecovery(html);
         console.log(file + ': import/startup/periodic recovery, legacy data, concurrent edits and PDF retry passed');

@@ -22006,9 +22006,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             addTypingIndicator(container);
 
             try {
-                // AI 人设仅在此"不知道，给我建议"聊天中注入
-                const persona = getAIPersona();
-                let basePrompt = i18n('prompt_chat_base');
+                // 错题沿用选中文字的数学解释提示词，仅普通聊天注入 AI 人设
+                const persona = window._wrongAIChatOverride ? '' : getAIPersona();
+                let basePrompt = i18n(window._wrongAIChatOverride ? 'prompt_math_explain' : 'prompt_chat_base');
 
                 // 如果有错题上下文，注入到系统提示中
                 if (window._wrongAIChatOverride && window._wrongAIContext) {

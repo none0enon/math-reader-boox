@@ -114,7 +114,7 @@ async function checkStartup(html) {
     remote.notebooks.items[0].pages.push({ id: 'p2', updatedAt: remote.syncedAt });
     local.exercises.wrongByFolder.folder = [{ taskId: 'old-task', questions: [{ questionIndex: 0, score: 1 }] }];
     const h = harness(html, local, remote);
-    const page = (updatedAt, text) => JSON.stringify({ updatedAt, strokes: [], texts: [{ text }], media: [] });
+    const page = (updatedAt, text) => JSON.stringify({ updatedAt, strokes: [], texts: [{ text }], media: [], recognized: null });
     h.idb.set('nbpage_p1', page(local.syncedAt, 'OLD BACKUP PAGE'));
     h.idb.set('exercise_drawing_old-task_0', 'old local exercise image');
     h.cloud.set('notebooks/pages/nbpage_p1', page(remote.syncedAt, 'NEW CLOUD PAGE'));

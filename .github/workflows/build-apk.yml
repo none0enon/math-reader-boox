@@ -18,6 +18,7 @@ jobs:
       - name: Check handwriting input and shared page
         run: |
           node tests/cloud-sync-restore.test.js
+          node tests/notebook-cloud-sync.test.js
           node tests/zip-import.test.js
           node tests/notebook-input.test.js
           node tests/native-selection.test.js

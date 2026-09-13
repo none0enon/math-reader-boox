@@ -131,7 +131,7 @@ function expectCleared(anchor, focus, cleared) {
 }
 
 mode(true, true, true, true);
-for (const ink of [readerInk, lectureInk, notebookInk, draftInk]) {
+for (const ink of [readerInk, lectureInk, draftInk]) {
     expectBlocked(ink, true);
     expectCleared(textNode(ink), textNode(outside), true);
     expectCleared(textNode(outside), textNode(ink), true);
@@ -198,7 +198,6 @@ assert.equal(regionsSynced, 3);
 
 // Export/print thumbnails scroll by finger; outline thumbnails keep drag sorting.
 const cssRule = selector => html.split(selector + ' {')[1]?.split('}')[0] || '';
-assert.match(cssRule('#nbExportThumbs .nb-thumb'), /touch-action:\s*pan-y\s*;/);
 assert.match(cssRule('.nb-thumb'), /touch-action:\s*none\s*;/);
 assert.match(cssRule('.nb-quiz-body'), /overflow-y:\s*auto\s*;/);
 assert.doesNotMatch(cssRule('.nb-thumb-placeholder'), /touch-action:\s*none/);

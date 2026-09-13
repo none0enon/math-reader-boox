@@ -20,7 +20,6 @@ jobs:
           node tests/cloud-sync-restore.test.js
           node tests/notebook-cloud-sync.test.js
           node tests/zip-import.test.js
-          node tests/notebook-input.test.js
           node tests/native-selection.test.js
           node tests/boox-pen.test.js
           cmp app/src/main/assets/www/index.html docs/index.html

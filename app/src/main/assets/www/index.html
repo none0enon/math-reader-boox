@@ -28041,11 +28041,24 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 exPositionTimestamp(exTaskPosition(task)),
                 exPositionTimestamp(exReadLocalPosition(taskId))
             );
-            exApplyPosition(task, {
+            const position = {
                 taskId,
                 lastOpenedQuestionIndex: questionIndex,
                 lastOpenedQuestionUpdatedAt: Math.max(Date.now(), previousTimestamp + 1)
-            });
+            };
+            if (force) {
+                exApplyPosition(task, position);
+                return true;
+            }
+            // 打开题目只立即保存题号小记录，避免切题时重复全量保存。
+            task.lastOpenedQuestionIndex = position.lastOpenedQuestionIndex;
+            task.lastOpenedQuestionUpdatedAt = position.lastOpenedQuestionUpdatedAt;
+            try {
+                localStorage.setItem(exLocalPositionKey(taskId), JSON.stringify(position));
+            } catch (e) {
+                console.warn('[exercise] 保存最后打开题失败，回退完整保存:', e);
+                saveData();
+            }
             return true;
         }
 

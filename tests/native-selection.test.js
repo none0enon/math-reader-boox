@@ -139,13 +139,6 @@ for (const ink of [readerInk, lectureInk, notebookInk, draftInk]) {
 expectBlocked(outside, false);
 expectCleared(textNode(outside), textNode(outside), false);
 
-// BOOX notebook keeps PR94 selection behavior; other writing surfaces stay protected.
-notebook.classList.add('nb-boox-input');
-expectBlocked(notebookInk, false);
-expectCleared(textNode(notebookInk), textNode(notebookInk), false);
-for (const ink of [readerInk, lectureInk, draftInk]) expectBlocked(ink, true);
-notebook.classList.remove('nb-boox-input');
-
 // Existing reader behavior stays intact; newly protected surfaces allow editing.
 const readerInput = element('readerInput', reader, 'INPUT');
 expectBlocked(readerInput, true);

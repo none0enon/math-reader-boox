@@ -73,10 +73,10 @@ const context = vm.createContext({
     requestAnimationFrame: callback => callback(), cancelAnimationFrame: noop,
 });
 const functions = ['booxReaderIsPen', 'nbDisplayScale', 'nbEventPoint', 'nbLayout',
-    'nbZoomSet', 'nbInitCanvasEvents', 'nbPointerDown', 'nbPointerMove', 'nbPointerUp',
+    'nbZoomSet', 'nbInitCanvasEvents', 'nbPointerDown', 'nbPointerMove', 'nbPointerUp', 'nbCancelDrawing',
     'nbEraseAt', 'nbStrokeHits', 'nbSegDist', 'nbSelStrokes', 'nbCopySelStrokes', 'nbSelBBox',
     'nbTranslateSelection', 'nbClearSelection', 'nbBuildTextEl', 'nbBuildMediaEl', 'nbApplyOp'];
-vm.runInContext('let _nbActivePointerId = null;\n'
+vm.runInContext('let _nbActivePointerId = null, _nbActivePointerIsPen = false, _nbTouchGesture = null;\n'
     + functions.map(source).join('\n'), context);
 
 function pointer(type, id = 1, x = 10, y = 20) {
@@ -134,47 +134,248 @@ assert.equal(element('nbPageBox').style.height, '1414px');
 
 context.nbInitCanvasEvents();
 const wrap = element('nbCanvasWrap');
-// No custom touch navigation remains in either Pencil mode or normal mode.
-for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
-    assert.equal(wrap.listeners[type], undefined, 'no notebook ' + type + ' navigation handler');
+function touch(x, y, type = 'direct', identifier = 1) {
+    return { clientX: x, clientY: y, touchType: type, identifier };
 }
-for (const pencilOnly of [false, true]) {
-    context.applePencilMode = pencilOnly;
-    const before = [wrap.scrollLeft, wrap.scrollTop, context.nbState.zoom];
-    context.nbPointerDown(pointer('touch', 11));
+function dispatch(type, touches, target = element('nbCanvas')) {
+    const event = { type, touches, target,
+        preventDefault() { this.prevented = true; }, stopPropagation: noop };
+    for (const callback of wrap.listeners[type] || []) callback(event);
+    return event;
+}
+assert.ok(wrap.listeners.touchstart, 'notebook wrapper handles touch navigation');
+dispatch('touchstart', [touch(100, 100)]);
+dispatch('touchmove', [touch(120, 130)]);
+assert.equal(wrap.scrollLeft, 180, 'one finger pans horizontally');
+assert.equal(wrap.scrollTop, 170, 'one finger pans vertically');
+dispatch('touchend', []);
+
+dispatch('touchstart', [touch(100, 100), touch(200, 100, 'direct', 2)]);
+dispatch('touchmove', [touch(50, 100), touch(250, 100, 'direct', 2)]);
+dispatch('touchend', []);
+assert.equal(context.nbState.zoom, 1, 'spreading two fingers never zooms');
+assert.equal(wrap.scrollLeft, 180, 'spreading fingers at a fixed center does not pan horizontally');
+assert.equal(wrap.scrollTop, 170, 'spreading fingers at a fixed center does not pan vertically');
+
+const zoom = context.nbState.zoom;
+dispatch('touchstart', [touch(100, 100, 'stylus'), touch(200, 100, 'direct', 2)]);
+dispatch('touchmove', [touch(50, 100, 'stylus'), touch(250, 100, 'direct', 2)]);
+dispatch('touchend', []);
+assert.equal(context.nbState.zoom, zoom, 'Pencil plus finger never becomes a pinch');
+
+context.nbPointerDown(pointer('pen', 6));
+const inkScrollTop = wrap.scrollTop;
+dispatch('touchstart', [touch(100, 100)]);
+dispatch('touchmove', [touch(100, 200)]);
+assert.equal(wrap.scrollTop, inkScrollTop, 'a palm cannot scroll an active Pencil stroke');
+context.nbPointerUp(pointer('pen', 6));
+dispatch('touchend', []);
+
+dispatch('touchstart', [touch(100, 100)]);
+dispatch('touchcancel', []);
+const scrollTop = wrap.scrollTop;
+dispatch('touchmove', [touch(100, 200)]);
+assert.equal(wrap.scrollTop, scrollTop, 'cancelled gesture cannot keep scrolling');
+
+function reset(tool = 'pen') {
+    context.nbCancelDrawing();
+    dispatch('touchend', []);
+    context.document.activeElement = null;
+    context.applePencilMode = false;
+    Object.assign(context.nbState, { tool, zoom: 1, fitScale: 1, drawing: null,
+        selection: null, dirty: false, content: { strokes: [], texts: [], media: [] } });
+    context.operations.length = 0;
+    context.nbHitBoxAt = () => null;
+    wrap.scrollLeft = 200; wrap.scrollTop = 200;
+}
+const twoFingers = [touch(100, 100), touch(200, 100, 'direct', 2)];
+function startFinger(x = 10, y = 20) {
+    context.nbPointerDown(pointer('touch', 11, x, y));
+    dispatch('touchstart', [touch(x, y)]);
+}
+function startTwoFingerPan(target) {
     context.nbPointerDown({ ...pointer('touch', 12), isPrimary: false });
-    context.nbPointerMove(pointer('touch', 12, 200, 300));
-    context.nbPointerUp(pointer('touch', 12));
-    context.nbPointerMove(pointer('touch', 11, 100, 200));
-    context.nbPointerUp(pointer('touch', 11));
-    assert.deepEqual([wrap.scrollLeft, wrap.scrollTop, context.nbState.zoom], before);
+    dispatch('touchstart', twoFingers, target);
+}
+function docPointer(type, x, y, pointerType = 'touch') {
+    for (const callback of [...(documentListeners[type] || [])]) callback({ ...pointer(pointerType, 11, x, y), type });
 }
 
-// Existing text/media pointer cancellation still restores edits and removes listeners.
-context.applePencilMode = false;
+// Default mode: the first finger's uncommitted preview disappears when a second
+// finger takes over. Navigation never adds undo entries or finishes a lasso/text tap.
+for (const tool of ['pen', 'shape', 'lasso', 'text']) {
+    reset(tool);
+    const saved = { id: 'saved', paths: [[[400, 400], [500, 500]]] };
+    context.nbState.content.strokes.push(saved);
+    const existingOp = { t: 'existing' };
+    context.operations.push(existingOp);
+    const textCount = context.textCreated;
+    startFinger();
+    context.nbPointerMove(pointer('touch', 11, 50, 60));
+    startTwoFingerPan();
+    assert.equal(context.nbState.drawing, null, tool + ' preview cancelled');
+    context.nbPointerUp(pointer('touch', 11));
+    assert.deepEqual(context.nbState.content.strokes, [saved]);
+    assert.deepEqual(context.operations, [existingOp], 'navigation preserves undo history');
+    assert.equal(context.textCreated, textCount);
+    assert.equal(context.nbState.dirty, false, 'discarded preview needs no save');
+    dispatch('touchmove', [touch(100, 50), touch(200, 50, 'direct', 2)]);
+    assert.equal(wrap.scrollTop, 250, tool + ' allows two-finger pan');
+    dispatch('touchmove', [touch(50, 50), touch(250, 50, 'direct', 2)]);
+    assert.equal(context.nbState.zoom, 1, tool + ' never zooms with two fingers');
+    assert.equal(wrap.scrollTop, 250, 'spreading fingers does not move the page');
+    dispatch('touchend', [touch(50, 50)]);
+    const stoppedAt = wrap.scrollTop;
+    dispatch('touchmove', [touch(50, 100)]);
+    context.nbPointerMove(pointer('touch', 11, 80, 90));
+    assert.equal(wrap.scrollTop, stoppedAt, 'remaining finger cannot resume navigation or drawing');
+    assert.equal(context.nbState.drawing, null);
+    dispatch('touchend', []);
+}
+
+// Erasure mutates content immediately. Two separate removals use indices from
+// different array states, so undoing their chronological order is significant.
+reset('eraser');
+const original = [
+    { id: 'a', w: 1, paths: [[[10, 10]]] },
+    { id: 'b', w: 1, paths: [[[100, 100]]] },
+    { id: 'c', w: 1, paths: [[[60, 20]]] },
+];
+context.nbState.content.strokes.push(...original);
+startFinger(10, 10);
+context.nbPointerMove(pointer('touch', 11, 60, 20));
+assert.deepEqual(context.nbState.content.strokes.map(s => s.id), ['b']);
+context.nbState.dirty = false; // A previous autosave may have written the partial edit.
+startTwoFingerPan();
+assert.deepEqual(context.nbState.content.strokes, original, 'restore exact pre-gesture stroke order');
+assert.equal(context.nbState.dirty, true, 'persist the restored content after an earlier autosave');
+assert.equal(context.operations.length, 0);
+
+reset('lasso');
+context.nbState.content.strokes.push({ id: 'selected', paths: [[[10, 20], [20, 30]]] });
+const addSelectionOp = { t: 'add', list: [context.nbState.content.strokes[0]] };
+context.nbState.selection = { ids: ['selected'], bbox: context.nbSelBBox(['selected']) };
+const beforeMove = JSON.stringify(context.nbState.content.strokes);
+const beforeBounds = JSON.stringify(context.nbState.selection.bbox);
+startFinger();
+context.nbPointerMove(pointer('touch', 11, 30, 40));
+assert.notEqual(JSON.stringify(context.nbState.content.strokes), beforeMove);
+startTwoFingerPan();
+assert.equal(JSON.stringify(context.nbState.content.strokes), beforeMove);
+assert.equal(JSON.stringify(context.nbState.selection.bbox), beforeBounds);
+assert.equal(context.operations.length, 0);
+assert.equal(context.nbState.dirty, true);
+context.nbApplyOp(addSelectionOp, true);
+context.nbApplyOp(addSelectionOp, false);
+assert.equal(JSON.stringify(context.nbState.content.strokes), beforeMove, 'undo/redo keeps the restored stroke reference');
+
+reset();
+const hitBox = { id: 'hit', x: 10, y: 20 };
+context.nbHitBoxAt = () => ({ kind: 'text', obj: hitBox });
+startFinger();
+context.nbPointerMove(pointer('touch', 11, 30, 40));
+assert.equal(hitBox.x, 30);
+context.nbState.dirty = false; // Autosave ran while the box was away from its origin.
+context.nbPointerMove(pointer('touch', 11, 10, 20));
+startTwoFingerPan();
+assert.deepEqual(hitBox, { id: 'hit', x: 10, y: 20 });
+assert.equal(context.nbState.dirty, true);
+
+// Text/media DOM drags and resize handles participate in the same cancellation,
+// including removing their document listeners so later pointer events cannot move them.
 for (const kind of ['text', 'image', 'audio', 'resize']) {
-    context.document.activeElement = null;
+    reset();
     const obj = { id: kind, x: 10, y: 20, w: 220, fontSize: 18, type: kind };
     const el = (kind === 'text' || kind === 'resize') ? context.nbBuildTextEl(obj) : context.nbBuildMediaEl(obj);
     const target = kind === 'resize' ? el.children.find(c => c.dataset.c === 'br') : el;
     const before = JSON.stringify(obj);
     target.listeners.pointerdown[0]({ ...pointer('touch', 11), target });
-    for (const callback of [...documentListeners.pointermove]) callback(pointer('touch', 11, 50, 70));
-    assert.notEqual(JSON.stringify(obj), before);
-    for (const callback of [...documentListeners.pointercancel]) callback({ ...pointer('touch', 11), type: 'pointercancel' });
-    assert.equal(JSON.stringify(obj), before);
+    dispatch('touchstart', [touch(10, 20)], target);
+    docPointer('pointermove', 50, 70);
+    assert.notEqual(JSON.stringify(obj), before, kind + ' actually moved');
+    context.nbState.dirty = false; // A prior save may contain the transient position/size.
+    docPointer('pointermove', 10, 20);
+    startTwoFingerPan(target);
+    assert.equal(JSON.stringify(obj), before, kind + ' restored');
     assert.equal(context.nbState.drawing, null);
+    assert.equal(context.nbState.dirty, true);
     for (const type of ['pointermove', 'pointerup', 'pointercancel']) assert.equal(documentListeners[type].length, 0);
+    docPointer('pointermove', 90, 100);
+    assert.equal(JSON.stringify(obj), before);
+    dispatch('touchmove', [touch(100, 50), touch(200, 50, 'direct', 2)], target);
+    assert.equal(wrap.scrollTop, 250, kind + ' surface allows navigation');
+    assert.equal(context.operations.length, 0);
 }
 
-context.nbState.tool = 'text';
+// A real pen stroke or object drag is never rolled back by two fingers, even
+// when the Pencil-only preference is disabled.
+for (const pencilOnly of [false, true]) {
+    reset();
+    context.applePencilMode = pencilOnly;
+    context.nbPointerDown(pointer('pen', 11));
+    const penDrawing = context.nbState.drawing;
+    startTwoFingerPan();
+    dispatch('touchmove', [touch(100, 50), touch(200, 50, 'direct', 2)]);
+    assert.equal(context.nbState.drawing, penDrawing);
+    assert.equal(wrap.scrollTop, 200);
+    context.nbPointerUp(pointer('pen', 11));
+
+    reset();
+    context.applePencilMode = pencilOnly;
+    const obj = { id: 'pen-box', x: 10, y: 20 };
+    const el = context.nbBuildTextEl(obj);
+    el.listeners.pointerdown[0]({ ...pointer('pen', 11), target: el });
+    const penDrag = context.nbState.drawing;
+    startTwoFingerPan(el);
+    assert.equal(context.nbState.drawing, penDrag);
+    docPointer('pointermove', 40, 50, 'pen');
+    docPointer('pointerup', 40, 50, 'pen');
+    assert.equal(obj.x, 40);
+}
+
+reset('text');
 const textCount = context.textCreated;
-context.nbPointerDown(pointer('touch', 11));
-context.nbPointerUp({ ...pointer('touch', 11), type: 'pointercancel' });
-assert.equal(context.textCreated, textCount, 'a cancelled touch never creates text');
-context.nbPointerDown(pointer('touch', 11));
+startFinger();
+assert.equal(context.textCreated, textCount, 'text creation waits for tap release');
 context.nbPointerUp(pointer('touch', 11));
 assert.equal(context.textCreated, textCount + 1);
+reset('text');
+startFinger();
+context.nbPointerUp({ ...pointer('touch', 11), type: 'pointercancel' });
+assert.equal(context.textCreated, textCount + 1, 'a cancelled touch never creates text');
+reset();
+startFinger();
+context.nbPointerMove(pointer('touch', 11, 30, 40));
+context.nbPointerUp(pointer('touch', 11));
+assert.equal(context.nbState.content.strokes.length, 1, 'single-finger writing still commits');
+// BOOX's bridge is present before the adapter loads and remains present when
+// native rendering is suspended. Neither one nor two fingers may pan there.
+context.window.BooxPenNative = {};
+for (const pencilOnly of [false, true]) {
+    reset();
+    context.applePencilMode = pencilOnly;
+    for (const touches of [[touch(100, 100)], twoFingers]) {
+        const before = [wrap.scrollLeft, wrap.scrollTop, context.nbState.zoom];
+        dispatch('touchstart', touches);
+        dispatch('touchmove', touches.map(t => ({ ...t, clientX: t.clientX + 20, clientY: t.clientY + 50 })));
+        dispatch('touchend', []);
+        assert.deepEqual([wrap.scrollLeft, wrap.scrollTop, context.nbState.zoom], before);
+    }
+}
+delete context.window.BooxPenNative;
+// iPad has no native bridge: its existing Pencil-mode single-finger scroll works.
+reset();
+context.applePencilMode = true;
+dispatch('touchstart', [touch(100, 100)]);
+dispatch('touchmove', [touch(120, 150)]);
+assert.equal(wrap.scrollLeft, 180);
+assert.equal(wrap.scrollTop, 150);
+// A native bridge appearing mid-gesture must also stop further scrolling.
+context.window.BooxPenNative = {};
+dispatch('touchmove', [touch(140, 200)]);
+assert.equal(wrap.scrollTop, 150);
+dispatch('touchend', []);
+delete context.window.BooxPenNative;
 context.nbZoomSet(150);
 assert.equal(context.nbState.zoom, 1.5, 'existing zoom buttons remain available');
 console.log('Notebook input checks passed');

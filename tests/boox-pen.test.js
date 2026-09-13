@@ -13,8 +13,7 @@ function pageFunction(name) {
 
 for (const [canvasId, clipId, eraserId, widthFlag] of [
     ['lectureDrawCanvas', 'lectureViewerContent', 'lecturePenEraser', '__lectureNativeWidth'],
-    ['lectureDraftCanvas', 'lectureDraftCanvasWrapper', 'lectureDraftEraserToggle', '__lectureDraftNativeWidth'],
-    ['nbCanvas', 'nbCanvasWrap', 'nbEraserBtn', '__nbNativeWidth']
+    ['lectureDraftCanvas', 'lectureDraftCanvasWrapper', 'lectureDraftEraserToggle', '__lectureDraftNativeWidth']
 ]) {
     const calls = [], events = [], classes = new Set(), listeners = {};
     let covered = false, pointerEvents = 'auto', eraserToggles = 0;

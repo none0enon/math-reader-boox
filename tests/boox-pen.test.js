@@ -18,9 +18,10 @@ for (const [canvasId, clipId, eraserId, widthFlag] of [
 ]) {
     const calls = [], events = [], classes = new Set(), listeners = {};
     let covered = false, pointerEvents = 'auto', eraserToggles = 0;
-    // A long canvas scrolled into its middle: none of its original five sample
-    // points are visible. The SDK must sample and register only the viewport.
-    const rect = { left: -20, top: -1000, right: 920, bottom: 5000, width: 940, height: 6000 };
+    // Lectures retain viewport clipping; the PR94 notebook registers its fitted canvas.
+    const rect = canvasId === 'nbCanvas'
+        ? { left: 20, top: 40, right: 920, bottom: 740, width: 900, height: 700 }
+        : { left: -20, top: -1000, right: 920, bottom: 5000, width: 940, height: 6000 };
     const clip = { left: 0, top: 60, right: 900, bottom: 750, width: 900, height: 690 };
     const canvas = {
         isConnected: true, classList: { contains: () => false },
@@ -93,7 +94,9 @@ for (const [canvasId, clipId, eraserId, widthFlag] of [
             + '\nlectureDraftPenEnabled = true; initLectureDraftCanvas();', context);
     }
     pen.syncRegions();
-    assert.deepEqual(calls.at(-1), { rects: [[0, 120, 1800, 1500]], width: 6 }, canvasId);
+    assert.deepEqual(calls.at(-1), {
+        rects: [canvasId === 'nbCanvas' ? [40, 80, 1840, 1480] : [0, 120, 1800, 1500]], width: 6
+    }, canvasId);
     pen.syncRegions();
     assert.equal(calls.length, 1, 'unchanged regions must not restart native drawing');
 

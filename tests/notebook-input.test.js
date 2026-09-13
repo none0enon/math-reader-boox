@@ -36,11 +36,10 @@ function node(tagName = 'DIV') {
     return el;
 }
 function element(id) {
-    const classes = new Set(['show']);
     return elements[id] ||= {
         id, style: {}, listeners: {}, clientWidth: 1000, clientHeight: 700,
         scrollLeft: 200, scrollTop: 200,
-        classList: { contains: name => classes.has(name), add: name => classes.add(name) },
+        classList: { contains: () => true },
         addEventListener(type, callback) { (this.listeners[type] ||= []).push(callback); },
         getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 1414 }),
         setPointerCapture() {}, closest: () => null,
@@ -55,7 +54,7 @@ const context = vm.createContext({
         addEventListener: (type, callback) => { (documentListeners[type] ||= []).push(callback); },
         removeEventListener: (type, callback) => { documentListeners[type] = (documentListeners[type] || []).filter(f => f !== callback); },
     },
-    READER_ANDROID_HOST: false, applePencilMode: true, NB_PAGE_W: 1000, NB_PAGE_H: 1414, NB_MM: 4,
+    applePencilMode: true, NB_PAGE_W: 1000, NB_PAGE_H: 1414, NB_MM: 4,
     nbState: {
         tool: 'pen', shapeType: 'rect', fitScale: 1, zoom: 1, brushIndex: 0,
         brushes: [{ type: 'pen', color: '#111111', mm: 0.5 }],
@@ -154,15 +153,9 @@ dispatch('touchend', []);
 dispatch('touchstart', [touch(100, 100), touch(200, 100, 'direct', 2)]);
 dispatch('touchmove', [touch(50, 100), touch(250, 100, 'direct', 2)]);
 dispatch('touchend', []);
-assert.equal(context.nbState.zoom, 1, 'two fingers never zoom the notebook');
-assert.equal(wrap.scrollLeft, 180, 'spreading fingers around a fixed center does not pan horizontally');
-assert.equal(wrap.scrollTop, 170, 'spreading fingers around a fixed center does not pan vertically');
-
-context.nbZoomSet(150);
-dispatch('touchstart', [touch(100, 100), touch(200, 100, 'direct', 2)]);
-dispatch('touchmove', [touch(50, 100), touch(250, 100, 'direct', 2)]);
-dispatch('touchend', []);
-assert.equal(context.nbState.zoom, 1.5, 'two fingers preserve the manually selected zoom');
+assert.equal(context.nbState.zoom, 2, 'two fingers zoom using notebook zoom');
+assert.equal(wrap.scrollLeft, 510, 'pinch preserves the horizontal content anchor');
+assert.equal(wrap.scrollTop, 440, 'pinch preserves the vertical content anchor');
 
 const zoom = context.nbState.zoom;
 dispatch('touchstart', [touch(100, 100, 'stylus'), touch(200, 100, 'direct', 2)]);
@@ -229,7 +222,7 @@ for (const tool of ['pen', 'shape', 'lasso', 'text']) {
     dispatch('touchmove', [touch(100, 50), touch(200, 50, 'direct', 2)]);
     assert.equal(wrap.scrollTop, 250, tool + ' allows two-finger pan');
     dispatch('touchmove', [touch(50, 50), touch(250, 50, 'direct', 2)]);
-    assert.equal(context.nbState.zoom, 1, tool + ' never allows two-finger zoom');
+    assert.equal(context.nbState.zoom, 2, tool + ' allows two-finger zoom');
     dispatch('touchend', [touch(50, 50)]);
     const stoppedAt = wrap.scrollTop;
     dispatch('touchmove', [touch(50, 100)]);
@@ -354,93 +347,4 @@ startFinger();
 context.nbPointerMove(pointer('touch', 11, 30, 40));
 context.nbPointerUp(pointer('touch', 11));
 assert.equal(context.nbState.content.strokes.length, 1, 'single-finger writing still commits');
-
-// BOOX retains PR94 input: canvas pointers only, with no notebook pinch or pan.
-reset();
-context.READER_ANDROID_HOST = true;
-wrap.listeners = {};
-element('nbCanvas').listeners = {};
-element('nbCanvas')._nbBound = false;
-context.nbInitCanvasEvents();
-assert.ok(wrap.classList.contains('nb-boox-input'));
-for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
-    assert.equal(wrap.listeners[type], undefined, 'BOOX does not register ' + type);
-}
-for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
-    assert.equal(element('nbCanvas').listeners[type].length, 1, 'BOOX retains ' + type);
-}
-dispatch('touchstart', twoFingers);
-dispatch('touchmove', [touch(50, 50), touch(250, 50, 'direct', 2)]);
-dispatch('touchend', []);
-assert.equal(context.nbState.zoom, 1);
-assert.deepEqual([wrap.scrollLeft, wrap.scrollTop], [200, 200]);
-context.nbLayout();
-assert.equal(context.nbState.fitScale, Math.min(1000 / 1000, 700 / 1414));
-assert.equal(element('nbPageBox').style.height, '700px', 'BOOX fits the complete PR94 page');
-let textRenders = 0;
-context.nbRenderTexts = () => textRenders++;
-context.nbZoomSet(150);
-assert.equal(context.nbState.zoom, 1.5, 'manual zoom remains available');
-assert.equal(textRenders, 1, 'manual zoom rebuilds text as in PR94');
-dispatch('touchstart', twoFingers);
-dispatch('touchmove', [touch(50, 50), touch(250, 50, 'direct', 2)]);
-dispatch('touchend', []);
-assert.equal(context.nbState.zoom, 1.5, 'BOOX two-finger input preserves manual zoom');
-
-let finishedLasso = null;
-context.nbFinishLasso = points => { finishedLasso = points; };
-for (const type of ['pen', 'touch', 'mouse']) {
-    for (const tool of ['pen', 'eraser', 'lasso', 'shape', 'text']) {
-        reset(tool);
-        context.applePencilMode = true;
-        const saved = { id: 'saved', w: 1, paths: [[[10, 20]]] };
-        if (tool === 'eraser') context.nbState.content.strokes.push(saved);
-        const beforeText = context.textCreated;
-        finishedLasso = null;
-        context.nbPointerDown({ ...pointer(type, 71), isPrimary: false });
-        if (tool === 'text') {
-            assert.equal(context.textCreated, beforeText + 1, 'BOOX creates text on pointerdown');
-            assert.equal(context.nbState.drawing, null);
-        } else {
-            assert.ok(context.nbState.drawing, 'BOOX PR94 ' + tool + ' accepts ' + type);
-        }
-        context.nbPointerMove(pointer(type, 72, 30, 40));
-        context.nbPointerUp(pointer(type, 72));
-        assert.equal(context.nbState.drawing, null, 'BOOX does not lock release to pointerId');
-        if (tool === 'pen' || tool === 'shape') {
-            assert.equal(context.nbState.content.strokes.length, 1);
-            assert.equal(context.operations[0].t, 'add');
-            assert.equal(context.nbState.dirty, true);
-        } else if (tool === 'eraser') {
-            assert.equal(context.nbState.content.strokes.length, 0);
-            assert.equal(context.operations[0].t, 'del');
-            assert.equal(context.nbState.dirty, true);
-        } else if (tool === 'lasso') {
-            assert.equal(finishedLasso.length, 2, 'BOOX lasso keeps movement from the PR94 event path');
-        }
-    }
-}
-reset();
-context.nbPointerDown({ ...pointer('pen'), button: 2 });
-assert.equal(context.nbState.drawing, null, 'BOOX still ignores right click');
-
-for (const kind of ['text', 'image', 'audio', 'resize']) {
-    reset();
-    context.applePencilMode = true;
-    const obj = { id: 'boox-' + kind, x: 10, y: 20, w: 220, fontSize: 18, type: kind };
-    const el = (kind === 'text' || kind === 'resize') ? context.nbBuildTextEl(obj) : context.nbBuildMediaEl(obj);
-    const target = kind === 'resize' ? el.children.find(c => c.dataset.c === 'br') : el;
-    const before = JSON.stringify(obj);
-    target.listeners.pointerdown[0]({ ...pointer('touch', 71), target });
-    assert.equal(context.nbState.drawing, null, 'BOOX DOM drag stays separate from canvas drawing');
-    assert.equal((documentListeners.pointercancel || []).length, 0);
-    docPointer('pointermove', 50, 70);
-    assert.notEqual(JSON.stringify(obj), before, 'BOOX ' + kind + ' drag accepts PR94 pointer movement');
-    const moved = JSON.stringify(obj);
-    dispatch('touchstart', twoFingers, target);
-    assert.equal(JSON.stringify(obj), moved, 'a second finger does not roll back BOOX ' + kind);
-    docPointer('pointerup', 50, 70);
-    assert.equal(context.nbState.dirty, true);
-    for (const type of ['pointermove', 'pointerup']) assert.equal(documentListeners[type].length, 0);
-}
 console.log('Notebook input checks passed');

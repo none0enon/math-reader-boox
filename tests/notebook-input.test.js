@@ -153,9 +153,9 @@ dispatch('touchend', []);
 dispatch('touchstart', [touch(100, 100), touch(200, 100, 'direct', 2)]);
 dispatch('touchmove', [touch(50, 100), touch(250, 100, 'direct', 2)]);
 dispatch('touchend', []);
-assert.equal(context.nbState.zoom, 2, 'two fingers zoom using notebook zoom');
-assert.equal(wrap.scrollLeft, 510, 'pinch preserves the horizontal content anchor');
-assert.equal(wrap.scrollTop, 440, 'pinch preserves the vertical content anchor');
+assert.equal(context.nbState.zoom, 1, 'spreading two fingers never zooms');
+assert.equal(wrap.scrollLeft, 180, 'spreading fingers at a fixed center does not pan horizontally');
+assert.equal(wrap.scrollTop, 170, 'spreading fingers at a fixed center does not pan vertically');
 
 const zoom = context.nbState.zoom;
 dispatch('touchstart', [touch(100, 100, 'stylus'), touch(200, 100, 'direct', 2)]);
@@ -193,7 +193,7 @@ function startFinger(x = 10, y = 20) {
     context.nbPointerDown(pointer('touch', 11, x, y));
     dispatch('touchstart', [touch(x, y)]);
 }
-function startPinch(target) {
+function startTwoFingerPan(target) {
     context.nbPointerDown({ ...pointer('touch', 12), isPrimary: false });
     dispatch('touchstart', twoFingers, target);
 }
@@ -212,7 +212,7 @@ for (const tool of ['pen', 'shape', 'lasso', 'text']) {
     const textCount = context.textCreated;
     startFinger();
     context.nbPointerMove(pointer('touch', 11, 50, 60));
-    startPinch();
+    startTwoFingerPan();
     assert.equal(context.nbState.drawing, null, tool + ' preview cancelled');
     context.nbPointerUp(pointer('touch', 11));
     assert.deepEqual(context.nbState.content.strokes, [saved]);
@@ -222,7 +222,8 @@ for (const tool of ['pen', 'shape', 'lasso', 'text']) {
     dispatch('touchmove', [touch(100, 50), touch(200, 50, 'direct', 2)]);
     assert.equal(wrap.scrollTop, 250, tool + ' allows two-finger pan');
     dispatch('touchmove', [touch(50, 50), touch(250, 50, 'direct', 2)]);
-    assert.equal(context.nbState.zoom, 2, tool + ' allows two-finger zoom');
+    assert.equal(context.nbState.zoom, 1, tool + ' never zooms with two fingers');
+    assert.equal(wrap.scrollTop, 250, 'spreading fingers does not move the page');
     dispatch('touchend', [touch(50, 50)]);
     const stoppedAt = wrap.scrollTop;
     dispatch('touchmove', [touch(50, 100)]);
@@ -245,7 +246,7 @@ startFinger(10, 10);
 context.nbPointerMove(pointer('touch', 11, 60, 20));
 assert.deepEqual(context.nbState.content.strokes.map(s => s.id), ['b']);
 context.nbState.dirty = false; // A previous autosave may have written the partial edit.
-startPinch();
+startTwoFingerPan();
 assert.deepEqual(context.nbState.content.strokes, original, 'restore exact pre-gesture stroke order');
 assert.equal(context.nbState.dirty, true, 'persist the restored content after an earlier autosave');
 assert.equal(context.operations.length, 0);
@@ -259,7 +260,7 @@ const beforeBounds = JSON.stringify(context.nbState.selection.bbox);
 startFinger();
 context.nbPointerMove(pointer('touch', 11, 30, 40));
 assert.notEqual(JSON.stringify(context.nbState.content.strokes), beforeMove);
-startPinch();
+startTwoFingerPan();
 assert.equal(JSON.stringify(context.nbState.content.strokes), beforeMove);
 assert.equal(JSON.stringify(context.nbState.selection.bbox), beforeBounds);
 assert.equal(context.operations.length, 0);
@@ -276,7 +277,7 @@ context.nbPointerMove(pointer('touch', 11, 30, 40));
 assert.equal(hitBox.x, 30);
 context.nbState.dirty = false; // Autosave ran while the box was away from its origin.
 context.nbPointerMove(pointer('touch', 11, 10, 20));
-startPinch();
+startTwoFingerPan();
 assert.deepEqual(hitBox, { id: 'hit', x: 10, y: 20 });
 assert.equal(context.nbState.dirty, true);
 
@@ -294,7 +295,7 @@ for (const kind of ['text', 'image', 'audio', 'resize']) {
     assert.notEqual(JSON.stringify(obj), before, kind + ' actually moved');
     context.nbState.dirty = false; // A prior save may contain the transient position/size.
     docPointer('pointermove', 10, 20);
-    startPinch(target);
+    startTwoFingerPan(target);
     assert.equal(JSON.stringify(obj), before, kind + ' restored');
     assert.equal(context.nbState.drawing, null);
     assert.equal(context.nbState.dirty, true);
@@ -313,7 +314,7 @@ for (const pencilOnly of [false, true]) {
     context.applePencilMode = pencilOnly;
     context.nbPointerDown(pointer('pen', 11));
     const penDrawing = context.nbState.drawing;
-    startPinch();
+    startTwoFingerPan();
     dispatch('touchmove', [touch(100, 50), touch(200, 50, 'direct', 2)]);
     assert.equal(context.nbState.drawing, penDrawing);
     assert.equal(wrap.scrollTop, 200);
@@ -325,7 +326,7 @@ for (const pencilOnly of [false, true]) {
     const el = context.nbBuildTextEl(obj);
     el.listeners.pointerdown[0]({ ...pointer('pen', 11), target: el });
     const penDrag = context.nbState.drawing;
-    startPinch(el);
+    startTwoFingerPan(el);
     assert.equal(context.nbState.drawing, penDrag);
     docPointer('pointermove', 40, 50, 'pen');
     docPointer('pointerup', 40, 50, 'pen');
@@ -347,4 +348,6 @@ startFinger();
 context.nbPointerMove(pointer('touch', 11, 30, 40));
 context.nbPointerUp(pointer('touch', 11));
 assert.equal(context.nbState.content.strokes.length, 1, 'single-finger writing still commits');
+context.nbZoomSet(150);
+assert.equal(context.nbState.zoom, 1.5, 'existing zoom buttons remain available');
 console.log('Notebook input checks passed');

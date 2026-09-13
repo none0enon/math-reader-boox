@@ -31801,8 +31801,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 _nbTouchGesture = {
                     count: ts.length,
                     x: ts.reduce((n, t) => n + t.clientX, 0) / ts.length,
-                    y: ts.reduce((n, t) => n + t.clientY, 0) / ts.length,
-                    distance: ts.length === 2 ? Math.hypot(ts[1].clientX - ts[0].clientX, ts[1].clientY - ts[0].clientY) : 0
+                    y: ts.reduce((n, t) => n + t.clientY, 0) / ts.length
                 };
             };
             wrap.addEventListener('touchstart', beginGesture, { passive: true });
@@ -31813,16 +31812,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (ts.length !== gesture.count || ts.length !== e.touches.length) { _nbTouchGesture = null; return; }
                 const x = ts.reduce((n, t) => n + t.clientX, 0) / ts.length;
                 const y = ts.reduce((n, t) => n + t.clientY, 0) / ts.length;
-                const rect = wrap.getBoundingClientRect();
-                const oldZoom = nbState.zoom;
-                const distance = ts.length === 2 ? Math.hypot(ts[1].clientX - ts[0].clientX, ts[1].clientY - ts[0].clientY) : 0;
-                const scrollX = wrap.scrollLeft + gesture.x - rect.left;
-                const scrollY = wrap.scrollTop + gesture.y - rect.top;
-                if (distance > 0 && gesture.distance > 0 && distance !== gesture.distance) nbZoomSet(oldZoom * distance / gesture.distance * 100);
-                const ratio = nbState.zoom / oldZoom;
-                wrap.scrollLeft = scrollX * ratio - (x - rect.left);
-                wrap.scrollTop = scrollY * ratio - (y - rect.top);
-                _nbTouchGesture = { count: ts.length, x, y, distance };
+                wrap.scrollLeft -= x - gesture.x;
+                wrap.scrollTop -= y - gesture.y;
+                _nbTouchGesture = { count: ts.length, x, y };
                 e.preventDefault();
             }, { passive: false });
             wrap.addEventListener('touchend', beginGesture, { passive: true });
@@ -32818,6 +32810,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const l = document.getElementById('nbZoomLabel');
             if (l) l.textContent = Math.round(nbState.zoom * 100) + '%';
             nbLayout();
+            nbRenderTexts();
         }
 
         function nbShowExportModal() {

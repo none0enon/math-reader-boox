@@ -2020,6 +2020,10 @@
             cursor: crosshair;
         }
 
+        @media (hover: hover) and (pointer: fine) {
+            #exerciseDoingView .exercise-doing-canvas-wrap { overflow: auto; }
+        }
+
         /* 套索覆盖层：只画圈选轨迹与选区框，不接收指针；仅套索模式显示，
            避免常驻覆盖在 desynchronized 画布上拖慢书写落墨 */
         .exercise-doing-overlay {
@@ -29135,6 +29139,20 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function exRedrawCanvas() {
             const canvas = document.getElementById('exerciseDoingCanvas');
             if (!canvas || !exCanvasCtx) return;
+            if (!window.BooxPenNative && window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+                const size = exPageImageSize({ strokes: exStrokes, baseImage: exBaseImage });
+                // 只扩展，避免擦除或切页时正在查看的位置跳动。
+                if (size.width > canvas.width || size.height > canvas.height) {
+                    canvas.width = Math.max(canvas.width, size.width);
+                    canvas.height = Math.max(canvas.height, size.height);
+                    canvas.style.width = canvas.width / 2 + 'px';
+                    canvas.style.height = canvas.height / 2 + 'px';
+                    exCanvasCtx.scale(2, 2);
+                    exCanvasCtx.lineCap = 'round';
+                    exCanvasCtx.lineJoin = 'round';
+                    exSizeOverlay();
+                }
+            }
             exCanvasCtx.save();
             exCanvasCtx.setTransform(1, 0, 0, 1, 0, 0);
             exCanvasCtx.clearRect(0, 0, canvas.width, canvas.height);
@@ -29371,6 +29389,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function initExCanvas() {
             let canvas = document.getElementById('exerciseDoingCanvas');
             const wrap = canvas.parentElement;
+            wrap.scrollTop = 0;
+            wrap.scrollLeft = 0;
             const lowLatency = exLowLatencyEnabled();
             const ctxMode = lowLatency ? 'lowlat' : 'std';
             if (canvas._exCtxMode && canvas._exCtxMode !== ctxMode) {
@@ -30066,12 +30086,30 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function exPrevPage() { exSwitchPage(exPageIndex - 1); }
         function exNextPage() { exSwitchPage(exPageIndex + 1); }
 
-        // 把非当前页的笔画离屏渲染成 PNG（尺寸、缩放与可见画布一致）
+        // 旧笔画没有页面尺寸字段；从本页笔迹和 PNG 底图推算完整范围，保留 2 倍像素比例。
+        function exPageImageSize(page) {
+            const wrap = document.getElementById('exerciseDoingCanvas').parentElement;
+            let width = wrap.clientWidth * 2;
+            let height = wrap.clientHeight * 2;
+            if (page.baseImage) {
+                width = Math.max(width, page.baseImage.naturalWidth || page.baseImage.width);
+                height = Math.max(height, page.baseImage.naturalHeight || page.baseImage.height);
+            }
+            for (const stroke of page.strokes) {
+                const bounds = stroke.bbox || exComputeBBox(stroke.points);
+                const padding = (stroke.width || 2) / 2 + 1;
+                width = Math.max(width, (bounds.maxX + padding) * 2);
+                height = Math.max(height, (bounds.maxY + padding) * 2);
+            }
+            return { width: Math.ceil(width), height: Math.ceil(height) };
+        }
+
+        // 每页按自己的完整内容离屏渲染，不能沿用电脑可见区域或另一页的尺寸。
         function exRenderPageToDataURL(page) {
-            const canvas = document.getElementById('exerciseDoingCanvas');
+            const size = exPageImageSize(page);
             const off = document.createElement('canvas');
-            off.width = canvas.width;
-            off.height = canvas.height;
+            off.width = size.width;
+            off.height = size.height;
             const ctx = off.getContext('2d');
             if (page.baseImage) {
                 try { ctx.drawImage(page.baseImage, 0, 0); } catch(e) {}
@@ -30083,13 +30121,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return off.toDataURL('image/png');
         }
 
-        // 当前题目全部页面的 PNG（当前页取自可见画布，其余页离屏渲染）
+        // 评分收集全部页面的完整 PNG，与当前页及滚动位置无关。
         function exCollectPageImages() {
             if (exDrawing) exStrokeEnd();
             if (!exPages.length) exInitPages(1);
             exStoreCurrentPage();
-            const canvas = document.getElementById('exerciseDoingCanvas');
-            return exPages.map((page, p) => p === exPageIndex ? canvas.toDataURL('image/png') : exRenderPageToDataURL(page));
+            return exPages.map(page => exRenderPageToDataURL(page));
         }
 
         // 评分时跳过空白页；全部空白则保留第 1 页（与单页时提交空白画布的行为一致）

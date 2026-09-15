@@ -9404,6 +9404,7 @@
                 window._wrongAIChatOverride = false;
                 window._wrongAIContext = null;
                 window._wrongAIImages = null;
+                window._wrongAIQuestion = null;
             }
             // 关闭阅读器AI对话时清理选区引用状态
             if (id === 'readerChatModal') {
@@ -22003,9 +22004,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!msg) return;
 
             const container = document.getElementById('chatContainer');
+            const wrongQuestion = window._wrongAIQuestion;
             addChatMessage(container, true, msg);
             input.value = '';
             const renderResponseMath = !!window._wrongAIChatOverride;
+            let wrongQuestionHistory = null;
+            if (wrongQuestion) {
+                wrongQuestionHistory = loadWrongQuestionChatHistory(wrongQuestion);
+                wrongQuestionHistory.push({ role: 'user', content: msg });
+                saveWrongQuestionChatHistory(wrongQuestion, wrongQuestionHistory);
+            }
 
             addTypingIndicator(container);
 
@@ -22053,12 +22061,22 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 }
                 
                 const result = await callAI(systemPrompt, recentMessages, { maxTokens: 8192 });
+                const response = result || i18n('chat_no_answer');
                 
                 removeTypingIndicator();
-                addChatMessage(container, false, result || i18n('chat_no_answer'), renderResponseMath);
+                addChatMessage(container, false, response, renderResponseMath);
+                if (wrongQuestionHistory) {
+                    wrongQuestionHistory.push({ role: 'assistant', content: response });
+                    saveWrongQuestionChatHistory(wrongQuestion, wrongQuestionHistory);
+                }
             } catch (err) {
+                const response = i18n('chat_call_failed') + err.message;
                 removeTypingIndicator();
-                addChatMessage(container, false, i18n('chat_call_failed') + err.message);
+                addChatMessage(container, false, response);
+                if (wrongQuestionHistory) {
+                    wrongQuestionHistory.push({ role: 'assistant', content: response });
+                    saveWrongQuestionChatHistory(wrongQuestion, wrongQuestionHistory);
+                }
             }
         }
 
@@ -30536,6 +30554,34 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             renderWrongFolderContent(folderId, folder, wrongTasks);
         }
 
+        function loadWrongQuestionChatHistory(question) {
+            if (question && question.chatHistory && question.chatHistory.length > 0) {
+                return question.chatHistory;
+            }
+            return [];
+        }
+
+        function saveWrongQuestionChatHistory(question, history) {
+            if (history.length > 30) {
+                history = history.slice(-30);
+            }
+            if (question) {
+                question.chatHistory = history;
+                question.chatUpdatedAt = Date.now();
+                try { saveData(); } catch (e) { console.error('saveData failed:', e); }
+            }
+        }
+
+        function renderWrongQuestionChatHistory(question) {
+            const container = document.getElementById('chatContainer');
+            const history = loadWrongQuestionChatHistory(question);
+            container.innerHTML = '';
+            history.forEach(msg => {
+                const isUser = msg.role === 'user';
+                addChatMessage(container, isUser, msg.content, !isUser);
+            });
+        }
+
         // 错题问AI：和讲义阅读页面一样的问AI功能
         async function wrongAskAI(folderId) {
             if (wrongSelectedItems.length === 0) {
@@ -30598,9 +30644,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             let questionsText = i18n('prompt_single_wrong_context', (q.questionIndex ?? questionIndex) + 1, q.score, q.latex || i18n('no_question_text'));
             if (q.aiComment) questionsText += i18n('prompt_wrong_grade_analysis', q.aiComment);
 
-            const container = document.getElementById('chatContainer');
-            container.innerHTML = '';
-            addChatMessage(container, false, i18n('chat_wrong_loaded', 1));
+            window._wrongAIQuestion = q;
+            let history = loadWrongQuestionChatHistory(q);
+            if (history.length === 0) {
+                history = [{ role: 'assistant', content: i18n('chat_wrong_loaded', 1) }];
+                saveWrongQuestionChatHistory(q, history);
+            }
+            renderWrongQuestionChatHistory(q);
             showModal('aiChatModal');
 
             window._wrongAIContext = questionsText;

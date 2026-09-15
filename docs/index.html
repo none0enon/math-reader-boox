@@ -30623,7 +30623,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         async function wrongQuestionAskAI() {
             if (!exDoingState || !exDoingState.isWrong) return;
-            const { taskId, questionIndex, questions } = exDoingState;
+            const { folderId, taskId, questionIndex, questions } = exDoingState;
             const q = questions[questionIndex];
             if (!q) return;
 

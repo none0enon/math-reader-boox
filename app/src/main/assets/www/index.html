@@ -9404,6 +9404,7 @@
                 window._wrongAIChatOverride = false;
                 window._wrongAIContext = null;
                 window._wrongAIImages = null;
+                window._wrongAIChatQuestion = null;
             }
             // 关闭阅读器AI对话时清理选区引用状态
             if (id === 'readerChatModal') {
@@ -21931,7 +21932,38 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         // ==================== AI Chat (faithful to original) ====================
+        function loadWrongQuestionChatHistory(question) {
+            if (question && question.chatHistory && question.chatHistory.length > 0) {
+                return question.chatHistory;
+            }
+            return [];
+        }
+
+        function saveWrongQuestionChatHistory(question, history) {
+            // Keep max 30 messages
+            if (history.length > 30) {
+                history = history.slice(-30);
+            }
+            if (question) {
+                question.chatHistory = history;
+                question.chatUpdatedAt = Date.now();
+                try { saveData(); } catch (e) { console.error('saveData failed:', e); }
+                // 立即同步到云端防止数据丢失
+                debouncedChatSync();
+            }
+        }
+
+        function renderWrongQuestionChatHistory(question) {
+            const container = document.getElementById('chatContainer');
+            const history = loadWrongQuestionChatHistory(question);
+            container.innerHTML = '';
+            history.forEach(msg => {
+                addChatMessage(container, msg.role === 'user', msg.content, msg.role !== 'user');
+            });
+        }
+
         function showAIChatModal() {
+            window._wrongAIChatQuestion = null;
             const container = document.getElementById('chatContainer');
             container.innerHTML = '';
             addChatMessage(container, false, i18n('chat_welcome'));
@@ -21997,7 +22029,74 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (el) el.remove();
         }
 
+        async function sendWrongQuestionAIChat(question) {
+            const input = document.getElementById('chatInput');
+            const msg = input.value.trim();
+            if (!msg || !question) return;
+
+            input.value = '';
+
+            // Add user message
+            let history = loadWrongQuestionChatHistory(question);
+            history.push({ role: 'user', content: msg });
+            saveWrongQuestionChatHistory(question, history);
+            if (window._wrongAIChatQuestion === question) {
+                renderWrongQuestionChatHistory(question);
+            }
+
+            // 错题沿用选中文字的数学解释提示词，并注入当前错题上下文
+            let basePrompt = i18n('prompt_math_explain');
+            if (window._wrongAIContext) {
+                basePrompt += i18n('prompt_wrong_context') + window._wrongAIContext;
+            }
+
+            // 只保留最近10条消息作为上下文
+            const recentMessages = history.slice(-10).map(item => ({
+                role: item.role,
+                content: item.content
+            }));
+
+            // 第一次提问附带当前错题的手写图片
+            if (window._wrongAIImages && window._wrongAIImages.length > 0 && recentMessages.length <= 2) {
+                const contentParts = [];
+                window._wrongAIImages.forEach(img => {
+                    contentParts.push({ type: 'text', text: i18n('prompt_wrong_image_label', img.qIndex + 1, img.page || 1, img.pages || 1) });
+                    contentParts.push({ type: 'image_url', image_url: { url: img.drawing } });
+                });
+                contentParts.push({ type: 'text', text: i18n('prompt_wrong_images_user', msg) });
+                recentMessages[recentMessages.length - 1] = { role: 'user', content: contentParts };
+                window._wrongAIImages = [];
+            }
+
+            const container = document.getElementById('chatContainer');
+            addTypingIndicator(container);
+
+            try {
+                const result = await callAI(basePrompt, recentMessages, { maxTokens: 8192 });
+                removeTypingIndicator();
+
+                history = loadWrongQuestionChatHistory(question);
+                history.push({ role: 'assistant', content: result || i18n('chat_no_answer') });
+                saveWrongQuestionChatHistory(question, history);
+                if (window._wrongAIChatQuestion === question) {
+                    renderWrongQuestionChatHistory(question);
+                }
+            } catch (err) {
+                removeTypingIndicator();
+                history = loadWrongQuestionChatHistory(question);
+                history.push({ role: 'assistant', content: i18n('chat_call_failed') + err.message });
+                saveWrongQuestionChatHistory(question, history);
+                if (window._wrongAIChatQuestion === question) {
+                    renderWrongQuestionChatHistory(question);
+                }
+            }
+        }
+
         async function sendAIChat() {
+            if (window._wrongAIChatQuestion) {
+                await sendWrongQuestionAIChat(window._wrongAIChatQuestion);
+                return;
+            }
             const input = document.getElementById('chatInput');
             const msg = input.value.trim();
             if (!msg) return;
@@ -25124,6 +25223,17 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             let changed = options.preserveSourceUncommitted === false
                 ? false
                 : exPreserveUncommittedGrading(targetQ, localQ);
+            const targetChatUpdatedAt = Number(targetQ.chatUpdatedAt) || 0;
+            const localChatUpdatedAt = Number(localQ.chatUpdatedAt) || 0;
+            if (Object.prototype.hasOwnProperty.call(localQ, 'chatHistory') &&
+                localChatUpdatedAt >= targetChatUpdatedAt) {
+                if (!Object.prototype.hasOwnProperty.call(targetQ, 'chatHistory') ||
+                    localChatUpdatedAt > targetChatUpdatedAt) {
+                    changed = true;
+                }
+                targetQ.chatHistory = localQ.chatHistory;
+                targetQ.chatUpdatedAt = localQ.chatUpdatedAt;
+            }
             const gradedPages = Math.max(
                 Number(targetQ.userDrawingPages) || 0,
                 Number(localQ.userDrawingPages) || 0
@@ -26085,6 +26195,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (idx >= 0) {
                 const previous = wrongTask.questions[idx];
                 const previousRedos = previous.redoDrawings;
+                if (Object.prototype.hasOwnProperty.call(previous, 'chatHistory')) {
+                    entry.chatHistory = previous.chatHistory;
+                }
+                if (Object.prototype.hasOwnProperty.call(previous, 'chatUpdatedAt')) {
+                    entry.chatUpdatedAt = previous.chatUpdatedAt;
+                }
                 exTouchRedoHistory(entry, previous);
                 wrongTask.questions[idx] = entry;
                 // 先把 canonical 条目切换到空的新历史，再异步清旧图片；删除触发的同步
@@ -30560,6 +30676,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             });
 
             // 打开AI聊天弹窗，预填充错题上下文
+            window._wrongAIChatQuestion = null;
             const container = document.getElementById('chatContainer');
             container.innerHTML = '';
             addChatMessage(container, false, i18n('chat_wrong_loaded', wrongSelectedItems.length));
@@ -30598,9 +30715,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             let questionsText = i18n('prompt_single_wrong_context', (q.questionIndex ?? questionIndex) + 1, q.score, q.latex || i18n('no_question_text'));
             if (q.aiComment) questionsText += i18n('prompt_wrong_grade_analysis', q.aiComment);
 
-            const container = document.getElementById('chatContainer');
-            container.innerHTML = '';
-            addChatMessage(container, false, i18n('chat_wrong_loaded', 1));
+            window._wrongAIChatQuestion = q;
+            let history = loadWrongQuestionChatHistory(q);
+            if (history.length === 0) {
+                history = [{ role: 'assistant', content: i18n('chat_wrong_loaded', 1) }];
+                saveWrongQuestionChatHistory(q, history);
+            }
+            renderWrongQuestionChatHistory(q);
             showModal('aiChatModal');
 
             window._wrongAIContext = questionsText;
@@ -30707,6 +30828,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 gradedDrawingCommitId: q.gradedDrawingCommitId,
                 gradedDrawingCloudCommitted: q.gradedDrawingCloudCommitted,
                 aiComment: q.aiComment, timeUsedSeconds: q.timeUsedSeconds || 0,
+                chatHistory: q.chatHistory, chatUpdatedAt: q.chatUpdatedAt,
                 redoDrawings: q.redoDrawings || [],
                 redoHistoryUpdatedAt: q.redoHistoryUpdatedAt,
                 archivedAt: new Date().toISOString()
@@ -30781,6 +30903,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 gradedDrawingCommitId: item.gradedDrawingCommitId,
                 gradedDrawingCloudCommitted: item.gradedDrawingCloudCommitted,
                 aiComment: item.aiComment, timeUsedSeconds: item.timeUsedSeconds || 0,
+                chatHistory: item.chatHistory, chatUpdatedAt: item.chatUpdatedAt,
                 redoDrawings: item.redoDrawings || [],
                 redoHistoryUpdatedAt: item.redoHistoryUpdatedAt
             });

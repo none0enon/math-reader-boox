@@ -9437,6 +9437,11 @@
             if (id === 'readerChatModal') {
                 hideChatQuoteButton();
                 clearChatQuote();
+                const notice = readerChatSyncToasts.get(readerChatDoc?.id);
+                if (notice && !notice.closed) {
+                    notice.closed = true;
+                    if (notice.message) showToast(notice.message);
+                }
             }
         }
 
@@ -14274,7 +14279,7 @@
                 // 检查是否有排队的文件变更同步任务
                 if (r2PendingSyncQueue.length > 0) {
                     const pending = r2PendingSyncQueue.shift();
-                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0, pending.successToasts);
                 } else if (r2DeferredMetadataPublish) {
                     r2DeferredMetadataPublish = false;
                     triggerSyncOnFileChange(null, 'metadata_update');
@@ -15161,7 +15166,7 @@
             return next;
         }
 
-        async function triggerSyncOnFileChange(fileId, action, attempt = 0) {
+        async function triggerSyncOnFileChange(fileId, action, attempt = 0, successToasts = [showToast]) {
             if (!appDataLoaded) {
                 console.warn('[sync] 数据未加载完成，跳过自动同步:', action);
                 return;
@@ -15173,16 +15178,22 @@
             }
 
             if (activeLectureGenerationCount > 0) {
-                if (!r2PendingSyncQueue.some(t => t.fileId === fileId && t.action === action)) {
-                    r2PendingSyncQueue.push({ fileId, action, attempt });
+                const pending = r2PendingSyncQueue.find(t => t.fileId === fileId && t.action === action);
+                if (pending) {
+                    pending.successToasts = Array.from(new Set([...(pending.successToasts || [showToast]), ...successToasts]));
+                } else {
+                    r2PendingSyncQueue.push({ fileId, action, attempt, successToasts });
                 }
                 return;
             }
             
             if (r2SyncInProgress) {
                 // 有同步正在进行，排队等待，完成后自动执行（去重）
-                if (!r2PendingSyncQueue.some(t => t.fileId === fileId && t.action === action)) {
-                    r2PendingSyncQueue.push({ fileId, action, attempt });
+                const pending = r2PendingSyncQueue.find(t => t.fileId === fileId && t.action === action);
+                if (pending) {
+                    pending.successToasts = Array.from(new Set([...(pending.successToasts || [showToast]), ...successToasts]));
+                } else {
+                    r2PendingSyncQueue.push({ fileId, action, attempt, successToasts });
                 }
                 return;
             }
@@ -15376,7 +15387,7 @@
                 } else if (action && action.indexOf('notebook_') === 0 && action !== 'notebook_open' && action !== 'notebook_close') {
                     // 笔记本结构/复习同步静默；打开/关闭笔记本时提示
                 } else {
-                    showToast(i18n('toast_auto_synced'));
+                    successToasts.forEach(show => show(i18n('toast_auto_synced')));
                 }
             } catch (err) {
                 console.error('文件变更同步失败:', err);
@@ -15398,7 +15409,7 @@
                         const delay = Math.min(30000, 750 * Math.pow(2, nextAttempt - 1));
                         const timer = setTimeout(() => {
                             r2ClassroomRetryTimers.delete(key);
-                            triggerSyncOnFileChange(fileId, action, nextAttempt);
+                            triggerSyncOnFileChange(fileId, action, nextAttempt, successToasts);
                         }, delay);
                         r2ClassroomRetryTimers.set(key, timer);
                     }
@@ -15408,12 +15419,12 @@
                 // 检查是否有排队的同步任务
                 if (r2PendingSyncQueue.length > 0) {
                     const pending = r2PendingSyncQueue.shift();
-                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0, pending.successToasts);
                 } else if (r2DeferredMetadataPublish) {
                     // 让出发布权的任务最终没能被后续任务代为提交（例如后者失败了），
                     // 队列排空时补一次，保证本批变更不会停留在本地。
                     r2DeferredMetadataPublish = false;
-                    triggerSyncOnFileChange(null, 'metadata_update');
+                    triggerSyncOnFileChange(null, 'metadata_update', 0, successToasts);
                 }
             }
         }
@@ -16285,7 +16296,7 @@
                 r2SyncInProgress = false;
                 if (r2PendingSyncQueue.length > 0) {
                     const pending = r2PendingSyncQueue.shift();
-                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0, pending.successToasts);
                 }
             }
         }
@@ -16903,7 +16914,7 @@
                 ownsR2SyncLock = false;
                 if (r2PendingSyncQueue.length > 0) {
                     const pending = r2PendingSyncQueue.shift();
-                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0, pending.successToasts);
                 }
 
                 // 后台拉取本地缺失的资源文件（只拉本地没有的）
@@ -17112,7 +17123,7 @@
                     r2SyncInProgress = false;
                     if (r2PendingSyncQueue.length > 0) {
                         const pending = r2PendingSyncQueue.shift();
-                        triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                        triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0, pending.successToasts);
                     }
                 }
             }
@@ -17432,7 +17443,7 @@
                 r2SyncInProgress = false;
                 if (r2PendingSyncQueue.length > 0) {
                     const pending = r2PendingSyncQueue.shift();
-                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0, pending.successToasts);
                 }
             }
         }
@@ -18274,6 +18285,7 @@
         }
 
         let readerChatDoc = null;
+        const readerChatSyncToasts = new Map();
 
         function loadReaderChatHistory(docId, question = null) {
             const doc = question || appData.books.find(b => b.id === docId) || appData.papers.find(p => p.id === docId);
@@ -18301,19 +18313,23 @@
                 try { saveData(); } catch (e) { console.error('saveData failed:', e); }
                 doc.chatHistory = orig;
                 // 立即同步到云端防止数据丢失
-                debouncedChatSync();
+                debouncedChatSync(readerChatSyncToasts.get(docId)?.show);
             }
         }
 
         // 防抖：聊天连续变更时只在最后一次500ms后同步一次
         let _chatSyncTimer = null;
-        function debouncedChatSync() {
+        const chatSyncSuccessToasts = new Set();
+        function debouncedChatSync(successToast = showToast) {
+            chatSyncSuccessToasts.add(successToast);
             clearTimeout(_chatSyncTimer);
             _chatSyncTimer = setTimeout(() => {
+                const successToasts = Array.from(chatSyncSuccessToasts);
+                chatSyncSuccessToasts.clear();
                 const config = appData.settings && appData.settings.r2Config;
                 if (config && config.accessKeyId) {
                     // 统一走可排队的变更同步；同步繁忙时不能静默丢掉这次 metadata 更新。
-                    triggerSyncOnFileChange(null, 'metadata_update');
+                    triggerSyncOnFileChange(null, 'metadata_update', 0, successToasts);
                 }
             }, 500);
         }
@@ -18821,6 +18837,9 @@
             if (!currentDoc) { showToast(i18n('toast_open_doc_first')); return; }
 
             readerChatDoc = currentDoc;
+            const notice = { closed: false, message: '' };
+            notice.show = message => { if (!notice.closed) notice.message = message; };
+            readerChatSyncToasts.set(currentDoc.id, notice);
             clearChatQuote();
             document.getElementById('readerChatTitle').textContent = 'AI - ' + currentDoc.title;
             let fontSize = document.getElementById('readerChatFontsize').value;
@@ -19973,7 +19992,7 @@ ${i18n('prompt_lecture_gen')}`;
                     const pending = lectureUploadIndex >= 0
                         ? r2PendingSyncQueue.splice(lectureUploadIndex, 1)[0]
                         : r2PendingSyncQueue.shift();
-                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0);
+                    triggerSyncOnFileChange(pending.fileId, pending.action, pending.attempt || 0, pending.successToasts);
                 }
             }
         }

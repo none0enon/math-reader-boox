@@ -9395,6 +9395,8 @@
         function hideModal(id) {
             // 关闭阅读器AI对话前先保存浏览位置（隐藏后 scrollTop 失效）
             if (id === 'readerChatModal') {
+                const currentDoc = readerChatDoc;
+                clearTimeout(_chatScrollSaveTimer);
                 const _cc = document.getElementById('readerChatContainer');
                 if (_cc && currentDoc && _cc.scrollHeight > 0) saveReaderChatScroll(currentDoc.id, _cc.scrollTop);
             }
@@ -18245,20 +18247,22 @@
             return tmpCanvas.toDataURL('image/jpeg', 0.6);
         }
 
-        function loadReaderChatHistory(docId) {
-            const doc = appData.books.find(b => b.id === docId) || appData.papers.find(p => p.id === docId);
+        let readerChatDoc = null;
+
+        function loadReaderChatHistory(docId, question = null) {
+            const doc = question || appData.books.find(b => b.id === docId) || appData.papers.find(p => p.id === docId);
             if (doc && doc.chatHistory && doc.chatHistory.length > 0) {
                 return doc.chatHistory;
             }
             return [];
         }
 
-        function saveReaderChatHistory(docId, history) {
+        function saveReaderChatHistory(docId, history, question = null) {
             // Keep max 30 messages
             if (history.length > 30) {
                 history = history.slice(-30);
             }
-            const doc = appData.books.find(b => b.id === docId) || appData.papers.find(p => p.id === docId);
+            const doc = question || appData.books.find(b => b.id === docId) || appData.papers.find(p => p.id === docId);
             if (doc) {
                 doc.chatHistory = history;
                 doc.chatUpdatedAt = Date.now();
@@ -18302,10 +18306,12 @@
             } catch (e) { return null; }
         }
         function restoreReaderChatScroll() {
+            const currentDoc = readerChatDoc;
             const container = document.getElementById('readerChatContainer');
             if (!container || !currentDoc) return;
             const saved = loadReaderChatScroll(currentDoc.id);
             const apply = () => {
+                if (readerChatDoc?.id !== currentDoc.id) return;
                 if (saved !== null && !isNaN(saved) && saved >= 0) {
                     container.scrollTop = Math.min(saved, container.scrollHeight);
                 } else {
@@ -18318,10 +18324,11 @@
             setTimeout(apply, 350);
         }
 
-        function renderReaderChatHistory() {
-            if (!currentDoc) return;
+        function renderReaderChatHistory(docId = readerChatDoc?.id) {
+            const currentDoc = readerChatDoc;
+            if (!currentDoc || currentDoc.id !== docId) return;
             const container = document.getElementById('readerChatContainer');
-            const history = loadReaderChatHistory(currentDoc.id);
+            const history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             const userName = getUserName();
             const userAvatar = getUserAvatar();
             const aiName = getAIName();
@@ -18509,9 +18516,11 @@
             // 记录浏览位置（防抖）；滚动时清除可选中状态，避免影响后续滑动
             container.addEventListener('scroll', () => {
                 clearChatSelectableBubbles();
+                const currentDoc = readerChatDoc;
                 if (!currentDoc) return;
+                const scrollTop = container.scrollTop;
                 clearTimeout(_chatScrollSaveTimer);
-                _chatScrollSaveTimer = setTimeout(() => saveReaderChatScroll(currentDoc.id, container.scrollTop), 200);
+                _chatScrollSaveTimer = setTimeout(() => saveReaderChatScroll(currentDoc.id, scrollTop), 200);
             }, { passive: true });
         }
 
@@ -18656,16 +18665,27 @@
         });
 
         // 构建发送给 AI 的消息：带引用的用户消息把引用内容并入正文
-        function buildReaderChatApiMessages(history) {
-            return history.map(h => ({
+        function buildReaderChatApiMessages(history, doc = readerChatDoc) {
+            const messages = history.map(h => ({
                 role: h.role,
                 content: h.quote ? `${i18n('chat_quote_prefix')}${h.quote}\n\n${h.content}` : h.content
             }));
+            if (doc?.wrongImages?.length && messages.length && messages[messages.length - 1].role === 'user') {
+                const contentParts = [];
+                doc.wrongImages.forEach(img => {
+                    contentParts.push({ type: 'text', text: i18n('prompt_wrong_image_label', img.qIndex + 1, img.page || 1, img.pages || 1) });
+                    contentParts.push({ type: 'image_url', image_url: { url: img.drawing } });
+                });
+                contentParts.push({ type: 'text', text: i18n('prompt_wrong_images_user', messages[messages.length - 1].content) });
+                messages[messages.length - 1] = { role: 'user', content: contentParts };
+            }
+            return messages;
         }
 
         function editReaderChatMessage(index) {
+            const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            let history = loadReaderChatHistory(currentDoc.id);
+            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             if (index < 0 || index >= history.length) return;
             const msg = history[index];
             if (msg.role !== 'user') return;
@@ -18676,7 +18696,7 @@
             // Update this message and remove all messages after it
             history[index].content = newText.trim();
             history = history.slice(0, index + 1);
-            saveReaderChatHistory(currentDoc.id, history);
+            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
             renderReaderChatHistory();
 
             // Re-send to get new AI response
@@ -18684,13 +18704,16 @@
         }
 
         async function resendReaderChatFromIndex(userMsgIndex) {
+            const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            let history = loadReaderChatHistory(currentDoc.id);
+            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
 
             // Build system prompt
             const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
             const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
-            const systemPrompt = `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+            const systemPrompt = currentDoc.question
+                ? i18n('prompt_math_explain') + i18n('prompt_wrong_context') + currentDoc.wrongContext
+                : `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
 
             let pdfAttachment = null;
             if (currentDoc.type === 'pdf') {
@@ -18701,7 +18724,7 @@
                 } catch (e) { console.error('切出当前页PDF失败:', e); }
             }
 
-            const apiMessages = buildReaderChatApiMessages(history);
+            const apiMessages = buildReaderChatApiMessages(history, currentDoc);
 
             const container = document.getElementById('readerChatContainer');
             const loadingDiv = document.createElement('div');
@@ -18718,21 +18741,22 @@
 
             try {
                 const result = await callReaderAI(systemPrompt, apiMessages, { pdfAttachment });
-                document.getElementById('readerChatLoading')?.remove();
+                if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history);
-                    renderReaderChatHistory();
+                    saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                    renderReaderChatHistory(currentDoc.id);
                 }
             } catch (err) {
-                document.getElementById('readerChatLoading')?.remove();
+                if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
                 showToast(i18n('toast_regen_failed') + err.message);
             }
         }
 
         function regenerateReaderChatMessage(index) {
+            const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            let history = loadReaderChatHistory(currentDoc.id);
+            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             if (index < 0 || index >= history.length) return;
             if (history[index].role !== 'assistant') return;
 
@@ -18740,7 +18764,7 @@
 
             // Remove this AI message and all subsequent messages
             history = history.slice(0, index);
-            saveReaderChatHistory(currentDoc.id, history);
+            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
             renderReaderChatHistory();
 
             // Find last user message to re-send
@@ -18751,31 +18775,35 @@
         }
 
         function deleteReaderChatMessage(index) {
+            const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            let history = loadReaderChatHistory(currentDoc.id);
+            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             history.splice(index, 1);
-            saveReaderChatHistory(currentDoc.id, history);
+            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
             renderReaderChatHistory();
         }
 
-        async function openReaderChat() {
+        async function openReaderChat(doc = currentDoc) {
+            const currentDoc = doc;
             if (!currentDoc) { showToast(i18n('toast_open_doc_first')); return; }
 
+            readerChatDoc = currentDoc;
+            clearChatQuote();
             document.getElementById('readerChatTitle').textContent = 'AI - ' + currentDoc.title;
 
-            let history = loadReaderChatHistory(currentDoc.id);
+            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             if (history.length === 0) {
                 // Auto-capture screenshot and generate greeting
-                const screenshot = captureCurrentPageScreenshot();
+                const screenshot = currentDoc.question ? null : captureCurrentPageScreenshot();
                 const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
                 const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
 
-                const greeting = i18n('reader_chat_greeting', currentDoc.title, notesSummary ? i18n('reader_chat_notes', notesSummary) : '');
+                const greeting = currentDoc.question ? i18n('chat_wrong_loaded', 1) : i18n('reader_chat_greeting', currentDoc.title, notesSummary ? i18n('reader_chat_notes', notesSummary) : '');
                 history = [{ role: 'assistant', content: greeting }];
                 if (screenshot) {
                     history[0].screenshot = screenshot;
                 }
-                saveReaderChatHistory(currentDoc.id, history);
+                saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
             }
 
             renderReaderChatHistory();
@@ -18785,6 +18813,7 @@
         }
 
         async function sendReaderChatMessage() {
+            const currentDoc = readerChatDoc;
             const input = document.getElementById('readerChatInput');
             const message = input.value.trim();
             if (!message || !currentDoc) return;
@@ -18796,12 +18825,12 @@
             clearChatQuote();
 
             // Add user message
-            let history = loadReaderChatHistory(currentDoc.id);
+            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             const userMsg = { role: 'user', content: message };
             if (quote) userMsg.quote = quote;
             history.push(userMsg);
-            saveReaderChatHistory(currentDoc.id, history);
-            renderReaderChatHistory();
+            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+            renderReaderChatHistory(currentDoc.id);
 
             // 切出当前页PDF作为附件发给AI
             let pdfAttachment = null;
@@ -18818,9 +18847,11 @@
             // Build system prompt with context
             const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
             const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
-            const systemPrompt = `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+            const systemPrompt = currentDoc.question
+                ? i18n('prompt_math_explain') + i18n('prompt_wrong_context') + currentDoc.wrongContext
+                : `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
 
-            const apiMessages = buildReaderChatApiMessages(history);
+            const apiMessages = buildReaderChatApiMessages(history, currentDoc);
 
             // Show typing indicator
             const container = document.getElementById('readerChatContainer');
@@ -18843,14 +18874,14 @@
 
             try {
                 const result = await callReaderAI(systemPrompt, apiMessages, { pdfAttachment });
-                document.getElementById('readerChatLoading')?.remove();
+                if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
 
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history);
-                    renderReaderChatHistory();
+                    saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                    renderReaderChatHistory(currentDoc.id);
                 } else {
-                    document.getElementById('readerChatLoading')?.remove();
+                    if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
                     const replies = [
                         i18n('reader_fallback_review'),
                         i18n('reader_fallback_example'),
@@ -18860,15 +18891,15 @@
                     ];
                     const fallback = replies[Math.floor(Math.random() * replies.length)];
                     history.push({ role: 'assistant', content: fallback });
-                    saveReaderChatHistory(currentDoc.id, history);
-                    renderReaderChatHistory();
+                    saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                    renderReaderChatHistory(currentDoc.id);
                 }
             } catch (e) {
                 console.error('Reader chat error:', e);
-                document.getElementById('readerChatLoading')?.remove();
+                if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
                 history.push({ role: 'assistant', content: i18n('request_failed') + (e.message || i18n('unknown_error')) });
-                saveReaderChatHistory(currentDoc.id, history);
-                renderReaderChatHistory();
+                saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                renderReaderChatHistory(currentDoc.id);
             }
         }
 
@@ -19319,8 +19350,9 @@
         }
 
         function exportReaderChatHistory() {
+            const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            const history = loadReaderChatHistory(currentDoc.id);
+            const history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             if (!history || history.length === 0) {
                 showToast(i18n('empty_archive'));
                 return;
@@ -30591,27 +30623,23 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         async function wrongQuestionAskAI() {
             if (!exDoingState || !exDoingState.isWrong) return;
-            const { folderId, taskId, questionIndex, questions } = exDoingState;
+            const { taskId, questionIndex, questions } = exDoingState;
             const q = questions[questionIndex];
             if (!q) return;
 
             let questionsText = i18n('prompt_single_wrong_context', (q.questionIndex ?? questionIndex) + 1, q.score, q.latex || i18n('no_question_text'));
             if (q.aiComment) questionsText += i18n('prompt_wrong_grade_analysis', q.aiComment);
 
-            const container = document.getElementById('chatContainer');
-            container.innerHTML = '';
-            addChatMessage(container, false, i18n('chat_wrong_loaded', 1));
-            showModal('aiChatModal');
-
-            window._wrongAIContext = questionsText;
-            window._wrongAIChatOverride = true;
-
             const wrongImages = [];
             const pages = (await exWrongAnswerPages(taskId, q, questionIndex)).filter(d => d && !isCanvasBlank(d));
             pages.forEach((drawing, p) => wrongImages.push({ qIndex: q.questionIndex ?? questionIndex, drawing, page: p + 1, pages: pages.length }));
-            window._wrongAIImages = wrongImages;
-
-            setTimeout(() => document.getElementById('chatInput').focus(), 300);
+            await openReaderChat({
+                id: `wrong_${taskId}_${q.questionIndex ?? questionIndex}`,
+                title: i18n('question_number', (q.questionIndex ?? questionIndex) + 1),
+                question: q,
+                wrongContext: questionsText,
+                wrongImages
+            });
         }
 
         async function regenerateWrongComment() {

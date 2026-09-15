@@ -3087,6 +3087,14 @@
             color: #000;
         }
 
+        #readerChatContainer .chat-message.ai { align-self: stretch; }
+        #readerChatContainer .chat-bubble { font-size: var(--reader-chat-font-size, 14px); }
+        #readerChatContainer .chat-bubble h1 { font-size: calc(var(--reader-chat-font-size, 14px) + 2px); }
+        #readerChatContainer .chat-bubble h2,
+        #readerChatContainer .chat-bubble h3 { font-size: calc(var(--reader-chat-font-size, 14px) + 1px); }
+        #readerChatContainer .chat-bubble code,
+        #readerChatContainer .chat-quote-block { font-size: calc(var(--reader-chat-font-size, 14px) - 1px); }
+
         .chat-input-area {
             display: flex;
             gap: 8px;
@@ -5847,6 +5855,21 @@
             <div class="modal-header">
                 <span class="modal-title" id="readerChatTitle" data-i18n="ai_assistant">AI 助手</span>
                 <div class="chat-header-actions">
+                    <select class="focus-chat-export-btn" id="readerChatFontsize" onchange="setReaderChatFontsize(this.value)" title="字号" aria-label="字号" data-i18n-title="chat_fontsize">
+                        <option value="12">12px</option>
+                        <option value="13">13px</option>
+                        <option value="14" selected>14px</option>
+                        <option value="15">15px</option>
+                        <option value="16">16px</option>
+                        <option value="17">17px</option>
+                        <option value="18">18px</option>
+                        <option value="19">19px</option>
+                        <option value="20">20px</option>
+                        <option value="21">21px</option>
+                        <option value="22">22px</option>
+                        <option value="23">23px</option>
+                        <option value="24">24px</option>
+                    </select>
                     <button class="focus-chat-export-btn" onclick="exportReaderChatHistory()" title="导出聊天记录" data-i18n="chat_export" data-i18n-title="chat_export_history">导出</button>
                     <button class="modal-close" onclick="hideModal('readerChatModal')">&times;</button>
                 </div>
@@ -6497,6 +6520,7 @@
                 ai_assistant:'AI 助手',ai_greeting:'你需要我做什么?',
                 ai_gen_outline:'生成大纲',ai_gen_lecture:'生成讲义',ai_gen_abstract:'生成摘要',
                 ai_idk_suggest:'不知道，给我建议',chat_placeholder:'说点什么...',chat_send:'发送',chat_export:'导出',
+                chat_fontsize:'字号',
                 upload_book:'上传书籍',drop_zone_text:'点击或拖拽文件',drop_zone_hint:'支持 PDF, ePub, LaTeX',
                 upload_title_ph:'标题（可选，默认使用文件名）',upload_abstract_ph:'摘要（可选）',upload_add:'添加',select_book:'选择书籍',
                 lecture:'讲义',prev_section:'上一节',next_section:'下一节',
@@ -6685,6 +6709,7 @@
                 ai_assistant:'AI Assistant',ai_greeting:'What can I do for you?',
                 ai_gen_outline:'Generate Outline',ai_gen_lecture:'Generate Lecture',ai_gen_abstract:'Generate Abstract',
                 ai_idk_suggest:'I don\'t know, suggest',chat_placeholder:'Type something...',chat_send:'Send',chat_export:'Export',
+                chat_fontsize:'Font size',
                 upload_book:'Upload Book',drop_zone_text:'Click or drag files',drop_zone_hint:'Supports PDF, ePub, LaTeX',
                 upload_title_ph:'Title (optional, defaults to filename)',upload_abstract_ph:'Abstract (optional)',upload_add:'Add',select_book:'Select Book',
                 lecture:'Lecture',prev_section:'Previous',next_section:'Next',
@@ -6873,6 +6898,7 @@
                 ai_assistant:'Assistant IA',ai_greeting:'Que puis-je faire pour vous ?',
                 ai_gen_outline:'Générer un plan',ai_gen_lecture:'Générer un cours',ai_gen_abstract:'Générer un résumé',
                 ai_idk_suggest:'Je ne sais pas, suggérer',chat_placeholder:'Écrivez...',chat_send:'Envoyer',chat_export:'Exporter',
+                chat_fontsize:'Taille du texte',
                 upload_book:'Ajouter un livre',drop_zone_text:'Cliquer ou glisser',drop_zone_hint:'PDF, ePub, LaTeX',
                 upload_title_ph:'Titre (optionnel)',upload_abstract_ph:'Résumé (optionnel)',upload_add:'Ajouter',select_book:'Sélectionner',
                 lecture:'Cours',prev_section:'Précédent',next_section:'Suivant',
@@ -18783,6 +18809,13 @@
             renderReaderChatHistory();
         }
 
+        function setReaderChatFontsize(size) {
+            size = Math.max(12, Math.min(24, parseInt(size, 10) || 14));
+            document.getElementById('readerChatContainer').style.setProperty('--reader-chat-font-size', size + 'px');
+            document.getElementById('readerChatFontsize').value = String(size);
+            try { localStorage.setItem('mathreader_chat_fontsize', String(size)); } catch (e) {}
+        }
+
         async function openReaderChat(doc = currentDoc) {
             const currentDoc = doc;
             if (!currentDoc) { showToast(i18n('toast_open_doc_first')); return; }
@@ -18790,6 +18823,9 @@
             readerChatDoc = currentDoc;
             clearChatQuote();
             document.getElementById('readerChatTitle').textContent = 'AI - ' + currentDoc.title;
+            let fontSize = document.getElementById('readerChatFontsize').value;
+            try { fontSize = localStorage.getItem('mathreader_chat_fontsize') || fontSize; } catch (e) {}
+            setReaderChatFontsize(fontSize);
 
             let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
             if (history.length === 0) {

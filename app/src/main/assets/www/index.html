@@ -26189,6 +26189,10 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (idx >= 0) {
                 const previous = wrongTask.questions[idx];
                 const previousRedos = previous.redoDrawings;
+                if (previous.chatHistory && previous.chatHistory.length > 0 && !entry.chatHistory) {
+                    entry.chatHistory = previous.chatHistory;
+                    if (previous.chatUpdatedAt) entry.chatUpdatedAt = previous.chatUpdatedAt;
+                }
                 exTouchRedoHistory(entry, previous);
                 wrongTask.questions[idx] = entry;
                 // 先把 canonical 条目切换到空的新历史，再异步清旧图片；删除触发的同步

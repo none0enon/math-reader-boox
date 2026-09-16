@@ -25223,6 +25223,22 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             let changed = options.preserveSourceUncommitted === false
                 ? false
                 : exPreserveUncommittedGrading(targetQ, localQ);
+            // 每个字段独立时间戳，独立合并，谁新用谁
+            const fields = [
+                { key: 'chatHistory', tsKey: 'chatUpdatedAt' }
+            ];
+            for (const f of fields) {
+                const localFTs = Number(localQ[f.tsKey]) || 0;
+                const cloudFTs = Number(targetQ[f.tsKey]) || 0;
+                if (localFTs >= cloudFTs) {
+                    if (JSON.stringify(targetQ[f.key]) !== JSON.stringify(localQ[f.key]) ||
+                        targetQ[f.tsKey] !== localQ[f.tsKey]) {
+                        changed = true;
+                    }
+                    targetQ[f.key] = localQ[f.key];
+                    targetQ[f.tsKey] = localQ[f.tsKey];
+                }
+            }
             const gradedPages = Math.max(
                 Number(targetQ.userDrawingPages) || 0,
                 Number(localQ.userDrawingPages) || 0
@@ -25471,6 +25487,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (activeQ._redoing) canonicalQ._redoing = true;
             state.questions = canonicalQuestions;
             state.questionIndex = canonicalIndex;
+            if (readerChatDoc?.question === activeQ) {
+                readerChatDoc.question = canonicalQuestions[canonicalIndex];
+            }
             return changed;
         }
 
@@ -30699,19 +30718,28 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         async function wrongQuestionAskAI() {
             if (!exDoingState || !exDoingState.isWrong) return;
             const { folderId, taskId, questionIndex, questions } = exDoingState;
-            const q = questions[questionIndex];
+            let q = questions[questionIndex];
             if (!q) return;
-
-            // 题干与旧 AI 解析固定作为背景每轮发送；评分不发送。
-            const questionsText = i18n('prompt_wrong_question_context', (q.questionIndex ?? questionIndex) + 1, q.latex || i18n('no_question_text'));
-            const previousAnalysis = q.aiComment || '';
+            const originalQuestionIndex = q.questionIndex ?? questionIndex;
 
             const wrongImages = [];
             const pages = (await exWrongAnswerPages(taskId, q, questionIndex)).filter(d => d && !isCanvasBlank(d));
-            pages.forEach((drawing, p) => wrongImages.push({ qIndex: q.questionIndex ?? questionIndex, drawing, page: p + 1, pages: pages.length }));
+            pages.forEach((drawing, p) => wrongImages.push({ qIndex: originalQuestionIndex, drawing, page: p + 1, pages: pages.length }));
+
+            // 读取图片期间云同步可能替换 exercises；打开聊天前重新获取当前错题对象。
+            const data = getExercisesData();
+            const wrongTask = (data.wrongByFolder[folderId] || []).find(t => t.taskId === taskId);
+            q = wrongTask && (wrongTask.questions || [])
+                .find(item => item && item.questionIndex === originalQuestionIndex);
+            if (!q) return;
+
+            // 题干与旧 AI 解析固定作为背景每轮发送；评分不发送。
+            const questionsText = i18n('prompt_wrong_question_context', originalQuestionIndex + 1, q.latex || i18n('no_question_text'));
+            const previousAnalysis = q.aiComment || '';
+
             await openReaderChat({
-                id: `wrong_${taskId}_${q.questionIndex ?? questionIndex}`,
-                title: i18n('question_number', (q.questionIndex ?? questionIndex) + 1),
+                id: `wrong_${taskId}_${originalQuestionIndex}`,
+                title: i18n('question_number', originalQuestionIndex + 1),
                 question: q,
                 wrongFirstTurnPending: !(q.chatHistory || []).some(message => message.role === 'user'),
                 wrongContext: questionsText,

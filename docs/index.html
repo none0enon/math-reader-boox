@@ -5292,6 +5292,7 @@
                 </button>
             </div>
             <button class="clear-canvas-btn" onclick="clearExCanvas()" data-i18n="clear_btn">清除</button>
+            <button id="exRestoreCloudPageBtn" class="clear-canvas-btn" style="display:none" onclick="exRestoreCurrentPageFromCloud()" data-i18n="exercise_restore_cloud_page">恢复此页</button>
         </div>
         <div class="exercise-doing-canvas-wrap">
             <canvas class="exercise-doing-canvas" id="exerciseDoingCanvas"></canvas>
@@ -6511,6 +6512,7 @@
                 r2_config:'R2 云同步配置',r2_config_desc:'配置 Cloudflare R2 存储',
                 sync_to_cloud:'同步到云端',sync_to_cloud_desc:'上传数据至 R2',
                 sync_from_cloud:'从云端恢复',sync_from_cloud_desc:'从 R2 下载数据',
+                exercise_restore_cloud_page:'恢复此页',exercise_restore_cloud_page_confirm:'用云端书写替换当前这一页？其他页面不受影响。',exercise_draft_conflict:'此页云端已有不同版本，已保留本地更改，暂未覆盖云端。',
                 export_data:'导出数据',export_data_desc:'导出完整 ZIP 备份',import_data_zip:'导入数据',import_data_zip_desc:'从完整 ZIP 备份恢复',clear_all_data:'清除所有数据',
                 version_info:'数学阅读 PWA v1.0',language_settings:'语言设置',language_label:'界面语言',
                 modal_user_avatar:'设置用户头像',modal_ai_avatar:'设置AI头像',modal_bg_image:'设置背景图',
@@ -6700,6 +6702,7 @@
                 r2_config:'R2 Cloud Sync Config',r2_config_desc:'Configure Cloudflare R2 Storage',
                 sync_to_cloud:'Sync to Cloud',sync_to_cloud_desc:'Upload data to R2',
                 sync_from_cloud:'Restore from Cloud',sync_from_cloud_desc:'Download data from R2',
+                exercise_restore_cloud_page:'Restore this page',exercise_restore_cloud_page_confirm:'Replace this page with its cloud drawing? Other pages are unaffected.',exercise_draft_conflict:'The cloud page has another version. Local changes were kept without overwriting the cloud.',
                 export_data:'Export Data',export_data_desc:'Export complete ZIP backup',import_data_zip:'Import Data',import_data_zip_desc:'Restore from complete ZIP backup',clear_all_data:'Clear All Data',
                 version_info:'Math Reader PWA v1.0',language_settings:'Language',language_label:'Interface Language',
                 modal_user_avatar:'Set User Avatar',modal_ai_avatar:'Set AI Avatar',modal_bg_image:'Set Background Image',
@@ -6889,6 +6892,7 @@
                 r2_config:'Config sync R2',r2_config_desc:'Configurer Cloudflare R2',
                 sync_to_cloud:'Synchroniser',sync_to_cloud_desc:'Envoyer vers R2',
                 sync_from_cloud:'Restaurer',sync_from_cloud_desc:'Télécharger depuis R2',
+                exercise_restore_cloud_page:'Restaurer cette page',exercise_restore_cloud_page_confirm:'Remplacer cette page par son dessin cloud ? Les autres pages restent intactes.',exercise_draft_conflict:'La page cloud possède une autre version. Les modifications locales ont été conservées sans remplacer le cloud.',
                 export_data:'Exporter',export_data_desc:'Exporter une sauvegarde ZIP complète',import_data_zip:'Importer',import_data_zip_desc:'Restaurer depuis une sauvegarde ZIP',clear_all_data:'Tout effacer',
                 version_info:'Math Reader PWA v1.0',language_settings:'Langue',language_label:'Langue de l\'interface',
                 modal_user_avatar:'Définir l\'avatar',modal_ai_avatar:'Définir l\'avatar IA',modal_bg_image:'Définir l\'arrière-plan',
@@ -14286,6 +14290,8 @@
                 await r2SyncChangedLectureContents();
                 await r2SyncAllNotebookPages();
 
+                exRetryPendingDrafts().catch(e => console.warn('补传习题草稿失败:', e));
+                exRefreshOpenedDrafts().catch(e => console.warn('接收习题草稿失败:', e));
                 // 再把合并后的结果推回云端
                 const metadataPublishResult = await r2SyncMetadataOnly();
                 if (metadataPublishResult.casCommitted) {
@@ -15750,7 +15756,8 @@
                 method: 'PUT',
                 headers: headers,
                 body: payload,
-                mode: 'cors'
+                mode: 'cors',
+                signal: options.signal
             });
             
             if (!response.ok) {
@@ -16430,6 +16437,7 @@
             try { renderNotebooksPage(); } catch (e) { console.warn('renderNotebooksPage failed', e); }
             // Keep the R2 auto-sync timer consistent with the (possibly new) config
             try { initR2AutoSync(); } catch (e) { console.warn('initR2AutoSync failed', e); }
+            exRefreshOpenedDrafts().catch(e => console.warn('刷新习题草稿失败:', e));
         }
 
         // On app startup, if auto-sync is enabled and R2 is configured, pull the
@@ -16844,6 +16852,7 @@
                 const metadataStr = await r2GetObject('metadata.json');
                 if (!metadataStr) {
                     finishR2StartupMetadataSync();
+                    exRetryPendingDrafts().catch(e => console.warn('补传习题草稿失败:', e));
                     return;
                 }
                 const metadata = JSON.parse(metadataStr);
@@ -17035,6 +17044,7 @@
                 }
 
                 // 后台拉取本地缺失的资源文件（只拉本地没有的）
+                exRetryPendingDrafts().catch(e => console.warn('补传习题草稿失败:', e));
                 for (const doc of [...(appData.books || []), ...(appData.papers || [])]) {
                     if (!doc?.id) continue;
                     const localFile = await getFileData(doc.id).catch(() => null);
@@ -17552,6 +17562,7 @@
                 // immediately reflect the restored data without needing a refresh.
                 try { applySettings(); } catch (e) { console.warn('applySettings failed', e); }
                 try { initR2AutoSync(); } catch (e) { console.warn('initR2AutoSync failed', e); }
+                await exRefreshOpenedDrafts();
                 showToast(i18n('restore_done_detail', downloadedFiles, downloadedLectures, downloadedAbstracts) + (downloadedNotebooks.pages || downloadedNotebooks.media ? i18n('restore_notebook_detail', downloadedNotebooks.pages, downloadedNotebooks.media) : ''));
             } catch (err) {
                 console.error('Sync from R2 failed:', err);
@@ -26245,7 +26256,9 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const cached = [];
             for (let p = 0; p < pageCount; p++) {
                 const cacheKey = exPageKey(`${taskId}_${i}`, p);
-                let d = exDrawingCache[cacheKey] || null;
+                let snapshot = null;
+                try { snapshot = await exReadLocalDraft(cacheKey); } catch(e) {}
+                let d = exIsDraftSnapshot(snapshot) ? snapshot.image : exDrawingCache[cacheKey] || null;
                 if (!d) { try { d = await getFileData(`exercise_drawing_cache_${cacheKey}`); } catch(e) {} }
                 cached.push(d);
             }
@@ -28807,6 +28820,273 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return savePromise;
         }
 
+        // 同一 JSON 对象携带图片、笔画和版本；PNG 仅供旧客户端/导出使用。
+        // _sync 只存在本机，待上传状态随快照持久化，不依赖仍打开的 page 对象。
+        function exParseDraftRecord(raw) {
+            try { return typeof raw === 'string' ? JSON.parse(raw) : null; } catch (e) { return null; }
+        }
+        function exIsDraftSnapshot(record) {
+            return !!(record && record.v === 2 && typeof record.snapshotId === 'string' && record.snapshotId &&
+                typeof record.image === 'string' && record.image.startsWith('data:image/png;base64,') &&
+                (record.strokes === null || (Array.isArray(record.strokes) && record.strokes.every(s =>
+                    s && Array.isArray(s.points) && s.points.length >= 2 && s.points.every(point =>
+                        Array.isArray(point) && point.length >= 2 && Number.isFinite(point[0]) && Number.isFinite(point[1]))))));
+        }
+        function exDraftCloudRecord(record) {
+            return { v: 2, snapshotId: record.snapshotId, image: record.image, strokes: record.strokes };
+        }
+        async function exReadLocalDraft(key) {
+            return exParseDraftRecord(exStrokesCache[key] || await getFileData(`exercise_strokes_cache_${key}`));
+        }
+        async function exDraftRemoteVersion(raw, legacyImage = null) {
+            const record = exParseDraftRecord(raw);
+            if (exIsDraftSnapshot(record)) return record.snapshotId;
+            return raw ? `legacy:${await sha256Hex(raw)}`
+                : legacyImage ? `legacy-image:${await sha256Hex(legacyImage)}` : 'missing';
+        }
+        async function exFetchCloudDraft(key) {
+            const result = await r2GetObjectWithTimeout(`exercises/drawings/exercise_strokes_cache_${key}`, 5000, { withMetadata: true });
+            if (result.missing) result.legacyImage = await r2GetObjectWithTimeout(`exercises/drawings/exercise_drawing_cache_${key}`, 5000);
+            result.version = await exDraftRemoteVersion(result.data, result.legacyImage);
+            return result;
+        }
+        async function exPutDraftObject(key, data, type, options = {}) {
+            if (typeof AbortController !== 'function') return r2PutObject(key, data, type, options);
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            try { return await r2PutObject(key, data, type, { ...options, signal: controller.signal }); }
+            finally { clearTimeout(timer); }
+        }
+        async function exAcknowledgeDraft(key, snapshotId, mirrorPending = false) {
+            await exQueueDrawingSave(async () => {
+                const record = exParseDraftRecord(await getFileData(`exercise_strokes_cache_${key}`));
+                if (!record || record.snapshotId !== snapshotId) return true;
+                record._sync = { observed: true, seen: snapshotId, pending: false, mirrorPending };
+                const raw = JSON.stringify(record);
+                await saveFileData(`exercise_strokes_cache_${key}`, raw);
+                const cached = exParseDraftRecord(exStrokesCache[key]);
+                if (!cached || cached.snapshotId === snapshotId) {
+                    exStrokesCache[key] = raw;
+                    if (exDoingState) exPages.forEach((page, p) => {
+                        if (exPageKey(`${exDoingState.taskId}_${exDoingState.questionIndex}`, p) !== key ||
+                            (page.editRevision || 0) !== page.snapshotEditRevision) return;
+                        if (p === exPageIndex && exDrawing) return;
+                        page.dirtyCloud = false;
+                        if (p === exPageIndex) exDirtyCloud = false;
+                    });
+                }
+                return true;
+            });
+        }
+        function exPublishDraftSnapshot(key, snapshot, localSave = Promise.resolve(true)) {
+            if (!exIsDraftSnapshot(snapshot)) return Promise.resolve(false);
+            return exQueueDrawingCloudSave(`exercise_drawing_cache_${key}`, async () => {
+                if (await localSave === false) return false;
+                let local = await exReadLocalDraft(key);
+                if (!exIsDraftSnapshot(local) || local.snapshotId !== snapshot.snapshotId ||
+                    !(local._sync?.pending || local._sync?.mirrorPending)) return true;
+                try {
+                    const durable = exParseDraftRecord(await getFileData(`exercise_strokes_cache_${key}`));
+                    if (durable?.snapshotId !== local.snapshotId || !(durable._sync?.pending || durable._sync?.mirrorPending)) return false;
+                    const remote = await exFetchCloudDraft(key);
+                    const cloud = exParseDraftRecord(remote.data);
+                    if (exIsDraftSnapshot(cloud) && cloud.snapshotId === local.snapshotId) {
+                        await exAcknowledgeDraft(key, local.snapshotId, true);
+                        await exPutDraftObject(`exercises/drawings/exercise_drawing_cache_${key}`, local.image, 'image/png');
+                        await exAcknowledgeDraft(key, local.snapshotId);
+                        return true;
+                    }
+                    if (!local._sync.pending) {
+                        // 已提交的版本只欠 PNG；远端已有新版本时不能补写旧镜像或阻挡接收。
+                        await exAcknowledgeDraft(key, local.snapshotId);
+                        return true;
+                    }
+                    const ownPredecessor = exIsDraftSnapshot(cloud) &&
+                        (local._sync.attemptedSnapshot === cloud.snapshotId ||
+                            (Array.isArray(local._sync.ancestors) && local._sync.ancestors.includes(cloud.snapshotId)));
+                    if (local._sync.observed && local._sync.seen !== remote.version && !ownPredecessor) {
+                        showToast(i18n('exercise_draft_conflict'));
+                        return false;
+                    }
+                    // 在发送前持久化基线。进程在 PUT 成功、ACK 前退出，重试也不能覆盖后来版本。
+                    const prepared = await exQueueDrawingSave(async () => {
+                        const current = await exReadLocalDraft(key);
+                        const latest = exParseDraftRecord(exStrokesCache[key]);
+                        if (!current || current.snapshotId !== local.snapshotId ||
+                            (latest && latest.snapshotId !== current.snapshotId)) return false;
+                        current._sync = { ...current._sync, observed: true, seen: remote.version, attemptedSnapshot: current.snapshotId };
+                        const raw = JSON.stringify(current);
+                        exStrokesCache[key] = raw;
+                        await saveFileData(`exercise_strokes_cache_${key}`, raw);
+                        local = current;
+                        return true;
+                    });
+                    if (!prepared) return true;
+                    if ((await exReadLocalDraft(key))?.snapshotId !== local.snapshotId) return true;
+                    await exPutDraftObject(`exercises/drawings/exercise_strokes_cache_${key}`,
+                        JSON.stringify(exDraftCloudRecord(local)), 'application/json',
+                        remote.missing ? { ifNoneMatch: '*' } : remote.etag ? { ifMatch: remote.etag } : {});
+                    await exAcknowledgeDraft(key, local.snapshotId, true);
+                    // 图片镜像有独立的重试标记，失败不能让已提交的空页一直拒收新版本。
+                    await exPutDraftObject(`exercises/drawings/exercise_drawing_cache_${key}`, local.image, 'image/png');
+                    await exAcknowledgeDraft(key, local.snapshotId);
+                    return true;
+                } catch (e) {
+                    console.warn('上传习题草稿快照失败:', key, e);
+                    return false;
+                }
+            }).catch(e => {
+                console.warn('保存习题同步状态失败:', key, e);
+                return false;
+            });
+        }
+        let _exDraftRetryPromise = null;
+        async function exRetryPendingDrafts() {
+            if (_exDraftRetryPromise) return _exDraftRetryPromise;
+            const work = exRetryPendingDraftsWork();
+            _exDraftRetryPromise = work;
+            try { await work; } finally { if (_exDraftRetryPromise === work) _exDraftRetryPromise = null; }
+        }
+        async function exRetryPendingDraftsWork() {
+            if (!exDrawingCloudReady()) return;
+            const data = getExercisesData();
+            // 只遍历仍属于题目的缓存，删除题目后的孤儿不能重新上传。
+            for (const folder of (data.folders || [])) {
+                for (const task of (folder.tasks || [])) {
+                    for (let i = 0; i < (task.questions || []).length; i++) {
+                        for (let p = 0; p < Math.max(1, task.questions[i].pageCount || 1); p++) {
+                            const key = exPageKey(`${task.id}_${i}`, p);
+                            try {
+                                const record = await exReadLocalDraft(key);
+                                if (exIsDraftSnapshot(record) && (record._sync?.pending || record._sync?.mirrorPending)) await exPublishDraftSnapshot(key, record);
+                            } catch (e) { console.warn('补传习题草稿失败:', key, e); }
+                        }
+                    }
+                }
+            }
+        }
+        function exLoadDraftImage(data) {
+            return new Promise((resolve, reject) => {
+                const image = new Image();
+                image.onload = () => resolve(image);
+                image.onerror = () => reject(new Error('Invalid draft image'));
+                image.src = data;
+            });
+        }
+        async function exSyncDraftPage(state, p, force = false) {
+            const page = exPages[p];
+            if (!page) return;
+            const key = exPageKey(`${state.taskId}_${state.questionIndex}`, p);
+            const revision = page.editRevision || 0;
+            const request = page.cloudReadRevision = (page.cloudReadRevision || 0) + 1;
+            const canApply = () => exDoingState === state && exPages[p] === page &&
+                (page.editRevision || 0) === revision && page.cloudReadRevision === request &&
+                !(p === exPageIndex && exDrawing) &&
+                (force || (!page.dirtyLocal && !page.dirtyCloud && !page.strokes.length && !page.baseImage &&
+                    !page.opHistory.length && !page.redoStack.length &&
+                    !(p === exPageIndex && (exDirtyLocal || exDirtyCloud || exStrokes.length || exBaseImage)))) &&
+                !_exDrawingCloudSavePromises.has(`exercise_drawing_cache_${key}`);
+            if (!canApply()) return;
+            const local = await exReadLocalDraft(key);
+            if (!force && local?._sync?.pending) return;
+            const remote = await exFetchCloudDraft(key);
+            let cloud = exParseDraftRecord(remote.data);
+            if (!canApply()) return;
+            const cloudId = remote.version;
+            if (!force && local && !local._sync?.observed) {
+                // 历史空草稿无意图/版本信息，首次只记录基线，不猜它是否主动擦空。
+                await exQueueDrawingSave(async () => {
+                    if (!canApply()) return true;
+                    const current = await exReadLocalDraft(key);
+                    if (JSON.stringify(current) !== JSON.stringify(local)) return true;
+                    const raw = JSON.stringify({ ...local, _sync: { observed: true, seen: cloudId, pending: false } });
+                    await saveFileData(`exercise_strokes_cache_${key}`, raw);
+                    if (canApply()) exStrokesCache[key] = raw;
+                    return true;
+                });
+                return;
+            }
+            if (!force && (!exIsDraftSnapshot(cloud) || local?._sync?.seen === cloudId)) return;
+            if (!exIsDraftSnapshot(cloud)) {
+                if (!force || cloud?.snapshotId) return;
+                // 用户明确恢复此页时保留旧格式的矢量优先行为，不猜两份文件的空白状态。
+                const strokes = Array.isArray(cloud?.strokes)
+                    ? cloud.strokes.map(s => ({ ...s, color: s.color || '#000000', width: s.width || 2 })) : null;
+                const image = strokes ? exRenderPageToDataURL({ strokes, baseImage: null })
+                    : remote.legacyImage || await r2GetObjectWithTimeout(`exercises/drawings/exercise_drawing_cache_${key}`, 5000);
+                if (!image) return;
+                cloud = { v: 2, snapshotId: exCreateGradedDrawingCommitId(), image,
+                    strokes };
+                if (!exIsDraftSnapshot(cloud)) return;
+            }
+            const image = await exLoadDraftImage(cloud.image);
+            if (!canApply()) return;
+            const raw = JSON.stringify({ ...exDraftCloudRecord(cloud), _sync: { observed: true, seen: cloudId, pending: false } });
+            const saved = await exQueueDrawingSave(async () => {
+                if (!canApply()) return false;
+                const current = await exReadLocalDraft(key);
+                if (JSON.stringify(current) !== JSON.stringify(local)) return false;
+                await saveFileData(`exercise_strokes_cache_${key}`, raw);
+                await saveFileData(`exercise_drawing_cache_${key}`, cloud.image).catch(e => console.warn('缓存草稿 PNG 镜像失败:', e));
+                return true;
+            });
+            if (!saved || !canApply()) return;
+            const strokes = (cloud.strokes || []).map(s => ({ ...s, bbox: exComputeBBox(s.points) }));
+            page.strokes = strokes;
+            page.baseImage = cloud.strokes === null ? image : null;
+            page.opHistory = [];
+            page.redoStack = [];
+            page.dirtyLocal = page.dirtyCloud = false;
+            page.snapshotEditRevision = page.editRevision || 0;
+            exStrokesCache[key] = raw;
+            exDrawingCache[key] = cloud.image;
+            if (p === exPageIndex) {
+                exClearSelection();
+                exLoadPage(p);
+                exRedrawCanvas();
+                updateExUndoRedoButtons();
+                window.__booxPen?.refresh?.();
+            }
+        }
+        async function exSyncOpenedDraftPages(state, force = false) {
+            if (exDoingState !== state || state.isWrong || !exDrawingCloudReady()) return;
+            exStoreCurrentPage();
+            const pages = force ? [exPageIndex] : exPages.map((_, p) => p);
+            await Promise.all(pages.map(p => exSyncDraftPage(state, p, force).catch(e => console.warn('接收习题草稿失败:', e))));
+        }
+        let _exDraftRefreshPromise = null;
+        async function exRefreshOpenedDrafts(force = false) {
+            if (_exDraftRefreshPromise) return _exDraftRefreshPromise;
+            const state = exDoingState;
+            if (!state || state.isWrong || !exDrawingCloudReady()) return;
+            const work = (async () => {
+                if (exRestoreInFlight()) await exRestorePromise;
+                if (exDoingState !== state || _exClosePromise) return;
+                const token = ++exRestoreToken;
+                const pending = exSyncOpenedDraftPages(state, force);
+                exRestorePromise = pending;
+                try { await pending; } finally {
+                    if (exRestoreToken === token) exRestoreSettled = token;
+                }
+            })();
+            _exDraftRefreshPromise = work;
+            try { await work; } finally { if (_exDraftRefreshPromise === work) _exDraftRefreshPromise = null; }
+        }
+        async function exRestoreCurrentPageFromCloud() {
+            if (!exDoingState || exDrawing || !exDrawingCloudReady() || !confirm(i18n('exercise_restore_cloud_page_confirm'))) return;
+            const state = exDoingState;
+            const page = exPages[exPageIndex];
+            const revision = page?.editRevision || 0;
+            await saveCurrentDrawingToCache(false);
+            await exWaitForPendingDrawingSaves();
+            const key = exPageKey(`${state.taskId}_${state.questionIndex}`, exPageIndex);
+            await _exDrawingCloudSavePromises.get(`exercise_drawing_cache_${key}`);
+            await exRefreshOpenedDrafts();
+            if (exDoingState === state && exPages[exPageIndex] === page && (page.editRevision || 0) === revision) {
+                await exRefreshOpenedDrafts(true);
+            }
+        }
+
         async function exWaitForPendingDrawingSaves() {
             let succeeded = true;
             while (exPendingDrawingSaves.size > 0) {
@@ -28836,27 +29116,27 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 const key = exPageKey(baseKey, p);
                 const dbKey = `exercise_drawing_cache_${key}`;
                 const strokesDbKey = `exercise_strokes_cache_${key}`;
+                let pageSave = Promise.resolve(true);
                 if (page.dirtyLocal) {
                     const dataUrl = p === exPageIndex ? canvas.toDataURL('image/png') : exRenderPageToDataURL(page);
                     exDrawingCache[key] = dataUrl;
-                    const removeStrokes = !!page.baseImage;
-                    let strokesJson = null;
-                    if (page.baseImage) {
-                        // 底图（旧版PNG）已合入新PNG，矢量数据不含底图，删除避免恢复时丢内容
-                        delete exStrokesCache[key];
-                    } else {
-                        strokesJson = JSON.stringify({
-                            v: 2,
-                            strokes: page.strokes.map(s => ({ color: s.color, width: s.width, points: s.points }))
-                        });
-                        exStrokesCache[key] = strokesJson;
-                    }
+                    const previous = exParseDraftRecord(exStrokesCache[key]);
+                    const pending = !!(page.dirtyCloud || previous?._sync?.pending);
+                    const ancestors = previous?._sync?.pending
+                        ? [...(Array.isArray(previous._sync.ancestors) ? previous._sync.ancestors : []), previous.snapshotId].filter(Boolean).slice(-128)
+                        : [];
+                    const strokesJson = JSON.stringify({
+                        v: 2, snapshotId: exCreateGradedDrawingCommitId(), image: dataUrl,
+                        strokes: page.baseImage ? null : page.strokes.map(s => ({ color: s.color, width: s.width, points: s.points })),
+                        _sync: { observed: !!previous?._sync?.observed, seen: previous?._sync?.seen ?? null, pending, ancestors,
+                            attemptedSnapshot: previous?._sync?.pending ? previous._sync.attemptedSnapshot : undefined }
+                    });
+                    exStrokesCache[key] = strokesJson;
+                    page.snapshotEditRevision = page.editRevision || 0;
                     page.dirtyLocal = false;
-                    const pageSave = exQueueDrawingSave(() => {
+                    pageSave = exQueueDrawingSave(() => {
                         const pageWrites = [saveFileData(dbKey, dataUrl)];
-                        pageWrites.push(removeStrokes
-                            ? deleteFileData(strokesDbKey)
-                            : saveFileData(strokesDbKey, strokesJson));
+                        pageWrites.push(saveFileData(strokesDbKey, strokesJson));
                         return Promise.all(pageWrites.map(write => write.then(
                             () => ({ ok: true }),
                             error => ({ ok: false, error })
@@ -28873,21 +29153,14 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     });
                     localSaves.push(pageSave);
                 }
-                if (syncToCloud && page.dirtyCloud && exDrawingCloudReady()) {
+                if (syncToCloud && (page.dirtyCloud || exParseDraftRecord(exStrokesCache[key])?._sync?.mirrorPending) && exDrawingCloudReady()) {
                     page.dirtyCloud = false;
-                    const drawingData = exDrawingCache[key];
-                    const strokesData = exStrokesCache[key] || null;
-                    exQueueDrawingCloudSave(dbKey, () => {
-                        const cloudWrites = [exUploadDrawingToCloud(dbKey, drawingData, 'image/png')];
-                        cloudWrites.push(strokesData
-                            ? exUploadDrawingToCloud(strokesDbKey, strokesData, 'application/json')
-                            : exDeleteDrawingFromCloud(strokesDbKey));
-                        return Promise.all(cloudWrites).then(results => {
-                            if (!results.some(result => result === false)) return true;
-                            page.dirtyCloud = true;
-                            if (exPages[p] === page && exPageIndex === p) exDirtyCloud = true;
-                            return false;
-                        });
+                    const snapshot = exParseDraftRecord(exStrokesCache[key]);
+                    exPublishDraftSnapshot(key, snapshot, pageSave).then(succeeded => {
+                        const latest = exParseDraftRecord(exStrokesCache[key]);
+                        if (succeeded || latest?.snapshotId !== snapshot?.snapshotId || !latest?._sync?.pending) return;
+                        page.dirtyCloud = true;
+                        if (exPages[p] === page && exPageIndex === p) exDirtyCloud = true;
                     });
                 }
             });
@@ -28922,11 +29195,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
         async function restoreDrawingFromCache() {
             if (!exDoingState) return;
+            const state = exDoingState;
             const { taskId, questionIndex } = exDoingState;
             const baseKey = `${taskId}_${questionIndex}`;
             const token = ++exRestoreToken;
             try {
                 await Promise.all(exPages.map((_, p) => exRestorePageFromCache(baseKey, p, token)));
+                if (exDoingState === state && !_exClosePromise) await exSyncOpenedDraftPages(state);
             } finally {
                 if (token === exRestoreToken) exRestoreSettled = token;
             }
@@ -28935,6 +29210,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 恢复单页：优先矢量笔画（支持整笔橡皮），其次旧版PNG缓存；本地没有时尝试云端
         async function exRestorePageFromCache(baseKey, p, token) {
             const editRevisionAtStart = exDrawingEditRevision;
+            const pageAtStart = exPages[p];
+            const pageRevisionAtStart = pageAtStart.editRevision || 0;
             const restoreState = exDoingState;
             const stableQuestionIndex = exStableQuestionIndex(restoreState);
             const restoreGradingKey = restoreState && stableQuestionIndex != null
@@ -28957,11 +29234,32 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!imageData) {
                 try { imageData = await getFileData(dbKey); } catch(e) {}
             }
+            const localRecord = exParseDraftRecord(strokesJson);
+            if (exIsDraftSnapshot(localRecord)) imageData = localRecord.image;
             // 本地无数据时尝试从云端拉取（跨设备恢复书写进度）
             let needsLocalSave = false;
             if (!strokesJson && !imageData && exDrawingCloudReady()) {
-                try { strokesJson = await r2GetObject('exercises/drawings/' + strokesDbKey); } catch(e) {}
-                try { imageData = await r2GetObject('exercises/drawings/' + dbKey); } catch(e) {}
+                let cloudVersion = null;
+                try {
+                    const remote = await exFetchCloudDraft(key);
+                    strokesJson = remote.data;
+                    cloudVersion = remote.version;
+                    imageData = remote.legacyImage || null;
+                } catch(e) {}
+                const cloudRecord = exParseDraftRecord(strokesJson);
+                if (cloudRecord?.snapshotId && !exIsDraftSnapshot(cloudRecord)) return;
+                if (exIsDraftSnapshot(cloudRecord)) await exLoadDraftImage(cloudRecord.image);
+                if (exIsDraftSnapshot(cloudRecord)) imageData = cloudRecord.image;
+                else if (!imageData) {
+                    try { imageData = await r2GetObjectWithTimeout('exercises/drawings/' + dbKey, 5000); } catch(e) {}
+                }
+                if (cloudRecord) {
+                    strokesJson = JSON.stringify({ ...cloudRecord,
+                        _sync: { observed: cloudVersion !== null, seen: cloudVersion, pending: false } });
+                } else if (imageData && cloudVersion !== null) {
+                    strokesJson = JSON.stringify({ v: 2, strokes: null,
+                        _sync: { observed: true, seen: cloudVersion, pending: false } });
+                }
                 if (strokesJson || imageData) {
                     let skippedForLocalEdit = false;
                     let cacheError = null;
@@ -29028,9 +29326,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
             // 等待期间已切题/关闭则放弃本次恢复
             const stillValid = () => token === exRestoreToken && exDoingState && exCanvasCtx
-                && `${exDoingState.taskId}_${exDoingState.questionIndex}` === baseKey && p < exPages.length;
+                && `${exDoingState.taskId}_${exDoingState.questionIndex}` === baseKey && exPages[p] === pageAtStart
+                && !(pageAtStart.clearRevision > pageRevisionAtStart);
             const markMergedPageForSave = () => {
-                if (!stillValid() || (!needsLocalSave && exDrawingEditRevision === editRevisionAtStart)) return;
+                if (!stillValid() || (!needsLocalSave && (pageAtStart.editRevision || 0) === pageRevisionAtStart)) return;
+                if ((pageAtStart.editRevision || 0) !== pageRevisionAtStart) {
+                    // 用户已保存的新笔迹又合入恢复内容，前一次上传 ACK 不能代表这份合并结果。
+                    pageAtStart.editRevision = (pageAtStart.editRevision || 0) + 1;
+                    pageAtStart.dirtyCloud = true;
+                    if (p === exPageIndex) exDirtyCloud = true;
+                }
                 if (p === exPageIndex) exDirtyLocal = true;
                 if (exPages[p]) exPages[p].dirtyLocal = true;
                 exScheduleAutoSave();
@@ -29038,8 +29343,22 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!stillValid()) return;
             // 本地读取或 R2 拉取后若有更新评分提交，旧 graded 图片不能再进入草稿缓存/画布。
             if (imageDataFromGradedFallback && !restoreGradingGuard()) imageData = null;
-            if (strokesJson) exStrokesCache[key] = strokesJson;
+            const latestRecord = exParseDraftRecord(exStrokesCache[key]);
+            const capturedRecord = exParseDraftRecord(strokesJson);
+            // 迟到的恢复不能撤销同一快照的上传 ACK，也不能覆盖已保存的新快照。
+            if (capturedRecord?.snapshotId && latestRecord?.snapshotId === capturedRecord.snapshotId) {
+                strokesJson = exStrokesCache[key];
+            }
+            if (strokesJson && (!latestRecord?.snapshotId || latestRecord.snapshotId === capturedRecord?.snapshotId)) {
+                exStrokesCache[key] = strokesJson;
+            }
             if (imageData) exDrawingCache[key] = imageData;
+            const restoredRecord = exParseDraftRecord(strokesJson);
+            if (restoredRecord?._sync?.pending) {
+                pageAtStart.dirtyCloud = true;
+                if (p === exPageIndex) exDirtyCloud = true;
+            }
+            if (restoredRecord?.snapshotId) pageAtStart.snapshotEditRevision = pageRevisionAtStart;
 
             if (strokesJson) {
                 try {
@@ -29097,6 +29416,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') exSaveDrawingOnHide();
+            else exRefreshOpenedDrafts().catch(e => console.warn('恢复习题草稿失败:', e));
         });
         window.addEventListener('pagehide', exSaveDrawingOnHide);
 
@@ -29489,6 +29809,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         function exMarkDirty() {
             // 用户在快照形成后又改了内容，等待中的旧 AI 结果不得回写。
             exDrawingEditRevision++;
+            const page = exPages[exPageIndex];
+            if (page) page.editRevision = (page.editRevision || 0) + 1;
             exInvalidateQuestionGrading();
             exDirtyLocal = true;
             exDirtyCloud = true;
@@ -29828,17 +30150,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 exStrokes = [];
                 exBaseImage = null;
                 exRedrawCanvas();
-                exMarkDirty();
             }
-            if (exDoingState) {
-                const key = exPageKey(`${exDoingState.taskId}_${exDoingState.questionIndex}`, exPageIndex);
-                delete exDrawingCache[key];
-                delete exStrokesCache[key];
-                deleteFileData(`exercise_drawing_cache_${key}`).catch(e => {});
-                deleteFileData(`exercise_strokes_cache_${key}`).catch(e => {});
-                exDeleteDrawingFromCloud(`exercise_drawing_cache_${key}`);
-                exDeleteDrawingFromCloud(`exercise_strokes_cache_${key}`);
-            }
+            exMarkDirty();
+            if (exPages[exPageIndex]) exPages[exPageIndex].clearRevision = exPages[exPageIndex].editRevision;
+            // 清空也是明确的新快照，不能 DELETE 后让旧草稿/评分图片再次回退出来。
+            saveCurrentDrawingToCache();
         }
 
         // ==================== 套索：圈选 / 移动 / 缩放 ====================
@@ -30249,7 +30565,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
 
         // ==================== 多页作答：页面槽位与切换 ====================
         function exNewPageState() {
-            return { strokes: [], baseImage: null, opHistory: [], redoStack: [], dirtyLocal: false, dirtyCloud: false };
+            return { strokes: [], baseImage: null, opHistory: [], redoStack: [], dirtyLocal: false, dirtyCloud: false, editRevision: 0 };
         }
 
         // 当前页的全局状态存回槽位（切页/保存/收集图片前调用）
@@ -30289,6 +30605,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         }
 
         function updateExPageNav() {
+            const restore = document.getElementById('exRestoreCloudPageBtn');
+            if (restore) restore.style.display = exDrawingCloudReady() && !exDoingState?.isWrong ? '' : 'none';
             const nav = document.getElementById('exPageNav');
             if (!nav) return;
             const n = exPages.length;

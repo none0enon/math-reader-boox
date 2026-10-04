@@ -16430,6 +16430,7 @@
             try { renderNotebooksPage(); } catch (e) { console.warn('renderNotebooksPage failed', e); }
             // Keep the R2 auto-sync timer consistent with the (possibly new) config
             try { initR2AutoSync(); } catch (e) { console.warn('initR2AutoSync failed', e); }
+            exRefreshEmptyDrawingFromCloud().catch(e => console.warn('刷新习题空页失败:', e));
         }
 
         // On app startup, if auto-sync is enabled and R2 is configured, pull the
@@ -17552,6 +17553,7 @@
                 // immediately reflect the restored data without needing a refresh.
                 try { applySettings(); } catch (e) { console.warn('applySettings failed', e); }
                 try { initR2AutoSync(); } catch (e) { console.warn('initR2AutoSync failed', e); }
+                await exRefreshEmptyDrawingFromCloud();
                 showToast(i18n('restore_done_detail', downloadedFiles, downloadedLectures, downloadedAbstracts) + (downloadedNotebooks.pages || downloadedNotebooks.media ? i18n('restore_notebook_detail', downloadedNotebooks.pages, downloadedNotebooks.media) : ''));
             } catch (err) {
                 console.error('Sync from R2 failed:', err);
@@ -28847,6 +28849,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     } else {
                         strokesJson = JSON.stringify({
                             v: 2,
+                            // 仅本机保留主动擦空的标记，不能当成未书写的空缓存重新拉取。
+                            intentionalBlank: !page.strokes.length && !!(page.intentionalBlank || page.opHistory.length || page.redoStack.length),
                             strokes: page.strokes.map(s => ({ color: s.color, width: s.width, points: s.points }))
                         });
                         exStrokesCache[key] = strokesJson;
@@ -28877,10 +28881,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                     page.dirtyCloud = false;
                     const drawingData = exDrawingCache[key];
                     const strokesData = exStrokesCache[key] || null;
+                    const cloudStrokes = strokesData ? JSON.parse(strokesData) : null;
+                    if (cloudStrokes) delete cloudStrokes.intentionalBlank;
                     exQueueDrawingCloudSave(dbKey, () => {
                         const cloudWrites = [exUploadDrawingToCloud(dbKey, drawingData, 'image/png')];
                         cloudWrites.push(strokesData
-                            ? exUploadDrawingToCloud(strokesDbKey, strokesData, 'application/json')
+                            ? exUploadDrawingToCloud(strokesDbKey, JSON.stringify(cloudStrokes), 'application/json')
                             : exDeleteDrawingFromCloud(strokesDbKey));
                         return Promise.all(cloudWrites).then(results => {
                             if (!results.some(result => result === false)) return true;
@@ -28932,10 +28938,62 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
         }
 
+        // 只接收未编辑的空槽位；已有笔迹继续沿用本地优先，不扩大冲突合并范围。
+        async function exRefreshEmptyDrawingFromCloud() {
+            const state = exDoingState;
+            if (!state || state.isWrong || !exDrawingCloudReady() || _exClosePromise) return;
+            if (exRestoreInFlight()) {
+                await exRestorePromise;
+                if (exDoingState !== state || exRestoreInFlight()) return;
+            }
+            if (exDrawing || _exClosePromise) return;
+            exStoreCurrentPage();
+            const pages = exPages.map((page, p) => ({ page, p })).filter(({ page }) =>
+                !page.strokes.length && !page.baseImage && !page.intentionalBlank &&
+                !page.dirtyLocal && !page.dirtyCloud && !page.opHistory.length && !page.redoStack.length);
+            if (!pages.length) return;
+            const baseKey = `${state.taskId}_${state.questionIndex}`;
+            const token = ++exRestoreToken;
+            exRestorePromise = Promise.all(pages.map(({ p }) =>
+                exRestorePageFromCache(baseKey, p, token, true))).finally(() => {
+                if (token === exRestoreToken) exRestoreSettled = token;
+            });
+            await exRestorePromise;
+            if (exDoingState === state && !exDrawing && typeof window.__booxPen?.refresh === 'function') {
+                window.__booxPen.refresh();
+            }
+        }
+
+        // 草稿 PNG 的空白必须按原尺寸确认；缩略图可能漏掉细小笔迹，失败时保守保留。
+        function exIsTransparentDraftImage(data) {
+            if (!data) return Promise.resolve(true);
+            return new Promise(resolve => {
+                const img = new Image();
+                img.onload = () => {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.naturalWidth;
+                        canvas.height = img.naturalHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+                        for (let i = 3; i < pixels.length; i += 4) {
+                            if (pixels[i]) { resolve(false); return; }
+                        }
+                        resolve(true);
+                    } catch (e) { resolve(false); }
+                };
+                img.onerror = () => resolve(false);
+                img.src = data;
+            });
+        }
+
         // 恢复单页：优先矢量笔画（支持整笔橡皮），其次旧版PNG缓存；本地没有时尝试云端
-        async function exRestorePageFromCache(baseKey, p, token) {
+        async function exRestorePageFromCache(baseKey, p, token, refreshEmpty = false) {
             const editRevisionAtStart = exDrawingEditRevision;
             const restoreState = exDoingState;
+            const restorePage = exPages[p];
+            const intentionalBlankAtStart = !!restorePage.intentionalBlank;
             const stableQuestionIndex = exStableQuestionIndex(restoreState);
             const restoreGradingKey = restoreState && stableQuestionIndex != null
                 ? exQuestionGradingKey(restoreState.taskId, stableQuestionIndex)
@@ -28948,6 +29006,12 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const key = exPageKey(baseKey, p);
             const dbKey = `exercise_drawing_cache_${key}`;
             const strokesDbKey = `exercise_strokes_cache_${key}`;
+            const canReplaceEmpty = () => token === exRestoreToken && exDoingState === restoreState &&
+                exPages[p] === restorePage && exDrawingEditRevision === editRevisionAtStart &&
+                !exDrawing && !restorePage.intentionalBlank && !restorePage.strokes.length &&
+                !restorePage.baseImage && !restorePage.dirtyLocal && !restorePage.dirtyCloud &&
+                !(p === exPageIndex && (exDirtyLocal || exDirtyCloud || exStrokes.length || exBaseImage)) &&
+                !_exDrawingCloudSavePromises.has(dbKey);
 
             let strokesJson = exStrokesCache[key] || null;
             let imageData = exDrawingCache[key] || null;
@@ -28957,15 +29021,46 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (!imageData) {
                 try { imageData = await getFileData(dbKey); } catch(e) {}
             }
+            let cachedStrokes = null;
+            try { cachedStrokes = strokesJson && JSON.parse(strokesJson); } catch(e) {}
+            const emptyDraft = strokesJson
+                ? !!(cachedStrokes && Array.isArray(cachedStrokes.strokes) &&
+                    !cachedStrokes.strokes.length && !cachedStrokes.intentionalBlank)
+                : await exIsTransparentDraftImage(imageData);
+            const replaceEmpty = emptyDraft && !!(strokesJson || imageData);
+            const guardEmpty = refreshEmpty || replaceEmpty;
+            if (guardEmpty && !canReplaceEmpty()) return;
             // 本地无数据时尝试从云端拉取（跨设备恢复书写进度）
             let needsLocalSave = false;
-            if (!strokesJson && !imageData && exDrawingCloudReady()) {
-                try { strokesJson = await r2GetObject('exercises/drawings/' + strokesDbKey); } catch(e) {}
-                try { imageData = await r2GetObject('exercises/drawings/' + dbKey); } catch(e) {}
+            if (((!strokesJson && !imageData) || replaceEmpty) && exDrawingCloudReady()) {
+                let cloudStrokes = null, cloudImage = null;
+                let cloudReadFailed = false;
+                try { cloudStrokes = await r2GetObject('exercises/drawings/' + strokesDbKey); } catch(e) { cloudReadFailed = true; }
+                try { cloudImage = await r2GetObject('exercises/drawings/' + dbKey); } catch(e) { cloudReadFailed = true; }
+                if (guardEmpty && !canReplaceEmpty()) return;
+                if (guardEmpty && cloudReadFailed) return;
+                // PNG/JSON 分别上传，空/非空不一致是中间态，留到下一轮重试。
+                let cloudParsed = null;
+                try { cloudParsed = cloudStrokes && JSON.parse(cloudStrokes); } catch(e) {}
+                const cloudEmptyStrokes = cloudParsed && Array.isArray(cloudParsed.strokes) && !cloudParsed.strokes.length;
+                const cloudImageBlank = await exIsTransparentDraftImage(cloudImage);
+                if (cloudImage && cloudParsed && Array.isArray(cloudParsed.strokes) &&
+                    cloudEmptyStrokes !== cloudImageBlank) return;
+                // 旧空矢量可能遮住本地有内容的 PNG，只用确实有内容的云版本修复这一对。
+                if (replaceEmpty && imageData && !(await exIsTransparentDraftImage(imageData)) &&
+                    (!cloudStrokes || cloudEmptyStrokes) && cloudImageBlank) return;
+                if (cloudStrokes || cloudImage) {
+                    strokesJson = cloudStrokes;
+                    imageData = cloudImage;
+                }
                 if (strokesJson || imageData) {
                     let skippedForLocalEdit = false;
                     let cacheError = null;
                     const cached = await exQueueDrawingSave(() => {
+                        if (guardEmpty && !canReplaceEmpty()) {
+                            skippedForLocalEdit = true;
+                            return true;
+                        }
                         // 排到本次云恢复前的本地编辑必须先落盘；旧云快照不能随后覆盖它。
                         if (exDrawingEditRevision !== editRevisionAtStart) {
                             skippedForLocalEdit = true;
@@ -28973,6 +29068,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                         }
                         const localWrites = [];
                         if (strokesJson) localWrites.push(saveFileData(strokesDbKey, strokesJson));
+                        else if (replaceEmpty && cloudImage) localWrites.push(deleteFileData(strokesDbKey));
                         if (imageData) localWrites.push(saveFileData(dbKey, imageData));
                         return Promise.all(localWrites.map(write => write.then(
                             () => ({ ok: true }),
@@ -29028,7 +29124,8 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
             // 等待期间已切题/关闭则放弃本次恢复
             const stillValid = () => token === exRestoreToken && exDoingState && exCanvasCtx
-                && `${exDoingState.taskId}_${exDoingState.questionIndex}` === baseKey && p < exPages.length;
+                && `${exDoingState.taskId}_${exDoingState.questionIndex}` === baseKey && p < exPages.length
+                && !(restorePage.intentionalBlank && !intentionalBlankAtStart);
             const markMergedPageForSave = () => {
                 if (!stillValid() || (!needsLocalSave && exDrawingEditRevision === editRevisionAtStart)) return;
                 if (p === exPageIndex) exDirtyLocal = true;
@@ -29036,15 +29133,18 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 exScheduleAutoSave();
             };
             if (!stillValid()) return;
+            if (guardEmpty && !canReplaceEmpty()) return;
             // 本地读取或 R2 拉取后若有更新评分提交，旧 graded 图片不能再进入草稿缓存/画布。
             if (imageDataFromGradedFallback && !restoreGradingGuard()) imageData = null;
             if (strokesJson) exStrokesCache[key] = strokesJson;
+            else if (replaceEmpty) delete exStrokesCache[key];
             if (imageData) exDrawingCache[key] = imageData;
 
             if (strokesJson) {
                 try {
                     const parsed = JSON.parse(strokesJson);
                     if (parsed && Array.isArray(parsed.strokes)) {
+                        if (parsed.intentionalBlank) restorePage.intentionalBlank = true;
                         const restored = parsed.strokes
                             .filter(s => s && Array.isArray(s.points) && s.points.length >= 2)
                             .map(s => ({
@@ -29060,11 +29160,16 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 } catch(e) { console.warn('恢复笔画缓存失败:', e); }
             }
             if (imageData) {
+                // 未书写的透明 PNG 不应成为底图，否则下一轮会被误判成已有内容。
+                if (emptyDraft && await exIsTransparentDraftImage(imageData)) {
+                    markMergedPageForSave();
+                    return;
+                }
                 // 旧版PNG缓存：作为底图恢复（整笔橡皮不作用于底图，可用"清除"清空）
                 await new Promise(resolve => {
                     const img = new Image();
                     img.onload = () => {
-                        if (stillValid()) {
+                        if (stillValid() && (!guardEmpty || canReplaceEmpty())) {
                             exApplyRestoredPage(p, null, img);
                             markMergedPageForSave();
                         }
@@ -29822,14 +29927,15 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
         // 清除只作用于当前页，其余页保持不动
         function clearExCanvas() {
             if (!exCanvasCtx) return;
+            if (exPages[exPageIndex]) exPages[exPageIndex].intentionalBlank = true;
             exClearSelection();
             if (exStrokes.length || exBaseImage) {
                 exPushOp({ type: 'clear', strokes: exStrokes, baseImage: exBaseImage });
                 exStrokes = [];
                 exBaseImage = null;
                 exRedrawCanvas();
-                exMarkDirty();
             }
+            exMarkDirty();
             if (exDoingState) {
                 const key = exPageKey(`${exDoingState.taskId}_${exDoingState.questionIndex}`, exPageIndex);
                 delete exDrawingCache[key];

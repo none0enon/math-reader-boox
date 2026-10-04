@@ -1035,8 +1035,10 @@
         body.lecture-pen-mode #lectureViewerContent *,
         #lectureDraftCanvasWrapper.active,
         #lectureDraftCanvasWrapper.active *,
-        body:not(.nb-text-mode) #nbCanvasWrap,
-        body:not(.nb-text-mode) #nbCanvasWrap * {
+        /* 笔记书写页打开期间锁整份文档（所有工具）：只锁画布时，iPad 会把选区
+           落到左栏文字或编辑器底下的页面上，左下角弹出拷贝/查询/翻译。 */
+        body.nb-editor-open,
+        body.nb-editor-open * {
             -webkit-user-select: none !important;
             user-select: none !important;
             -webkit-touch-callout: none !important;
@@ -1044,7 +1046,7 @@
         /* 文本编辑继续使用原有光标/选区；手写保护与阅读器共用。 */
         body.lecture-pen-mode #lectureViewerContent :is(input, textarea, [contenteditable="true"], [contenteditable="true"] *),
         #lectureDraftCanvasWrapper.active :is(input, textarea, [contenteditable="true"], [contenteditable="true"] *),
-        body:not(.nb-text-mode) #nbCanvasWrap :is(input, textarea, [contenteditable="true"], [contenteditable="true"] *) {
+        body.nb-editor-open :is(input, textarea, [contenteditable="true"], [contenteditable="true"] *) {
             -webkit-user-select: text !important;
             user-select: text !important;
             -webkit-touch-callout: default !important;
@@ -13410,13 +13412,20 @@
             if (penMode && container && target
                 && (target === container || container.contains(target))) return true;
             const element = target && (target.nodeType === 1 ? target : target.parentElement);
-            if (!element || !element.closest || element.closest('input, textarea, [contenteditable="true"]')) return false;
-            return !!element.closest('body.lecture-pen-mode #lectureViewerContent, #lectureDraftCanvasWrapper.active, body:not(.nb-text-mode) #nbCanvasWrap');
+            if (element && element.closest && element.closest('input, textarea, [contenteditable="true"]')) return false;
+            // 笔记书写页打开期间整份文档都归拦截（含文档/body 级选区端点）。
+            if (target && document.body.classList.contains('nb-editor-open')) return true;
+            if (!element || !element.closest) return false;
+            return !!element.closest('body.lecture-pen-mode #lectureViewerContent, #lectureDraftCanvasWrapper.active');
         }
 
         function blockReaderNativeSelectionInPenMode(e) {
             if (!e || !readerPenModeOwnsEventTarget(e.target)) return;
             e.preventDefault();
+            // 笔记页画布外只取消默认行为，保留页面缩略图等自身的右键菜单。
+            const element = e.target && (e.target.nodeType === 1 ? e.target : e.target.parentElement);
+            if (document.body.classList.contains('nb-editor-open')
+                && !(element && element.closest && element.closest('#nbCanvasWrap'))) return;
             if (typeof e.stopPropagation === 'function') e.stopPropagation();
         }
 
@@ -13425,6 +13434,12 @@
             if (!selection || !selection.rangeCount) return;
             const anchor = selection.anchorNode;
             const focus = selection.focusNode;
+            // 笔记页输入框的光标选区端点落在宿主元素外层，不能当作页面文字清掉。
+            const active = document.activeElement;
+            if (document.body.classList.contains('nb-editor-open')
+                && active && active.matches && active.matches('input, textarea')
+                && anchor && anchor.contains && anchor.contains(active)
+                && focus && focus.contains && focus.contains(active)) return;
             if (readerPenModeOwnsEventTarget(anchor) || readerPenModeOwnsEventTarget(focus)) {
                 selection.removeAllRanges();
             }
@@ -31536,6 +31551,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbState.selection = null;
             nbState.bgImageCache = {};
             document.getElementById('nbEditor').classList.add('show');
+            document.body.classList.add('nb-editor-open');
             document.getElementById('nbTitle').textContent = nb.name;
             nbSetTool('pen');
             nbSelectBrush(nbState.brushIndex);
@@ -31554,6 +31570,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             nbHideOutline();
             nbClearSelection();
             document.getElementById('nbEditor').classList.remove('show');
+            document.body.classList.remove('nb-editor-open');
             nbState.notebookId = null;
             nbState.content = null;
             nbState.bgImageCache = {};

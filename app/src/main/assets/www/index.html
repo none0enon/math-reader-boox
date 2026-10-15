@@ -28816,44 +28816,6 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             return succeeded;
         }
 
-        // 页面的矢量笔画缓存。带底图的页（旧版PNG、已评分回退图）把底图原图和它上面的笔画分层保存，
-        // 之后写的笔画仍能整笔擦除；不再把它们合入PNG。分层字段刻意不叫 strokes：
-        // 旧版本读不懂时会回退到合成PNG（内容完整），而不是只恢复笔画、丢掉底图。
-        function exSerializePageStrokes(page) {
-            const strokes = page.strokes.map(s => ({ color: s.color, width: s.width, points: s.points }));
-            if (!page.baseImage) return JSON.stringify({ v: 2, strokes });
-            const base = page.baseImage.src;
-            if (typeof base !== 'string' || !base.startsWith('data:image/')) return null;
-            return JSON.stringify({ v: 3, base, overlay: strokes });
-        }
-
-        function exDecodeImage(src) {
-            return new Promise(resolve => {
-                const img = new Image();
-                img.onload = () => resolve(img);
-                img.onerror = () => resolve(null);
-                img.src = src;
-            });
-        }
-
-        // 透明PNG（明确清空的页、空白的已评分页）没有可显示的内容，不作为底图恢复。
-        function exImageHasInk(img) {
-            const w = img.naturalWidth || img.width;
-            const h = img.naturalHeight || img.height;
-            if (!w || !h) return false;
-            const c = document.createElement('canvas');
-            c.width = w;
-            c.height = h;
-            const ctx = c.getContext('2d', { willReadFrequently: true });
-            ctx.drawImage(img, 0, 0);
-            let data;
-            try { data = ctx.getImageData(0, 0, w, h).data; } catch (e) { return true; }
-            for (let i = 3; i < data.length; i += 4) {
-                if (data[i] !== 0) return true;
-            }
-            return false;
-        }
-
         // 保存当前题目全部页面的书写到IndexedDB持久化；syncToCloud=true（返回/切题/完成时）同步到云端
         function saveCurrentDrawingToCache(syncToCloud = true) {
             if (!exDoingState) return Promise.resolve(true);
@@ -28877,13 +28839,17 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 if (page.dirtyLocal) {
                     const dataUrl = p === exPageIndex ? canvas.toDataURL('image/png') : exRenderPageToDataURL(page);
                     exDrawingCache[key] = dataUrl;
-                    const strokesJson = exSerializePageStrokes(page);
-                    const removeStrokes = !strokesJson;
-                    if (strokesJson) {
-                        exStrokesCache[key] = strokesJson;
-                    } else {
-                        // 底图无法单独保存：只能合入新PNG，删除矢量数据避免恢复时丢底图
+                    const removeStrokes = !!page.baseImage;
+                    let strokesJson = null;
+                    if (page.baseImage) {
+                        // 底图（旧版PNG）已合入新PNG，矢量数据不含底图，删除避免恢复时丢内容
                         delete exStrokesCache[key];
+                    } else {
+                        strokesJson = JSON.stringify({
+                            v: 2,
+                            strokes: page.strokes.map(s => ({ color: s.color, width: s.width, points: s.points }))
+                        });
+                        exStrokesCache[key] = strokesJson;
                     }
                     page.dirtyLocal = false;
                     const pageSave = exQueueDrawingSave(() => {
@@ -29075,15 +29041,11 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             if (strokesJson) exStrokesCache[key] = strokesJson;
             if (imageData) exDrawingCache[key] = imageData;
 
-            let restored = null;
-            let layeredBase = null;
             if (strokesJson) {
                 try {
                     const parsed = JSON.parse(strokesJson);
-                    const list = parsed && (Array.isArray(parsed.strokes) ? parsed.strokes
-                        : (typeof parsed.base === 'string' && Array.isArray(parsed.overlay) ? parsed.overlay : null));
-                    if (list) {
-                        restored = list
+                    if (parsed && Array.isArray(parsed.strokes)) {
+                        const restored = parsed.strokes
                             .filter(s => s && Array.isArray(s.points) && s.points.length >= 2)
                             .map(s => ({
                                 color: s.color || '#000000',
@@ -29091,35 +29053,26 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                                 points: s.points,
                                 bbox: exComputeBBox(s.points)
                             }));
-                        if (!Array.isArray(parsed.strokes)) layeredBase = parsed.base;
+                        exApplyRestoredPage(p, restored, null);
+                        markMergedPageForSave();
+                        return;
                     }
                 } catch(e) { console.warn('恢复笔画缓存失败:', e); }
             }
-            if (restored && !layeredBase) {
-                exApplyRestoredPage(p, restored, null);
-                markMergedPageForSave();
-                return;
-            }
-            if (restored) {
-                // 分层页：底图 + 仍可整笔擦除的笔画。底图解码失败时退回下方的合成PNG，
-                // 连合成PNG都没有时至少恢复笔画。
-                const base = await exDecodeImage(layeredBase);
-                if (base || !imageData) {
-                    if (stillValid()) {
-                        exApplyRestoredPage(p, restored, base && exImageHasInk(base) ? base : null);
-                        markMergedPageForSave();
-                    }
-                    return;
-                }
-            }
             if (imageData) {
-                // 只有PNG（旧版缓存、已评分回退图）：作为底图恢复（整笔橡皮不作用于底图，可用"清除"清空）。
-                // 之后在这页写的笔画按分层保存，仍可擦除。
-                const img = await exDecodeImage(imageData);
-                if (img && stillValid()) {
-                    exApplyRestoredPage(p, null, exImageHasInk(img) ? img : null);
-                    markMergedPageForSave();
-                }
+                // 旧版PNG缓存：作为底图恢复（整笔橡皮不作用于底图，可用"清除"清空）
+                await new Promise(resolve => {
+                    const img = new Image();
+                    img.onload = () => {
+                        if (stillValid()) {
+                            exApplyRestoredPage(p, null, img);
+                            markMergedPageForSave();
+                        }
+                        resolve();
+                    };
+                    img.onerror = () => resolve();
+                    img.src = imageData;
+                });
             }
         }
 

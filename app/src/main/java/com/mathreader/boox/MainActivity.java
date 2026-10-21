@@ -50,6 +50,7 @@ public class MainActivity extends AppCompatActivity {
     private BooxPenBridge penBridge;
     private DownloadBridge downloadBridge;
     private RecordingBridge recordingBridge;
+    private AiHttpBridge aiHttpBridge;
     private ValueCallback<Uri[]> filePathCallback;
     private PermissionRequest pendingWebPermission;
     private String adapterJs;
@@ -224,6 +225,7 @@ public class MainActivity extends AppCompatActivity {
 
         downloadBridge = new DownloadBridge(this);
         recordingBridge = new RecordingBridge(getApplicationContext());
+        aiHttpBridge = new AiHttpBridge(webView);
         webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
             if (url.startsWith("data:")) {
                 downloadBridge.saveDataUrl(url);
@@ -249,6 +251,7 @@ public class MainActivity extends AppCompatActivity {
         webView.addJavascriptInterface(penBridge, "BooxPenNative");
         webView.addJavascriptInterface(downloadBridge, "BooxDownloadNative");
         webView.addJavascriptInterface(recordingBridge, "BooxRecordingNative");
+        webView.addJavascriptInterface(aiHttpBridge, "BooxAiHttpNative");
 
         webView.loadUrl(buildStartUrl());
     }
@@ -351,6 +354,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         if (penBridge != null) {
             penBridge.onDestroy();
+        }
+        if (aiHttpBridge != null) {
+            aiHttpBridge.shutdown();
         }
         super.onDestroy();
     }

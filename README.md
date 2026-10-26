@@ -40,9 +40,14 @@ This repository ships the current Math Reader web app as an Android APK. BOOX/E 
 
 1. 在 **Primary API** 选择 DeepSeek、OpenAI、Google、Claude 或 Custom。
 2. 填写服务地址、API Key 和模型名；兼容的服务可以使用 **Fetch Models** 拉取模型列表。
-3. 如需故障切换，可再配置 **Backup API**。主服务调用失败时应用会尝试备用服务。
-4. **Supabase** 和 **Mathpix** 位于 Other Services，仅在你确实使用对应服务时填写。
-5. 保存后先用一个普通 AI 对话验证配置，再测试图片识别、录音或 PDF 任务。
+3. 可选配置 **Secondary API**（次要 API），供指定的功能单独使用，例如让识题、批改走视觉模型，其余功能走主要 API。
+4. 如需故障切换，可再配置 **Backup API**。所选 API 调用失败时应用会改用备用服务；所选的就是备用 API 时改用主要 API。
+5. **Supabase** 和 **Mathpix** 位于 Other Services，仅在你确实使用对应服务时填写。
+6. 保存后先用一个普通 AI 对话验证配置，再测试图片识别、录音或 PDF 任务。
+
+**设置 → AI 功能分配** 按课堂、书架、阅读、讲义与摘要、笔记、复习、习题、错题分组折叠列出全部 AI 功能，每个功能可单独选择主要、次要或备用 API，生成与重新生成、失败重试等操作各算一个功能；展开分组后也可用“本组全部使用”一次设置整组。默认全部使用主要 API；所选 API 未配置时自动改用主要 API。
+
+每次 AI 请求的输出 token 上限为 32800。模型本身的输出上限更低时，应用会按服务商返回的上限自动重试一次，并在本次运行中记住该模型的上限。
 
 模型能力建议：
 
@@ -51,7 +56,7 @@ This repository ships the current Math Reader web app as an Android APK. BOOX/E 
 - 课堂录音转写需要所选接口能够接收应用发送的音频内容；服务商的文件大小、格式和速率限制仍然适用。
 - 生成大纲/讲义会发送 PDF 或切分后的 PDF 页面，模型接口需要支持该调用方式。
 
-API Key 保存在本机设置中，不会随 R2 元数据同步到云端；完整 ZIP 备份会包含本机设置，因此仍须把 ZIP 当作敏感文件保管。
+API Key 和 AI 功能分配保存在本机设置中，不会随 R2 元数据同步到云端；完整 ZIP 备份会包含本机设置，因此仍须把 ZIP 当作敏感文件保管。
 
 ### 3. 书架：导入和管理资料
 
@@ -228,13 +233,18 @@ Open **Settings → API Setting**:
 
 1. Select DeepSeek, OpenAI, Google, Claude, or Custom as the primary provider.
 2. Enter the endpoint, API key, and model. Use **Fetch Models** where the provider supports it.
-3. Optionally configure a backup provider, used when the primary call fails.
-4. Supabase and Mathpix are optional services; leave them empty unless your workflow needs them.
-5. Save the settings, test a text chat, and then test any image, audio, or PDF workflow you plan to use.
+3. Optionally configure a secondary provider for the features you assign to it, for example a vision model for exercise extraction and grading.
+4. Optionally configure a backup provider, used when the selected API fails (the primary API is used when the backup itself was selected).
+5. Supabase and Mathpix are optional services; leave them empty unless your workflow needs them.
+6. Save the settings, test a text chat, and then test any image, audio, or PDF workflow you plan to use.
+
+**Settings → AI Feature Assignment** lists every AI feature in collapsible groups (Class, Library, Reader, Lectures & abstracts, Notes, Review, Exercises, Wrong questions). Each feature, including generate, regenerate, and retry actions separately, can use the primary, secondary, or backup API, and **Use for the whole group** sets a whole group at once. Everything uses the primary API by default, and a feature assigned to an unconfigured API falls back to the primary API.
+
+Every AI request allows up to 32,800 output tokens. If a model's own output limit is lower, the app retries once with the limit reported by the provider and remembers it for the rest of the session.
 
 Use a strong text/LaTeX model for chat, outlines, lectures, and abstracts. Lasso questions, handwriting indexing, exercise extraction, and grading require vision input. Classroom transcription requires an API that accepts the audio sent by the app. PDF outline and lecture generation require a provider compatible with the app's PDF attachment calls.
 
-API credentials stay local and are excluded from R2 metadata sync. A full ZIP contains local settings, so protect the ZIP as a sensitive file.
+API credentials and AI feature assignments stay local and are excluded from R2 metadata sync. A full ZIP contains local settings, so protect the ZIP as a sensitive file.
 
 ### 3. Library
 

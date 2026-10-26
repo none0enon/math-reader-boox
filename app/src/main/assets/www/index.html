@@ -3992,6 +3992,23 @@
             font-size: 1.15em;
         }
 
+        /* Lecture PDF export only. Non-zero spacing makes html2canvas position prose by
+           DOM glyph bounds, avoiding accumulated Canvas/system-font width differences
+           within words. html2canvas misplaces list markers drawn with non-zero spacing,
+           so list items keep normal spacing and their text span carries it instead. */
+        .lecture-pdf-export { letter-spacing: 0.01px; }
+        .lecture-pdf-export p { text-align: left; }
+        .lecture-pdf-export li { letter-spacing: normal; }
+        .lecture-pdf-export li > span { letter-spacing: 0.01px; }
+        /* Markers are drawn left of the item; leave room for two-digit numbers. */
+        .lecture-pdf-export ol > li { margin-left: 2em; }
+        .lecture-pdf-export h4, .lecture-pdf-export h5, .lecture-pdf-export h6 { font-size: 1em; margin: 20px 0 12px; }
+        .lecture-pdf-export hr { border: 0; border-top: 1px solid var(--border-color); margin: 24px 0; }
+        .lecture-pdf-export pre { white-space: pre; padding: 12px; font-size: 0.85em; }
+        .lecture-pdf-export code { font-family: Consolas, 'Liberation Mono', monospace; }
+        .lecture-pdf-export .katex { letter-spacing: normal; }
+        .lecture-pdf-export .katex-display { padding: 0; overflow: visible; }
+
         .lecture-footer {
             position: fixed;
             left: 0;
@@ -6751,6 +6768,7 @@
                 grading_progress:'评分中... ({0}/{1}) 第{2}题',
                 grade_done:'评分完成: {0} 道成功',grade_done_fail:'，{0} 道失败',
                 generating_pdf:'正在生成PDF ({0} 题)，渲染公式中...',
+                lecture_pdf_math_unavailable:'公式渲染组件未加载，请刷新后重试。',
                 rendering_q:'渲染第 {0}/{1} 题...',exported_q:'已导出 {0} 道题',
                 question_num:'第 {0} 题',processing_file:'正在处理: {0}...',
                 recognized_q:'已识别 {0} 道题目',loading_pdf:'加载PDF中...',
@@ -6940,6 +6958,7 @@
                 grading_progress:'Grading... ({0}/{1}) Q{2}',
                 grade_done:'Grading done: {0} passed',grade_done_fail:', {0} failed',
                 generating_pdf:'Generating PDF ({0} questions)...',
+                lecture_pdf_math_unavailable:'The math renderer is not loaded. Reload and try again.',
                 rendering_q:'Rendering {0}/{1}...',exported_q:'Exported {0} questions',
                 question_num:'Q{0}',processing_file:'Processing: {0}...',
                 recognized_q:'Recognized {0} questions',loading_pdf:'Loading PDF...',
@@ -7129,6 +7148,7 @@
                 grading_progress:'Notation... ({0}/{1}) Q{2}',
                 grade_done:'Notation terminée : {0} réussies',grade_done_fail:', {0} échouées',
                 generating_pdf:'Génération PDF ({0} questions)...',
+                lecture_pdf_math_unavailable:'Le moteur de rendu des formules est indisponible. Rechargez la page et réessayez.',
                 rendering_q:'Rendu {0}/{1}...',exported_q:'{0} questions exportées',
                 question_num:'Q{0}',processing_file:'Traitement : {0}...',
                 recognized_q:'{0} questions reconnues',loading_pdf:'Chargement du PDF...',
@@ -22059,7 +22079,7 @@ ${i18n('prompt_lecture_gen')}`;
                     const title = (note.title || i18n('note_default')).replace(/[\\/:*?"<>|]/g, '_');
                     const content = await ensureClassroomNoteContent(note);
                     if (!content) { showToast(i18n('note_empty')); return; }
-                    downloadMarkdown(content, title + '.md');
+                    await downloadLecturePdf(content.replace(/\{ref:[^}]+\}/g, ''), title + '.pdf');
                 }
                 return;
             }
@@ -23646,15 +23666,282 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             showToast(i18n('toast_note_deleted'));
         }
 
-        function downloadMarkdown(content, filename) {
-            const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+        // Markdown for the lecture PDF only: escaped text, valid paragraphs and lists,
+        // headings through level six, rules and fenced/inline code. The reading view
+        // and chat keep their own renderers. List text sits in a span (see .lecture-pdf-export li).
+        function renderLecturePdfMarkdown(text) {
+            const escapeLatexHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const arrowMap = {
+                rightarrow: '→', longrightarrow: '→', to: '→', Rightarrow: '⇒', Longrightarrow: '⇒', implies: '⇒',
+                leftarrow: '←', longleftarrow: '←', gets: '←', Leftarrow: '⇐',
+                leftrightarrow: '↔', Leftrightarrow: '⇔', iff: '⇔'
+            };
+            let content = String(text).replace(/\r\n?/g, '\n');
+            // Protect code before math/Markdown. Tokens cannot collide with source text.
+            let tokenPrefix = '%%MR';
+            while (content.includes(tokenPrefix)) tokenPrefix += 'X';
+            const codeBlocks = [];
+            const codeInlines = [];
+            const sourceLines = content.split('\n');
+            const protectedLines = [];
+            for (let i = 0; i < sourceLines.length; i++) {
+                const fence = sourceLines[i].match(/^ {0,3}(`{3,}|~{3,})[^\n]*$/);
+                if (!fence) { protectedLines.push(sourceLines[i]); continue; }
+                const endFence = new RegExp('^ {0,3}' + fence[1][0] + '{' + fence[1].length + ',}\\s*$');
+                const lines = [];
+                while (++i < sourceLines.length && !endFence.test(sourceLines[i])) lines.push(sourceLines[i]);
+                codeBlocks.push(escapeHtml(lines.join('\n')));
+                protectedLines.push(`${tokenPrefix}CODEBLOCK${codeBlocks.length - 1}%%`);
+            }
+            content = protectedLines.join('\n').replace(/(`+)([^\n]*?)\1(?!`)/g, (match, ticks, code) => {
+                codeInlines.push(escapeHtml(code));
+                return `${tokenPrefix}CODEINLINE${codeInlines.length - 1}%%`;
+            });
+            const latexBlocks = [];
+            const latexInlines = [];
+
+            content = content.replace(/\$\$([\s\S]*?)\$\$/g, (match, p1) => {
+                latexBlocks.push(p1.trim());
+                return `\n\n${tokenPrefix}LATEXBLOCK${latexBlocks.length - 1}%%\n\n`;
+            });
+
+            // \[...\]（前面不是反斜杠，避免误匹配 aligned 环境里的 \\[2pt]）
+            content = content.replace(/(^|[^\\])\\\[([\s\S]*?)\\\]/g, (match, before, p1) => {
+                latexBlocks.push(p1.trim());
+                return `${before}\n\n${tokenPrefix}LATEXBLOCK${latexBlocks.length - 1}%%\n\n`;
+            });
+
+            content = content.replace(/(^|[^\\])\\\(([\s\S]*?)\\\)/g, (match, before, p1) => {
+                latexInlines.push(p1.trim());
+                return `${before}${tokenPrefix}LATEXINLINE${latexInlines.length - 1}%%`;
+            });
+
+            content = content.replace(/\$([^\$\n]+?)\$/g, (match, p1) => {
+                latexInlines.push(p1.trim());
+                return `${tokenPrefix}LATEXINLINE${latexInlines.length - 1}%%`;
+            });
+
+            content = escapeHtml(content);
+            content = content.replace(/\\(rightarrow|longrightarrow|to|Rightarrow|Longrightarrow|implies|leftarrow|longleftarrow|gets|Leftarrow|leftrightarrow|Leftrightarrow|iff)\b/g, (match, name) => arrowMap[name]);
+
+            const inline = line => line
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>');
+            const blocks = [];
+            let paragraph = [], list = null;
+            const flushParagraph = () => {
+                if (paragraph.length) blocks.push('<p>' + paragraph.map(inline).join('<br>') + '</p>');
+                paragraph = [];
+            };
+            const flushList = () => {
+                if (list) blocks.push(`<${list.tag}${list.start}>` + list.items.map(item => '<li><span>' + inline(item) + '</span></li>').join('') + `</${list.tag}>`);
+                list = null;
+            };
+            const blockToken = new RegExp('^' + tokenPrefix + '(CODEBLOCK|LATEXBLOCK)(\\d+)%%$');
+            for (const line of content.split('\n')) {
+                if (!line.trim()) { flushParagraph(); flushList(); continue; }
+                const heading = line.match(/^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+                const special = line.trim().match(blockToken);
+                const rule = /^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line);
+                if (heading || special || rule) {
+                    flushParagraph(); flushList();
+                    if (heading) blocks.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`);
+                    else if (rule) blocks.push('<hr>');
+                    else if (special[1] === 'CODEBLOCK') blocks.push('<pre><code>' + codeBlocks[Number(special[2])] + '</code></pre>');
+                    else blocks.push('<div class="latex-display">$$' + escapeLatexHtml(latexBlocks[Number(special[2])]) + '$$</div>');
+                    continue;
+                }
+                const item = line.match(/^\s*(?:([-+*])\s+|(\d+)[.)]\s+)(.+)$/);
+                if (item) {
+                    flushParagraph();
+                    const tag = item[1] ? 'ul' : 'ol';
+                    if (list && list.tag !== tag) flushList();
+                    if (!list) list = { tag, start: tag === 'ol' ? ` start="${Number(item[2])}"` : '', items: [] };
+                    list.items.push(item[3]);
+                } else if (list && /^\s{2,}/.test(line)) {
+                    list.items[list.items.length - 1] += '<br>' + line.trim();
+                } else {
+                    flushList();
+                    paragraph.push(line);
+                }
+            }
+            flushParagraph(); flushList();
+            // Restore in one pass, so code examples containing delimiters stay literal.
+            return blocks.join('\n').replace(new RegExp(tokenPrefix + '(LATEXINLINE|CODEINLINE)(\\d+)%%', 'g'), (match, type, idx) => {
+                return type === 'CODEINLINE' ? '<code>' + codeInlines[Number(idx)] + '</code>'
+                    : '$' + escapeLatexHtml(latexInlines[Number(idx)]) + '$';
+            });
+        }
+
+        // Measure rendered lines and formulas, so page boundaries never bisect them.
+        function getLecturePdfSlices(body, pageHeight) {
+            const origin = body.getBoundingClientRect().top;
+            const ranges = [];
+            const addRect = rect => {
+                if (rect.width <= 0 || rect.height <= 0) return;
+                ranges.push({
+                    top: Math.max(0, Math.floor(rect.top - origin) - 2),
+                    bottom: Math.ceil(rect.bottom - origin) + 2
+                });
+            };
+            body.querySelectorAll('.katex, .latex-display, pre, h1, h2, h3, h4, h5, h6, hr').forEach(el => addRect(el.getBoundingClientRect()));
+            const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+                acceptNode: node => node.textContent.trim() && !node.parentElement.closest('.katex')
+                    ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+            });
+            const range = document.createRange();
+            while (walker.nextNode()) {
+                range.selectNodeContents(walker.currentNode);
+                Array.from(range.getClientRects()).forEach(addRect);
+            }
+            ranges.sort((a, b) => a.top - b.top);
+            const merged = [];
+            for (const rect of ranges) {
+                const previous = merged[merged.length - 1];
+                if (previous && rect.top < previous.bottom) previous.bottom = Math.max(previous.bottom, rect.bottom);
+                else merged.push({ ...rect });
+            }
+            const totalHeight = merged.length ? merged[merged.length - 1].bottom : 1;
+            const slices = [];
+            let index = 0;
+            for (let start = 0; start < totalHeight;) {
+                let end = Math.min(start + pageHeight, totalHeight);
+                while (index < merged.length && merged[index].bottom <= end) index++;
+                const crossing = merged[index];
+                if (crossing && crossing.top < end) {
+                    // A formula taller than a sheet gets its own scaled page.
+                    end = crossing.top > start ? crossing.top : crossing.bottom;
+                }
+                slices.push({ start, height: end - start });
+                start = end;
+            }
+            return slices;
+        }
+
+        let lecturePdfExporting = false;
+        async function downloadLecturePdf(content, filename) {
+            if (lecturePdfExporting) { showToast(i18n('toast_processing')); return; }
+            lecturePdfExporting = true;
+            let container;
+            showToast(i18n('toast_processing'));
+            try {
+                if (!window.PDFLib) throw new Error(i18n('pdf_lib_not_loaded'));
+                if (!window.renderMathInElement) throw new Error(i18n('lecture_pdf_math_unavailable'));
+                await ensureHtml2Canvas();
+
+                const pageWidth = 612, pageHeight = 792; // US Letter, in PDF points.
+                const margin = 36;
+                const contentWidth = pageWidth - margin * 2;
+                const contentHeight = pageHeight - margin * 2;
+                const pixelsPerPoint = 2;
+                const renderWidth = contentWidth * pixelsPerPoint;
+                const renderHeight = contentHeight * pixelsPerPoint;
+                container = document.createElement('div');
+                // Keep this visible to html2canvas, but outside the reading interface.
+                container.style.cssText = `position:fixed;left:-99999px;top:0;width:${renderWidth}px;
+                    background:#fff;color:#1a1a1a;pointer-events:none;
+                    --accent:#000;--bg-secondary:#fff;--border-color:#e0e0e0;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;`;
+                const body = document.createElement('div');
+                body.className = 'lecture-body lecture-pdf-export';
+                body.style.cssText = 'display:flow-root;padding:0;font-size:22px;line-height:1.8;';
+                body.innerHTML = renderLecturePdfMarkdown(content);
+                container.appendChild(body);
+                document.body.appendChild(container);
+                renderLectureMath(body);
+                // Preserve KaTeX font families; replacing them changes glyph metrics.
+                // Request fonts through layout before waiting for the new math to settle.
+                body.getBoundingClientRect();
+                if (document.fonts?.ready) await document.fonts.ready;
+
+                // Keep inline math breakable; only shrink an indivisible base or a
+                // display equation wider than its own paragraph/list content box.
+                body.querySelectorAll('.katex').forEach(el => {
+                    const parent = el.closest('.katex-display, p, li, h1, h2, h3, h4, h5, h6') || body;
+                    const style = getComputedStyle(parent);
+                    const available = parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+                    const math = el.querySelector('.katex-html');
+                    const width = Math.max(math?.scrollWidth || 0,
+                        ...Array.from(math?.querySelectorAll('.base') || [], base => base.getBoundingClientRect().width));
+                    if (available > 0 && width > available) {
+                        el.style.fontSize = (parseFloat(getComputedStyle(el).fontSize) * (available - 1) / width) + 'px';
+                    }
+                });
+                // ASCII diagrams keep their columns, scaled to fit rather than clipped.
+                body.querySelectorAll('pre').forEach(el => {
+                    const style = getComputedStyle(el);
+                    const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+                    const width = el.scrollWidth - padding;
+                    const available = el.clientWidth - padding;
+                    if (width > available) el.style.fontSize = (parseFloat(style.fontSize) * (available - 1) / width) + 'px';
+                });
+                const slices = getLecturePdfSlices(body, renderHeight);
+                const origin = body.getBoundingClientRect().top;
+                const blocks = Array.from(body.children, el => {
+                    const rect = el.getBoundingClientRect();
+                    return { el, top: rect.top - origin, bottom: rect.bottom - origin };
+                });
+                const pdf = await PDFLib.PDFDocument.create();
+                for (const slice of slices) {
+                    // Clone only the blocks around this page, so each page costs the same however
+                    // long the lecture is. Dropping later blocks leaves the layout above them as
+                    // it was; a spacer takes the place of the earlier ones.
+                    const near = blocks.filter(b => b.bottom > slice.start - 200 && b.top < slice.start + slice.height + 200);
+                    const kept = new Set(near.map(b => b.el));
+                    // Capture one page at a time instead of allocating one huge lecture canvas.
+                    const canvas = await html2canvas(body, {
+                        x: 0, y: slice.start, width: renderWidth, height: slice.height,
+                        scale: Math.min(1, renderHeight / slice.height),
+                        backgroundColor: '#ffffff', useCORS: true, logging: false,
+                        windowWidth: renderWidth + 100, windowHeight: renderHeight + 100,
+                        scrollX: 0, scrollY: 0,
+                        ignoreElements: el => el.parentNode === body ? !kept.has(el)
+                            : el.parentNode === document.body && el !== container && el.tagName !== 'STYLE' && el.tagName !== 'LINK',
+                        onclone: (doc, clone) => {
+                            // html2canvas inlines computed styles into each SVG it draws as an image.
+                            // The resolved offsets of KaTeX's absolutely positioned SVGs (tall
+                            // delimiters, wide accents) would move them out of that image.
+                            clone.querySelectorAll('svg').forEach(svg => {
+                                svg.style.top = svg.style.right = svg.style.bottom = svg.style.left = 'auto';
+                            });
+                            const first = clone.firstElementChild;
+                            if (!near.length || near[0].el === body.firstElementChild || !first) return;
+                            const spacer = doc.createElement('div');
+                            clone.insertBefore(spacer, first);
+                            // Collapsed margins differ without the earlier blocks; measure and correct.
+                            spacer.style.height = near[0].top + 'px';
+                            const placed = first.getBoundingClientRect().top - clone.getBoundingClientRect().top;
+                            spacer.style.height = (2 * near[0].top - placed) + 'px';
+                        }
+                    });
+                    try {
+                        const img = await pdf.embedPng(canvas.toDataURL('image/png'));
+                        const scale = Math.min(contentWidth / img.width, contentHeight / img.height);
+                        const page = pdf.addPage([pageWidth, pageHeight]);
+                        page.drawImage(img, {
+                            x: margin, y: pageHeight - margin - img.height * scale,
+                            width: img.width * scale, height: img.height * scale
+                        });
+                    } finally {
+                        canvas.width = canvas.height = 0;
+                    }
+                }
+                const bytes = await pdf.save();
+                const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                try { a.click(); }
+                finally { setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 5000); }
+                showToast(i18n('toast_export_success'));
+            } catch (error) {
+                console.error('Lecture PDF export failed:', error);
+                showToast(i18n('export_failed') + error.message);
+            } finally {
+                if (container) container.remove();
+                lecturePdfExporting = false;
+            }
         }
 
         async function downloadClassroomNote(type, folderId, sessionId, noteIdx) {
@@ -23667,7 +23954,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             const title = (note.title || i18n('note_default')).replace(/[\\/:*?"<>|]/g, '_');
             const content = await ensureClassroomNoteContent(note);
             if (!content) { showToast(i18n('note_empty')); return; }
-            downloadMarkdown(content, title + '.md');
+            await downloadLecturePdf(content.replace(/\{ref:[^}]+\}/g, ''), title + '.pdf');
         }
 
         async function downloadLectureChapter(bookId, chapterIndex) {
@@ -23682,7 +23969,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
             }
             if (!content) { showToast(i18n('cannot_load_lecture')); return; }
             const title = (chapter.title || i18n('lecture')).replace(/[\\/:*?"<>|]/g, '_');
-            downloadMarkdown(content, title + '.md');
+            await downloadLecturePdf(content, title + '.pdf');
         }
 
         async function ensureMaterialData(mat) {

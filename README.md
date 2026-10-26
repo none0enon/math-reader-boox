@@ -98,7 +98,7 @@ API Key 和 AI 功能分配保存在本机设置中，不会随 R2 元数据同�
    - **相机**：拍摄板书、讲义或现场资料。
 4. 上传完成后，资料保存在“源素材”，应用会基于素材生成 AI 笔记；停止录音后会保存录音并生成转写纪要。
 5. 打开 AI 笔记可阅读 LaTeX 内容、查看进度，并通过来源引用跳回对应素材。
-6. 长按源素材可重新生成笔记或删除；长按 AI 笔记可下载 Markdown 或删除。课程/讲座文件夹支持重命名和删除，场次支持重命名。
+6. 长按源素材可重新生成笔记或删除；长按 AI 笔记可下载 PDF 或删除。课程/讲座文件夹支持重命名和删除，场次支持重命名。
 
 录音写入应用私有的持久化存储，覆盖升级和 WebView 重建不会主动删除，但卸载应用仍会清除录音。创建完整 ZIP 前应先停止正在进行的录音；若导出提示录音缺失，请检查 ZIP 中的 `recordings/missing.json`。
 
@@ -112,7 +112,7 @@ iPhone/iPad PWA 中超过 5 分钟或 10 MB 的 AAC/M4A 长录音需要配置 Ge
 2. 大纲完成后选择 **生成讲义**。系统建立章节列表并优先生成第一节。
 3. 打开 **讲义**，左栏按书籍列出讲义文件夹；进入后点击章节，尚未生成的章节会按需生成。
 4. 讲义阅读器支持上一节/下一节、返回原书页、字号调整、进度记录、页面画笔和独立草稿。
-5. 选中讲义内容可直接问 AI；右上角可重新生成当前章节。长按章节卡片可下载 Markdown。
+5. 选中讲义内容可直接问 AI；右上角可重新生成当前章节。长按章节卡片可下载 PDF。
 
 **生成论文摘要**：在 **书架 → AI → 生成摘要** 选择论文。结果显示在 **讲义 → 摘要** 栏，并使用同一讲义阅读器显示、渲染公式和保存阅读进度。
 
@@ -197,7 +197,7 @@ BOOX 是本仓库 Android 发行版的附加适配，不改变上述 Math Reader
 
 先确认已配置视觉/OCR 服务；扫描页模糊、倾斜或公式密集时，识别结果取决于模型质量。
 
-**找不到导出的 ZIP/PDF/Markdown**
+**找不到导出的 ZIP/PDF**
 
 先看应用的保存成功提示，再检查 Android 的 **下载 / Downloads**。旧 Android 版本在公共目录不可写时可能保存到应用外部文件目录。
 
@@ -281,13 +281,13 @@ Normal text search on a text PDF does not need AI. OCR, lasso questions, and scr
 3. In the session, use the lower-right actions to record audio, upload files, or take a photo. Uploads accept images, audio, PDF, Word, plain text, Markdown, and TeX/LaTeX files.
 4. Uploaded material appears under Source Material and is converted into an AI note. Stopping a recording saves it and starts transcript/minutes generation.
 5. Open an AI note to read formatted math and follow source references back to the original material.
-6. Long-press source material to regenerate its note or delete it. Long-press an AI note to download Markdown or delete it. Folders and sessions can be renamed.
+6. Long-press source material to regenerate its note or delete it. Long-press an AI note to download it as a PDF or delete it. Folders and sessions can be renamed.
 
 Recordings use durable app-private storage and survive WebView recreation and in-place updates, but not app uninstall. Stop active recording before a full export. If the export reports missing audio, inspect `recordings/missing.json` inside the ZIP.
 
 ### 6. Lectures and abstracts
 
-For a book, run **Library → AI → Generate Outline**, then **Generate Lecture**. Open **Lectures**, enter the book folder, and open a chapter; pending chapters are generated on demand. The lecture viewer supports previous/next chapter, source-book jump, font size, progress, drawing, a separate scratchpad, selected-text questions, regeneration, and Markdown download by long-pressing a chapter card.
+For a book, run **Library → AI → Generate Outline**, then **Generate Lecture**. Open **Lectures**, enter the book folder, and open a chapter; pending chapters are generated on demand. The lecture viewer supports previous/next chapter, source-book jump, font size, progress, drawing, a separate scratchpad, selected-text questions, regeneration, and PDF download by long-pressing a chapter card.
 
 For a paper, run **Generate Abstract**. The result appears in the Abstracts column and uses the same math-aware viewer.
 
@@ -338,7 +338,7 @@ BOOX support is an additional Android adaptation, not a separate app workflow:
 - **Text chat works but lasso/extraction/grading fails:** use a vision-capable model and check the endpoint, model name, quota, input size, and network.
 - **Generate Lecture asks for an outline:** run Generate Outline on the PDF book first.
 - **OCR finds nothing in a scan:** configure a compatible vision/OCR service; quality depends on scan clarity and model capability.
-- **Cannot find an exported ZIP/PDF/Markdown:** read the save-complete toast, then check Android **Downloads**. Older Android versions may use the app's external files directory.
+- **Cannot find an exported ZIP or PDF:** read the save-complete toast, then check Android **Downloads**. Older Android versions may use the app's external files directory.
 - **APK update reports a signature conflict:** export and verify a full ZIP before uninstalling the old build and installing the stable signed APK.
 - **Brief BOOX ghosting or a delayed first stroke:** close panels covering the canvas, reselect the pen, or change pages once to refresh the native E Ink region.
 

@@ -113,6 +113,7 @@ iPhone/iPad PWA 中超过 5 分钟或 10 MB 的 AAC/M4A 长录音需要配置 Ge
 3. 打开 **讲义**，左栏按书籍列出讲义文件夹；进入后点击章节，尚未生成的章节会按需生成。
 4. 讲义阅读器支持上一节/下一节、返回原书页、字号调整、进度记录、页面画笔和独立草稿。
 5. 选中讲义内容可直接问 AI；右上角可重新生成当前章节。长按章节卡片可下载 PDF。
+6. 右下角画笔按钮左侧的 **AI** 打开当前讲义的独立对话，界面、提示词和操作（引用、编辑、重新生成、导出）与阅读页的 AI 对话相同。每次提问都会把当前讲义正文作为附件发给 AI，不发送页面截图；对话历史按章节分别保存（最多 30 条），开启 R2 同步时随元数据同步到其他设备。论文摘要和课堂 AI 笔记在讲义阅读器中打开时同样可用，各自保存对话。该对话在 **设置 → AI 功能分配 → 讲义与摘要** 中对应“讲义 AI 对话”的三项。
 
 **生成论文摘要**：在 **书架 → AI → 生成摘要** 选择论文。结果显示在 **讲义 → 摘要** 栏，并使用同一讲义阅读器显示、渲染公式和保存阅读进度。
 
@@ -288,6 +289,8 @@ Recordings use durable app-private storage and survive WebView recreation and in
 ### 6. Lectures and abstracts
 
 For a book, run **Library → AI → Generate Outline**, then **Generate Lecture**. Open **Lectures**, enter the book folder, and open a chapter; pending chapters are generated on demand. The lecture viewer supports previous/next chapter, source-book jump, font size, progress, drawing, a separate scratchpad, selected-text questions, regeneration, and PDF download by long-pressing a chapter card.
+
+The **AI** button to the left of the pen button opens a separate chat for the current lecture, with the same interface, prompts, and actions (quote, edit, regenerate, export) as the Reader AI chat. Each question sends the current lecture text as the attachment instead of a page screenshot. Chat history is kept per chapter (up to 30 messages) and syncs with the R2 metadata when sync is enabled. Abstracts and class AI notes opened in the lecture viewer have their own chats in the same way. In **Settings → AI Feature Assignment → Lectures & abstracts**, the chat uses the three “Lecture AI chat” features.
 
 For a paper, run **Generate Abstract**. The result appears in the Abstracts column and uses the same math-aware viewer.
 

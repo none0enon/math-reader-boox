@@ -165,6 +165,14 @@
                 : Object.assign({}, cloudNote);
             base.progress = Math.max(Number(cloudNote.progress) || 0, Number(localNote.progress) || 0);
             base.maxProgress = Math.max(Number(cloudNote.maxProgress) || 0, Number(localNote.maxProgress) || 0);
+            // Ask-AI chat history follows its own timestamp, independent of content and progress.
+            const chatSource = (Number(localNote.chatUpdatedAt) || 0) > (Number(cloudNote.chatUpdatedAt) || 0)
+                ? localNote
+                : cloudNote;
+            if (chatSource.chatUpdatedAt !== undefined) {
+                base.chatHistory = chatSource.chatHistory;
+                base.chatUpdatedAt = chatSource.chatUpdatedAt;
+            }
             return deepClone(base);
         });
 

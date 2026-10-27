@@ -4165,6 +4165,66 @@
             height: 18px;
         }
 
+        /* 讲义问 AI 按钮：位于画笔按钮左侧，配色沿用阅读页的 AI 按钮 */
+        .lecture-ai-btn {
+            position: fixed;
+            right: 54px;
+            bottom: 65px;
+            z-index: 260;
+            width: 34px;
+            height: 34px;
+            padding: 0;
+            border-radius: 8px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+
+        body.lecture-active .lecture-ai-btn {
+            display: flex;
+        }
+
+        body.dark-theme .lecture-ai-btn {
+            color: #000;
+        }
+
+        /* 窄屏时上一节/下一节整体左移并收紧，给右下角的问 AI 和画笔按钮让出位置 */
+        @media (max-width: 480px) {
+            .lecture-footer {
+                padding-left: 52px;
+                padding-right: 94px;
+                gap: 8px;
+            }
+
+            .lecture-nav-btn {
+                min-width: 0;
+                padding: 8px 12px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .lecture-nav-btn.book-link {
+                flex-shrink: 0;
+            }
+        }
+
+        @media (max-width: 360px) {
+            .lecture-footer {
+                gap: 6px;
+            }
+
+            .lecture-nav-btn {
+                padding: 8px;
+            }
+        }
+
         /* 讲义画笔工具栏 */
         .lecture-pen-toolbar {
             position: absolute;
@@ -6222,6 +6282,9 @@
         </div>
     </div>
 
+    <!-- 讲义问 AI 按钮（画笔按钮左侧） -->
+    <button class="lecture-ai-btn" id="lectureAIBtn" onclick="openLectureChat()" title="问 AI" aria-label="问 AI" data-i18n-title="ask_ai">AI</button>
+
     <!-- 讲义草稿贴底小条 -->
     <div class="draft-mini-bar" id="lectureDraftMiniBar" onclick="toggleLectureDraftPanel()"></div>
 
@@ -7246,7 +7309,8 @@
             prompt_exercise_parse_system:'你是数学试题识别助手。识别输入中的所有题目，保留完整题干、条件、选项和小问；数学公式用 LaTeX。严格只返回 JSON 字符串数组，每个元素是一道完整题目，不要输出代码围栏或说明。', prompt_exercise_all_pages:'以下 {0} 张图片按页面顺序组成一份习题。识别所有题目并按原顺序返回。', prompt_exercise_image:'识别图片中的全部数学题目。', prompt_exercise_pdf_pages:'以下 {0} 张图片按 PDF 页序排列。识别全部数学题目。', prompt_exercise_pdf_text:'从以下 PDF 文本中识别并整理全部数学题目。', prompt_continue_truncated_json:'上一个 JSON 数组被截断。只续写尚未输出的数组元素并以 ] 结束，不要重复已有内容或添加说明。',
             prompt_grade_system:'你是数学习题批改助手。输入是一道题目和学生的手写作答图片。先独立、完整地解出这道题，再逐行核对学生的作答，最后严格按下面的格式输出。除格式规定的内容外，不要输出任何其他文字：不写开场白、总评、鼓励、学习建议，也不写对思路、书写、严谨性或知识掌握情况的任何评价性、概括性描述。\n\n输出格式（四个标签按顺序各出现一次，标签名保持英文原样，标签之外不要有任何内容）：\n<score>0到10的整数</score>\n<solution>第一部分：完整解答</solution>\n<errors>第二部分：学生的笔误与错误推导</errors>\n<similar>第三部分：同类型的另一道题目</similar>\n\n评分：满分10分，只依据学生作答的正确性与完整性给分。学生未作答或字迹无法辨认时给0分，但其余三部分仍必须完整输出。分数只写在<score>标签内，其他部分不再提及分数。\n\n第一部分<solution>：给出完整、详细、不跳步的证明和计算。要求：\n- 每一步都要写出来，并写明该步成立的理由。不得使用“由归纳法得”“由xx性质得”“由xx定理得”“易证”“显然”“同理可得”“略”这类跳步写法。\n- 用到数学归纳法时，必须完整写出奠基步骤和归纳步骤：准确陈述归纳假设，并写出从n到n+1的全部推导过程。\n- 用到定理、引理、性质或公式时，必须完整写出它的陈述，逐条验证它的前提条件在本题中成立，再写出代入后的具体结果。\n- 计算必须写出每一次代数变形、每一次代入和化简，直到得到最终结果。不得只给结果不给过程。\n- 题目有多问时逐问完整解答；需要分情况时逐种情况完整讨论，不得合并或省略任何一种情况。\n- 记号规则（必须严格执行）：沿用题目原有记号并在全文保持一致；严禁仅为编号、列举、分组、缩写或方便表述而给题目中的已有对象另取字母、下标、缩写或别名；只有题目没有可复用记号且必要推导无法用原有记号写出时，才可引入新记号；此时也只准引入最少量，并须在首次出现时逐一定义。\n- 输出前自行逐步验算，确保每一步推导和每一个结果都准确无误；不得编造题目中没有的条件。\n- 只写证明和计算本身，不写解题思路点评、方法总结或学习建议。\n\n第二部分<errors>：逐条列出学生作答中的笔误和错误推导。要求：\n- 笔误指抄写或书写层面的错误，例如符号、下标、系数、正负号写错，条件抄错，漏写或多写某一项。\n- 错误推导指逻辑或数学层面的错误，例如用错定理或公式、所用定理的前提不满足、计算错误、推理不成立、遗漏情况、循环论证。\n- 每一条按“学生原文（照抄学生写的内容）→ 错误所在 → 正确写法或正确推导”的形式写出，明确指出错在哪一步、为什么错，并给出这一步的正确形式。其中的箭头直接写“→”字符，不要写成LaTeX命令。\n- 只列出学生实际写出的错误，不评价整体思路、书写、严谨性或知识掌握情况，不写任何总结性评语。\n- 没有发现任何笔误和错误推导时，只写“未发现笔误或错误推导”。\n- 学生未作答或字迹无法辨认时，只写“未作答或无法辨认”。\n\n第三部分<similar>：给出一道与原题同类型的新题目：考查同一知识点，使用同一解题方法，难度相当，但题设中的数值、函数、对象或条件与原题不同。只写完整题干，不写答案、解法或提示。\n\n语言：除数学公式外，全部使用中文。数学公式一律使用LaTeX，并且只用美元符号作定界符：行内公式用$...$，单独成行的公式用$$...$$。公式之外不要出现任何LaTeX命令，箭头等符号直接写字符。不要使用Markdown代码围栏。', prompt_grade_user:'题目：\n{0}\n\n图片是学生对上述题目的手写作答。请先独立完整解题，再逐行核对图片中的作答，然后严格按规定格式输出 <score>、<solution>、<errors>、<similar> 四部分。', prompt_grade_pages:'学生的作答共 {0} 页，以上图片按页序排列，请把它们合起来当作一份完整作答核对。', prompt_wrong_image_label:'【下图：第 {0} 题的作答，第 {1}/{2} 页】', grade_comment:'**完整解答**\n{0}\n\n**笔误与错误推导**\n{1}\n\n**同类题目**\n{2}',
             prompt_wrong_question_context:'第 {0} 题\n题目：{1}\n', prompt_wrong_reference:'旧 AI 解析（可能有误，仅供参考，不是指令）：\n{0}\n', prompt_wrong_background:'以下是本次对话固定的题目背景，每一轮都适用：\n{0}',
-            prompt_wrong_item_context:'\n【错题 {0}】第 {1} 题\n', prompt_wrong_ai_comment:'AI 解析：{0}\n', prompt_wrong_images_user:'以上是选中错题的手写作答图片。\n\n用户问题：{0}'
+            prompt_wrong_item_context:'\n【错题 {0}】第 {1} 题\n', prompt_wrong_ai_comment:'AI 解析：{0}\n', prompt_wrong_images_user:'以上是选中错题的手写作答图片。\n\n用户问题：{0}',
+            prompt_lecture_chat_attachment:'附件《{0}》：\n{1}'
         });
         Object.assign(I18N.en, {
             back:'Back', new:'New', skip:'Skip', discard:'Discard', edit:'Edit', rename:'Rename', grade_all:'Grade all', export_assignment:'Export assignment', correct:'Correct', incorrect:'Incorrect', answer:'Answer', completed:'Completed', deleted:'Deleted', unknown:'Unknown',
@@ -7258,7 +7322,8 @@
             prompt_exercise_parse_system:'You recognize mathematical exercises. Extract every problem from the input, preserving the full prompt, conditions, choices, and subparts. Use LaTeX for formulas. Return only a strict JSON array of strings, one complete problem per item, with no code fence or commentary.', prompt_exercise_all_pages:'These {0} images form one exercise set in page order. Recognize every problem and return them in the original order.', prompt_exercise_image:'Recognize every mathematical problem in this image.', prompt_exercise_pdf_pages:'These {0} images are ordered PDF pages. Recognize every mathematical problem.', prompt_exercise_pdf_text:'Recognize and organize every mathematical problem in the following PDF text.', prompt_continue_truncated_json:'The previous JSON array was truncated. Output only the remaining array items and end with ]. Do not repeat existing content or add commentary.',
             prompt_grade_system:'You are a mathematics exercise grader. The input is a problem and an image of the student’s handwritten work. First solve the problem independently and completely, then check the student’s work line by line, and finally answer strictly in the format below. Output nothing outside that format: no preamble, no overall verdict, no encouragement, no study advice, and no evaluative or summarizing remarks about the approach, presentation, rigor, or knowledge.\n\nOutput format (the four tags appear once each, in this order, with the tag names kept exactly as written and nothing outside the tags):\n<score>an integer from 0 to 10</score>\n<solution>Part 1: complete solution</solution>\n<errors>Part 2: the student’s slips of the pen and incorrect derivations</errors>\n<similar>Part 3: another problem of the same type</similar>\n\nScore: out of 10, based only on the correctness and completeness of the student’s work. Give 0 if there is no answer or the writing is illegible, but still output the other three parts in full. Write the score only inside the <score> tag and do not mention it anywhere else.\n\nPart 1 <solution>: a complete, detailed proof and calculation with no skipped steps. Requirements:\n- Write out every step and state the reason it holds. Never use shortcuts such as “by induction”, “by property X”, “by theorem X”, “it is easy to see”, “obviously”, “similarly”, or “omitted”.\n- When using mathematical induction, write out the base case and the inductive step in full: state the induction hypothesis precisely and show the entire derivation from n to n+1.\n- When using a theorem, lemma, property, or formula, state it in full, verify each of its hypotheses for this problem, and then write the concrete result after substitution.\n- Show every algebraic transformation, substitution, and simplification until the final result. Never give a result without its derivation.\n- Answer every sub-question in full. When cases are needed, treat every case completely; do not merge or omit any case.\n- Notation rule (strict): reuse the problem’s notation and keep it consistent throughout; never give existing objects new letters, subscripts, abbreviations, or aliases merely to number, list, group, or describe them more conveniently; introduce new notation only when the problem provides no reusable notation and a necessary derivation cannot be written with the existing notation; in that case, introduce the absolute minimum and define each new symbol at first use.\n- Check every step and every result before answering so that all of it is accurate. Do not invent conditions that are not in the problem.\n- Write only the proof and calculation itself: no commentary on the approach, no method summary, no study advice.\n\nPart 2 <errors>: list, one by one, the student’s slips of the pen and incorrect derivations. Requirements:\n- A slip of the pen is a copying or writing error, such as a wrong symbol, subscript, coefficient, or sign, a miscopied condition, or a missing or extra term.\n- An incorrect derivation is a logical or mathematical error, such as a misapplied theorem or formula, an unmet hypothesis, a calculation error, an invalid inference, a missed case, or circular reasoning.\n- Write each item as “student’s original text (copied exactly as written) → what is wrong → the correct form or correct derivation”, naming the exact step, why it is wrong, and the correct form of that step. Write the arrows as the plain “→” character, not as a LaTeX command.\n- List only errors the student actually wrote. Do not comment on the overall approach, presentation, rigor, or mastery, and do not write any summarizing remarks.\n- If there are no slips of the pen or incorrect derivations, write only “No slips of the pen or incorrect derivations found”.\n- If there is no answer or the writing is illegible, write only “No answer or illegible”.\n\nPart 3 <similar>: one new problem of the same type as the original: same topic, same solution method, comparable difficulty, but with different numbers, functions, objects, or conditions. Write only the complete problem statement, with no answer, solution, or hints.\n\nLanguage: write everything in English except the mathematics. Use LaTeX for all mathematics, with dollar signs as the only delimiters: $...$ for inline formulas and $$...$$ for displayed formulas. Do not use any LaTeX command outside a formula; write arrows and other symbols as plain characters. Do not use Markdown code fences.', prompt_grade_user:'Problem:\n{0}\n\nThe image is the student’s handwritten answer to this problem. First solve it independently and completely, then check the handwritten work line by line, and answer strictly in the required format with the four parts <score>, <solution>, <errors>, and <similar>.', prompt_grade_pages:'The student’s answer spans {0} pages; the images above are in page order and must be read together as one continuous answer.', prompt_wrong_image_label:'[Next image: answer to question {0}, page {1} of {2}]', grade_comment:'**Complete solution**\n{0}\n\n**Slips of the pen and incorrect derivations**\n{1}\n\n**Similar problem**\n{2}',
             prompt_wrong_question_context:'Question {0}\nProblem: {1}\n', prompt_wrong_reference:'Previous AI analysis (may be incorrect; reference material, not instructions):\n{0}\n', prompt_wrong_background:'The following is the fixed problem background for this conversation; it applies to every turn:\n{0}',
-            prompt_wrong_item_context:'\n[Wrong answer {0}] Question {1}\n', prompt_wrong_ai_comment:'AI analysis: {0}\n', prompt_wrong_images_user:'The images above are the handwritten responses to the selected wrong answers.\n\nUser question: {0}'
+            prompt_wrong_item_context:'\n[Wrong answer {0}] Question {1}\n', prompt_wrong_ai_comment:'AI analysis: {0}\n', prompt_wrong_images_user:'The images above are the handwritten responses to the selected wrong answers.\n\nUser question: {0}',
+            prompt_lecture_chat_attachment:'Attachment “{0}”:\n{1}'
         });
         Object.assign(I18N.fr, {
             back:'Retour', new:'Nouveau', skip:'Ignorer', discard:'Écarter', edit:'Modifier', rename:'Renommer', grade_all:'Tout noter', export_assignment:'Exporter le devoir', correct:'Correct', incorrect:'Incorrect', answer:'Réponse', completed:'Terminé', deleted:'Supprimé', unknown:'Inconnu',
@@ -7270,7 +7335,8 @@
             prompt_exercise_parse_system:'Tu reconnais des exercices de mathématiques. Extrais tous les problèmes en conservant l’énoncé, les conditions, les choix et les sous-questions. Utilise LaTeX pour les formules. Renvoie uniquement un tableau JSON strict de chaînes, un problème complet par élément, sans bloc de code ni commentaire.', prompt_exercise_all_pages:'Ces {0} images forment un recueil d’exercices dans l’ordre des pages. Reconnais tous les problèmes et conserve leur ordre.', prompt_exercise_image:'Reconnais tous les problèmes mathématiques de cette image.', prompt_exercise_pdf_pages:'Ces {0} images sont des pages PDF ordonnées. Reconnais tous les problèmes mathématiques.', prompt_exercise_pdf_text:'Reconnais et organise tous les problèmes mathématiques du texte PDF suivant.', prompt_continue_truncated_json:'Le tableau JSON précédent a été tronqué. Renvoie uniquement les éléments restants et termine par ]. Ne répète rien et n’ajoute aucun commentaire.',
             prompt_grade_system:'Tu es un correcteur d’exercices de mathématiques. L’entrée est un énoncé et l’image de la copie manuscrite de l’élève. Résous d’abord le problème de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format ci-dessous. N’écris rien en dehors de ce format : pas d’introduction, pas de verdict global, pas d’encouragement, pas de conseil de travail, et aucune remarque évaluative ou récapitulative sur la démarche, la présentation, la rigueur ou les connaissances.\n\nFormat de sortie (les quatre balises apparaissent une fois chacune, dans cet ordre, avec leurs noms conservés tels quels et rien en dehors des balises) :\n<score>un entier de 0 à 10</score>\n<solution>Partie 1 : solution complète</solution>\n<errors>Partie 2 : erreurs d’écriture et raisonnements erronés de l’élève</errors>\n<similar>Partie 3 : un autre exercice du même type</similar>\n\nNote : sur 10, uniquement selon l’exactitude et la complétude de la copie. Mets 0 s’il n’y a pas de réponse ou si l’écriture est illisible, mais fournis quand même les trois autres parties en entier. Écris la note uniquement dans la balise <score> et ne la mentionne nulle part ailleurs.\n\nPartie 1 <solution> : une démonstration et un calcul complets, détaillés, sans aucune étape sautée. Exigences :\n- Écris chaque étape et indique la raison pour laquelle elle est valable. N’utilise jamais de raccourcis tels que « par récurrence », « d’après la propriété X », « d’après le théorème X », « il est facile de voir », « évidemment », « de même » ou « omis ».\n- Pour un raisonnement par récurrence, rédige entièrement l’initialisation et l’hérédité : énonce précisément l’hypothèse de récurrence et développe tout le passage de n à n+1.\n- Pour tout théorème, lemme, propriété ou formule utilisé, énonce-le en entier, vérifie chacune de ses hypothèses dans ce problème, puis écris le résultat concret après substitution.\n- Détaille chaque transformation algébrique, chaque substitution et chaque simplification jusqu’au résultat final. Ne donne jamais un résultat sans sa dérivation.\n- Traite entièrement chaque sous-question. Lorsqu’une disjonction de cas est nécessaire, traite chaque cas complètement, sans fusionner ni omettre aucun cas.\n- Règle de notation (à respecter strictement) : reprends les notations de l’énoncé et conserve-les de façon cohérente dans toute la solution ; n’attribue jamais aux objets existants de nouvelles lettres, de nouveaux indices, des abréviations ou des alias uniquement pour les numéroter, les énumérer, les regrouper ou faciliter la rédaction ; n’introduis de nouvelle notation que si l’énoncé ne fournit aucune notation réutilisable et qu’une étape nécessaire ne peut pas être rédigée avec les notations existantes ; dans ce seul cas, limite-toi au strict minimum et définis chaque nouvelle notation dès sa première apparition.\n- Vérifie chaque étape et chaque résultat avant de répondre afin que tout soit exact. N’invente aucune condition absente de l’énoncé.\n- Écris uniquement la démonstration et le calcul : aucun commentaire sur la démarche, aucun résumé de méthode, aucun conseil de travail.\n\nPartie 2 <errors> : liste, une par une, les erreurs d’écriture et les raisonnements erronés de l’élève. Exigences :\n- Une erreur d’écriture est une faute de copie ou de rédaction : symbole, indice, coefficient ou signe erroné, condition mal recopiée, terme manquant ou en trop.\n- Un raisonnement erroné est une erreur logique ou mathématique : théorème ou formule mal appliqué, hypothèse non vérifiée, erreur de calcul, inférence invalide, cas oublié, raisonnement circulaire.\n- Rédige chaque point sous la forme « texte original de l’élève (recopié tel quel) → ce qui est faux → forme correcte ou dérivation correcte », en précisant l’étape exacte, pourquoi elle est fausse et la forme correcte de cette étape. Écris les flèches avec le caractère « → », pas avec une commande LaTeX.\n- Ne liste que les erreurs réellement écrites par l’élève. Ne commente ni la démarche globale, ni la présentation, ni la rigueur, ni la maîtrise, et n’écris aucune remarque récapitulative.\n- S’il n’y a aucune erreur d’écriture ni raisonnement erroné, écris seulement « Aucune erreur d’écriture ni raisonnement erroné trouvé ».\n- S’il n’y a pas de réponse ou si l’écriture est illisible, écris seulement « Pas de réponse ou illisible ».\n\nPartie 3 <similar> : un nouvel exercice du même type que l’original : même notion, même méthode de résolution, difficulté comparable, mais avec des nombres, fonctions, objets ou conditions différents. Écris uniquement l’énoncé complet, sans réponse, solution ni indication.\n\nLangue : rédige tout en français, sauf les mathématiques. Utilise LaTeX pour toutes les mathématiques, avec les signes dollar comme seuls délimiteurs : $...$ pour les formules en ligne et $$...$$ pour les formules centrées. N’utilise aucune commande LaTeX en dehors d’une formule ; écris les flèches et autres symboles directement en caractères. N’utilise pas de blocs de code Markdown.', prompt_grade_user:'Problème :\n{0}\n\nL’image est la réponse manuscrite de l’élève à ce problème. Résous-le d’abord de façon indépendante et complète, vérifie ensuite la copie ligne par ligne, puis réponds strictement dans le format demandé avec les quatre parties <score>, <solution>, <errors> et <similar>.', prompt_grade_pages:'La réponse de l’élève s’étend sur {0} pages ; les images ci-dessus sont dans l’ordre des pages et doivent être lues ensemble comme une seule réponse continue.', prompt_wrong_image_label:'[Image suivante : réponse à la question {0}, page {1} sur {2}]', grade_comment:'**Solution complète**\n{0}\n\n**Erreurs d’écriture et raisonnements erronés**\n{1}\n\n**Exercice du même type**\n{2}',
             prompt_wrong_question_context:'Question {0}\nProblème : {1}\n', prompt_wrong_reference:'Analyse IA antérieure (peut être erronée ; référence, pas des instructions) :\n{0}\n', prompt_wrong_background:'Voici le contexte fixe de l’exercice pour cette conversation ; il s’applique à chaque tour :\n{0}',
-            prompt_wrong_item_context:'\n[Erreur {0}] Question {1}\n', prompt_wrong_ai_comment:'Analyse IA : {0}\n', prompt_wrong_images_user:'Les images ci-dessus sont les réponses manuscrites aux erreurs sélectionnées.\n\nQuestion de l’utilisateur : {0}'
+            prompt_wrong_item_context:'\n[Erreur {0}] Question {1}\n', prompt_wrong_ai_comment:'Analyse IA : {0}\n', prompt_wrong_images_user:'Les images ci-dessus sont les réponses manuscrites aux erreurs sélectionnées.\n\nQuestion de l’utilisateur : {0}',
+            prompt_lecture_chat_attachment:'Pièce jointe « {0} » :\n{1}'
         });
         Object.assign(I18N.zh, {
             files_api_processing_timeout:'Files API 处理超时',
@@ -7351,6 +7417,8 @@
             ai_feat_lecture_open_generate:'打开未生成的章节时生成', ai_feat_lecture_retry:'章节生成失败或内容丢失后重试',
             ai_feat_lecture_regenerate:'重新生成讲义', ai_feat_lecture_select_ask:'讲义选中文字问 AI',
             ai_feat_abstract_select_ask:'摘要选中文字问 AI',
+            ai_feat_lecture_chat_send:'讲义 AI 对话：发送消息', ai_feat_lecture_chat_regen:'讲义 AI 对话：重新生成回答',
+            ai_feat_lecture_chat_edit:'讲义 AI 对话：编辑消息后重新回答',
             ai_feat_notebook_lasso_recognize:'套索选区 AI 识别', ai_feat_notebook_handwriting_index:'AI 识别手写并建立索引',
             ai_feat_review_add:'加入复习（生成首个 Quiz）', ai_feat_review_next_stage:'评分后生成下一阶段 Quiz',
             ai_feat_review_extra:'生成巩固加练 Quiz', ai_feat_review_regenerate:'重新生成 Quiz',
@@ -7385,6 +7453,8 @@
             ai_feat_lecture_open_generate:'Generate a chapter when it is opened', ai_feat_lecture_retry:'Retry a failed or missing chapter',
             ai_feat_lecture_regenerate:'Regenerate lecture', ai_feat_lecture_select_ask:'Ask AI about selected lecture text',
             ai_feat_abstract_select_ask:'Ask AI about selected abstract text',
+            ai_feat_lecture_chat_send:'Lecture AI chat: send message', ai_feat_lecture_chat_regen:'Lecture AI chat: regenerate reply',
+            ai_feat_lecture_chat_edit:'Lecture AI chat: edit message and resend',
             ai_feat_notebook_lasso_recognize:'AI recognition of a lasso selection', ai_feat_notebook_handwriting_index:'Use AI to index handwriting',
             ai_feat_review_add:'Add to review (first quiz)', ai_feat_review_next_stage:'Next-stage quiz after grading',
             ai_feat_review_extra:'Consolidation practice quiz', ai_feat_review_regenerate:'Regenerate quiz',
@@ -7419,6 +7489,8 @@
             ai_feat_lecture_open_generate:'Générer un chapitre à son ouverture', ai_feat_lecture_retry:'Réessayer un chapitre en échec ou manquant',
             ai_feat_lecture_regenerate:'Régénérer le cours', ai_feat_lecture_select_ask:'Demander à l’IA sur le texte sélectionné du cours',
             ai_feat_abstract_select_ask:'Demander à l’IA sur le texte sélectionné du résumé',
+            ai_feat_lecture_chat_send:'Discussion IA du cours : envoyer', ai_feat_lecture_chat_regen:'Discussion IA du cours : régénérer la réponse',
+            ai_feat_lecture_chat_edit:'Discussion IA du cours : modifier et renvoyer',
             ai_feat_notebook_lasso_recognize:'Reconnaissance IA de la sélection au lasso', ai_feat_notebook_handwriting_index:'Indexer l’écriture manuscrite avec l’IA',
             ai_feat_review_add:'Ajouter aux révisions (premier quiz)', ai_feat_review_next_stage:'Quiz de l’étape suivante après notation',
             ai_feat_review_extra:'Quiz d’exercice de consolidation', ai_feat_review_regenerate:'Régénérer le quiz',
@@ -12893,7 +12965,8 @@
             { id: 'reader', icon: '<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>',
               features: ['reader_ocr_search', 'reader_lasso_ask', 'reader_chat_send', 'reader_chat_regen', 'reader_chat_edit'] },
             { id: 'lecture', icon: '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
-              features: ['lecture_open_generate', 'lecture_retry', 'lecture_regenerate', 'lecture_select_ask', 'abstract_select_ask'] },
+              features: ['lecture_open_generate', 'lecture_retry', 'lecture_regenerate', 'lecture_select_ask', 'abstract_select_ask',
+                  'lecture_chat_send', 'lecture_chat_regen', 'lecture_chat_edit'] },
             { id: 'notebook', icon: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>',
               features: ['notebook_lasso_recognize', 'notebook_handwriting_index'] },
             { id: 'review', icon: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
@@ -14904,6 +14977,16 @@
                             if (progressSource[field] !== undefined) result[field] = progressSource[field];
                         }
                     }
+                    // 讲义问 AI 的对话记录按 chatUpdatedAt 单独取新，与正文、进度互不影响
+                    const cloudChatTs = Number(cloudChapter.chatUpdatedAt) || 0;
+                    const localChatTs = Number(localChapter.chatUpdatedAt) || 0;
+                    const chatSource = localChatTs > cloudChatTs ? localChapter
+                        : cloudChatTs > localChatTs ? cloudChapter : base;
+                    if (chatSource !== base) {
+                        for (const field of ['chatHistory', 'chatUpdatedAt']) {
+                            if (chatSource[field] !== undefined) result[field] = chatSource[field];
+                        }
+                    }
                     // maxProgress 是"历史最高进度"，两端取最大值而不是取较新的那份
                     const maxProgress = Math.max(Number(localChapter.maxProgress) || 0,
                         Number(cloudChapter.maxProgress) || 0);
@@ -16870,6 +16953,7 @@
                     { key: 'bookmarks', tsKey: 'bookmarksUpdatedAt' },
                     { key: 'aiOutline', tsKey: 'outlineUpdatedAt' },
                     { key: 'chatHistory', tsKey: 'chatUpdatedAt' },
+                    { key: 'abstractChatHistory', tsKey: 'abstractChatUpdatedAt' },
                     { key: 'annotations', tsKey: 'annotationsUpdatedAt' }
                 ];
                 for (const f of fields) {
@@ -17156,15 +17240,19 @@
             ln.forEach(n => { if (n && n.id) localMap[n.id] = n; });
             const cloudIds = new Set(cn.map(n => n && n.id).filter(Boolean));
 
-            // 对云端已有的笔记，合并阅读进度（取较大值）
+            // 对云端已有的笔记，合并阅读进度（取较大值），讲义问 AI 的对话记录按 chatUpdatedAt 取新
             const merged = cn.map(cNote => {
                 if (!cNote || !cNote.id) return cNote;
                 const lNote = localMap[cNote.id];
                 if (!lNote) return cNote;
+                const chatSource = (Number(lNote.chatUpdatedAt) || 0) > (Number(cNote.chatUpdatedAt) || 0) ? lNote : cNote;
                 return {
                     ...cNote,
                     progress: Math.max(cNote.progress || 0, lNote.progress || 0),
-                    maxProgress: Math.max(cNote.maxProgress || 0, lNote.maxProgress || 0)
+                    maxProgress: Math.max(cNote.maxProgress || 0, lNote.maxProgress || 0),
+                    ...(chatSource.chatUpdatedAt !== undefined
+                        ? { chatHistory: chatSource.chatHistory, chatUpdatedAt: chatSource.chatUpdatedAt }
+                        : {})
                 };
             });
 
@@ -18811,44 +18899,56 @@
         let readerChatDoc = null;
         const readerChatSyncToasts = new Map();
 
-        function getReaderChatDoc(docId, question = null) {
-            if (question) {
-                const { folderId, taskId, originalQuestionIndex } = question;
+        // chatDoc 是对话本身：阅读页文档、错题（question）或讲义阅读器内容（lecture）。
+        // 返回保存这段对话记录的数据对象，每次按稳定 id 重新查找，同步替换对象后仍能写回。
+        function getReaderChatDoc(chatDoc) {
+            if (chatDoc?.lecture) return getLectureChatOwner(chatDoc.lecture);
+            if (chatDoc?.question) {
+                const { folderId, taskId, originalQuestionIndex } = chatDoc.question;
                 const data = getExercisesData();
                 const wrongTask = (data.wrongByFolder[folderId] || []).find(t => t.taskId === taskId);
                 return wrongTask && (wrongTask.questions || [])
                     .find((item, index) => item && (item.questionIndex ?? index) === originalQuestionIndex);
             }
-            return appData.books.find(b => b.id === docId) || appData.papers.find(p => p.id === docId);
+            return appData.books.find(b => b.id === chatDoc?.id) || appData.papers.find(p => p.id === chatDoc?.id);
         }
 
-        function loadReaderChatHistory(docId, question = null) {
-            const doc = getReaderChatDoc(docId, question);
-            if (doc && doc.chatHistory && doc.chatHistory.length > 0) {
-                return doc.chatHistory;
+        // 论文的 chatHistory 已用于阅读页的文档对话，讲义阅读器里的摘要对话另存一组字段
+        function readerChatFields(chatDoc) {
+            return chatDoc?.lecture?.kind === 'abstract'
+                ? ['abstractChatHistory', 'abstractChatUpdatedAt']
+                : ['chatHistory', 'chatUpdatedAt'];
+        }
+
+        function loadReaderChatHistory(chatDoc) {
+            const doc = getReaderChatDoc(chatDoc);
+            const [historyKey] = readerChatFields(chatDoc);
+            if (doc && doc[historyKey] && doc[historyKey].length > 0) {
+                return doc[historyKey];
             }
             return [];
         }
 
-        function saveReaderChatHistory(docId, history, question = null) {
+        function saveReaderChatHistory(chatDoc, history) {
             // Keep max 30 messages
             if (history.length > 30) {
                 history = history.slice(-30);
             }
-            const doc = getReaderChatDoc(docId, question);
+            const doc = getReaderChatDoc(chatDoc);
             if (doc) {
-                doc.chatHistory = history;
-                doc.chatUpdatedAt = Date.now();
+                const [historyKey, updatedAtKey] = readerChatFields(chatDoc);
+                doc[historyKey] = history;
+                doc[updatedAtKey] = Date.now();
                 // 存localStorage时去掉screenshot防止撑爆
-                const orig = doc.chatHistory;
-                doc.chatHistory = history.map(h => {
+                const orig = doc[historyKey];
+                doc[historyKey] = history.map(h => {
                     if (h.screenshot) { const c = Object.assign({}, h); delete c.screenshot; return c; }
                     return h;
                 });
                 try { saveData(); } catch (e) { console.error('saveData failed:', e); }
-                doc.chatHistory = orig;
+                doc[historyKey] = orig;
                 // 立即同步到云端防止数据丢失
-                debouncedChatSync(readerChatSyncToasts.get(docId)?.show);
+                debouncedChatSync(readerChatSyncToasts.get(chatDoc.id)?.show);
             }
         }
 
@@ -18905,7 +19005,7 @@
             const currentDoc = readerChatDoc;
             if (!currentDoc || currentDoc.id !== docId) return;
             const container = document.getElementById('readerChatContainer');
-            const history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            const history = loadReaderChatHistory(currentDoc);
             const userName = getUserName();
             const userAvatar = getUserAvatar();
             const aiName = getAIName();
@@ -19251,13 +19351,29 @@
             return `${base}\n\n${i18n('prompt_wrong_background', background.join('\n'))}`;
         }
 
+        // 讲义问 AI 与错题问 AI 一样不带阅读页的当前页笔记，其余提示词与阅读问 AI 相同。
+        function buildReaderChatSystemPrompt(doc) {
+            if (doc.question) return buildWrongChatSystemPrompt(doc);
+            if (doc.lecture) return `${i18n('prompt_math_ai')}\n\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+            const notes = getDocAnnotations(doc.id, currentPage, 'note');
+            const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
+            return `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+        }
+
         // 构建发送给 AI 的消息：题干和旧 AI 解析常驻系统提示，这里只把手写图片附在首轮请求。
-        function buildReaderChatApiMessages(history, doc = readerChatDoc) {
+        // 讲义问 AI 每轮都把讲义正文作为附件放在最后一条用户消息前，与阅读问 AI 每轮附带当前页相同。
+        function buildReaderChatApiMessages(history, doc = readerChatDoc, lectureText = '') {
             const messages = history.map(h => ({
                 role: h.role,
                 content: h.quote ? `${i18n('chat_quote_prefix')}${h.quote}\n\n${h.content}` : h.content
             }));
             const lastIndex = messages.length - 1;
+            if (lectureText && messages[lastIndex]?.role === 'user') {
+                messages[lastIndex] = {
+                    role: 'user',
+                    content: `${i18n('prompt_lecture_chat_attachment', doc.title, lectureText)}\n\n---\n\n${messages[lastIndex].content}`
+                };
+            }
             // 首轮状态只保存在当前聊天对象中，不写入消息、错题数据或本地存储。
             if (doc?.question && doc.wrongFirstTurnPending && messages[lastIndex]?.role === 'user') {
                 const images = doc.wrongImages || [];
@@ -19278,7 +19394,7 @@
         function editReaderChatMessage(index) {
             const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            let history = loadReaderChatHistory(currentDoc);
             if (index < 0 || index >= history.length) return;
             const msg = history[index];
             if (msg.role !== 'user') return;
@@ -19289,26 +19405,23 @@
             // Update this message and remove all messages after it
             history[index].content = newText.trim();
             history = history.slice(0, index + 1);
-            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+            saveReaderChatHistory(currentDoc, history);
             renderReaderChatHistory();
 
             // Re-send to get new AI response
             resendReaderChatFromIndex(index, 'edit');
         }
 
-        // mode: 'edit' 编辑消息后重新回答，'regen' 重新生成回答；错题问 AI 与文档对话分别计入不同功能
+        // mode: 'edit' 编辑消息后重新回答，'regen' 重新生成回答；错题问 AI、讲义问 AI 与文档对话分别计入不同功能
         async function resendReaderChatFromIndex(userMsgIndex, mode) {
             const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            const feature = (currentDoc.question ? 'wrong_chat_' : 'reader_chat_') + (mode === 'edit' ? 'edit' : 'regen');
-            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            const feature = (currentDoc.question ? 'wrong_chat_' : (currentDoc.lecture ? 'lecture_chat_' : 'reader_chat_')) +
+                (mode === 'edit' ? 'edit' : 'regen');
+            let history = loadReaderChatHistory(currentDoc);
 
             // Build system prompt
-            const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
-            const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
-            const systemPrompt = currentDoc.question
-                ? buildWrongChatSystemPrompt(currentDoc)
-                : `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+            const systemPrompt = buildReaderChatSystemPrompt(currentDoc);
 
             let pdfAttachment = null;
             if (currentDoc.type === 'pdf') {
@@ -19318,8 +19431,9 @@
                     pdfAttachment = { bytes: slice.bytes, base64: slice.base64, name: `${currentDoc.title}_p${currentPage}.pdf` };
                 } catch (e) { console.error('切出当前页PDF失败:', e); }
             }
+            const lectureText = currentDoc.lecture ? await loadLectureChatContent(currentDoc.lecture) : '';
 
-            const apiMessages = buildReaderChatApiMessages(history, currentDoc);
+            const apiMessages = buildReaderChatApiMessages(history, currentDoc, lectureText);
 
             const container = document.getElementById('readerChatContainer');
             const loadingDiv = document.createElement('div');
@@ -19339,7 +19453,7 @@
                 if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                    saveReaderChatHistory(currentDoc, history);
                     renderReaderChatHistory(currentDoc.id);
                 }
             } catch (err) {
@@ -19351,7 +19465,7 @@
         function regenerateReaderChatMessage(index) {
             const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            let history = loadReaderChatHistory(currentDoc);
             if (index < 0 || index >= history.length) return;
             if (history[index].role !== 'assistant') return;
 
@@ -19359,7 +19473,7 @@
 
             // Remove this AI message and all subsequent messages
             history = history.slice(0, index);
-            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+            saveReaderChatHistory(currentDoc, history);
             renderReaderChatHistory();
 
             // Find last user message to re-send
@@ -19372,9 +19486,9 @@
         function deleteReaderChatMessage(index) {
             const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            let history = loadReaderChatHistory(currentDoc);
             history.splice(index, 1);
-            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+            saveReaderChatHistory(currentDoc, history);
             renderReaderChatHistory();
         }
 
@@ -19399,10 +19513,10 @@
             try { fontSize = localStorage.getItem('mathreader_chat_fontsize') || fontSize; } catch (e) {}
             setReaderChatFontsize(fontSize);
 
-            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            let history = loadReaderChatHistory(currentDoc);
             if (history.length === 0) {
-                // Auto-capture screenshot and generate greeting
-                const screenshot = currentDoc.question ? null : captureCurrentPageScreenshot();
+                // Auto-capture screenshot and generate greeting（讲义问 AI 不截图，提问时附上讲义正文）
+                const screenshot = currentDoc.question || currentDoc.lecture ? null : captureCurrentPageScreenshot();
                 const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
                 const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
 
@@ -19411,7 +19525,7 @@
                 if (screenshot) {
                     history[0].screenshot = screenshot;
                 }
-                saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                saveReaderChatHistory(currentDoc, history);
             }
 
             renderReaderChatHistory();
@@ -19433,14 +19547,14 @@
             clearChatQuote();
 
             // Add user message
-            let history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            let history = loadReaderChatHistory(currentDoc);
             const userMsg = { role: 'user', content: message };
             if (quote) userMsg.quote = quote;
             history.push(userMsg);
-            saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+            saveReaderChatHistory(currentDoc, history);
             renderReaderChatHistory(currentDoc.id);
 
-            // 切出当前页PDF作为附件发给AI
+            // 切出当前页PDF作为附件发给AI；讲义问 AI 改为附上当前讲义正文
             let pdfAttachment = null;
             if (currentDoc.type === 'pdf') {
                 try {
@@ -19451,15 +19565,12 @@
                     console.error('切出当前页PDF失败:', e);
                 }
             }
+            const lectureText = currentDoc.lecture ? await loadLectureChatContent(currentDoc.lecture) : '';
 
             // Build system prompt with context
-            const notes = getDocAnnotations(currentDoc.id, currentPage, 'note');
-            const notesSummary = notes.map(n => n.text).filter(Boolean).join('; ');
-            const systemPrompt = currentDoc.question
-                ? buildWrongChatSystemPrompt(currentDoc)
-                : `${i18n('prompt_math_ai')}\n\n${i18n('prompt_user_notes')}${notesSummary || i18n('prompt_none')}\n${i18n('prompt_help_instruction')}\n${i18n('prompt_workflow')}`;
+            const systemPrompt = buildReaderChatSystemPrompt(currentDoc);
 
-            const apiMessages = buildReaderChatApiMessages(history, currentDoc);
+            const apiMessages = buildReaderChatApiMessages(history, currentDoc, lectureText);
 
             // Show typing indicator
             const container = document.getElementById('readerChatContainer');
@@ -19481,13 +19592,13 @@
             container.scrollTop = container.scrollHeight;
 
             try {
-                const feature = currentDoc.question ? 'wrong_chat_send' : 'reader_chat_send';
+                const feature = currentDoc.question ? 'wrong_chat_send' : (currentDoc.lecture ? 'lecture_chat_send' : 'reader_chat_send');
                 const result = await callReaderAI(systemPrompt, apiMessages, { pdfAttachment, feature });
                 if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
 
                 if (result) {
                     history.push({ role: 'assistant', content: result });
-                    saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                    saveReaderChatHistory(currentDoc, history);
                     renderReaderChatHistory(currentDoc.id);
                 } else {
                     if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
@@ -19500,14 +19611,14 @@
                     ];
                     const fallback = replies[Math.floor(Math.random() * replies.length)];
                     history.push({ role: 'assistant', content: fallback });
-                    saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                    saveReaderChatHistory(currentDoc, history);
                     renderReaderChatHistory(currentDoc.id);
                 }
             } catch (e) {
                 console.error('Reader chat error:', e);
                 if (readerChatDoc?.id === currentDoc.id) document.getElementById('readerChatLoading')?.remove();
                 history.push({ role: 'assistant', content: i18n('request_failed') + (e.message || i18n('unknown_error')) });
-                saveReaderChatHistory(currentDoc.id, history, currentDoc.question);
+                saveReaderChatHistory(currentDoc, history);
                 renderReaderChatHistory(currentDoc.id);
             }
         }
@@ -19987,7 +20098,7 @@
         function exportReaderChatHistory() {
             const currentDoc = readerChatDoc;
             if (!currentDoc) return;
-            const history = loadReaderChatHistory(currentDoc.id, currentDoc.question);
+            const history = loadReaderChatHistory(currentDoc);
             if (!history || history.length === 0) {
                 showToast(i18n('empty_archive'));
                 return;
@@ -20451,7 +20562,7 @@ ${i18n('prompt_outline_gen')}`;
             (lectureData.chapters || []).forEach(c => { if (c.title) existingByTitle[c.title] = c; });
             lectureData.chapters = sourceChapters.map((ch, idx) => {
                 const prev = existingByTitle[ch.title];
-                return {
+                const chapter = {
                     id: (prev && prev.id) || ('ch_' + Date.now() + '_' + idx),
                     title: ch.title,
                     topics: ch.topics || [],
@@ -20462,6 +20573,12 @@ ${i18n('prompt_outline_gen')}`;
                     createdAt: (prev && prev.createdAt) || lectureUpdatedAt,
                     updatedAt: (prev && prev.updatedAt) || lectureUpdatedAt
                 };
+                // 讲义问 AI 的对话记录属于章节本身，重建章节列表时保留
+                if (prev && prev.chatHistory) {
+                    chapter.chatHistory = prev.chatHistory;
+                    chapter.chatUpdatedAt = prev.chatUpdatedAt;
+                }
+                return chapter;
             });
 
             // 为书籍创建书签
@@ -22132,6 +22249,76 @@ ${i18n('prompt_lecture_gen')}`;
             }
 
             renderNotesPage();
+        }
+
+        // ==================== 讲义问 AI（右下角按钮）====================
+        // 沿用阅读页的文档对话：同一弹窗、提示词、对话记录保存与云同步，附件由页面截图换成当前讲义正文。
+        // 对话记录分别存在书籍讲义的章节、论文（摘要对话字段）和课堂笔记上。
+        function getLectureChatOwner(lecture) {
+            if (lecture.kind === 'abstract') return appData.papers.find(p => p.id === lecture.paperId);
+            if (lecture.kind === 'classroom') return _findClassroomNote(lecture.noteId)?.note;
+            return (appData.lectures?.[lecture.bookId]?.chapters || []).find(ch => ch?.id === lecture.chapterId);
+        }
+
+        // 讲义阅读器当前显示的书籍讲义章节、论文摘要或课堂笔记对应的对话
+        function getLectureChatTarget() {
+            if (!currentLecture) return null;
+            if (currentLecture.isPaperAbstract) {
+                const paper = appData.papers.find(p => p.id === currentLecture.paperId);
+                if (!paper) return null;
+                return {
+                    id: 'abstract_chat_' + paper.id,
+                    title: paper.title + i18n('abstract_suffix'),
+                    lecture: { kind: 'abstract', paperId: paper.id }
+                };
+            }
+            if (currentLecture.isClassroomNote) {
+                const { classroomType, folderId, sessionId, noteIndex } = currentLecture;
+                const session = (getClassroomFolder(classroomType, folderId)?.sessions || []).find(s => s.id === sessionId);
+                const note = session?.notes?.[noteIndex];
+                if (!note?.id) return null;
+                return {
+                    id: 'class_note_chat_' + note.id,
+                    title: note.title,
+                    lecture: { kind: 'classroom', noteId: note.id }
+                };
+            }
+            const { bookId, chapterIndex } = currentLecture;
+            const chapter = appData.lectures?.[bookId]?.chapters?.[chapterIndex];
+            if (!chapter?.id) return null;
+            return {
+                id: 'lecture_chat_' + bookId + '_' + chapter.id,
+                title: chapter.title,
+                lecture: { kind: 'chapter', bookId, chapterId: chapter.id }
+            };
+        }
+
+        // 发给 AI 的正文与讲义阅读器显示的一致：课堂笔记显示时去掉的来源标记 {ref:…} 同样不发送
+        async function loadLectureChatContent(lecture) {
+            const owner = getLectureChatOwner(lecture);
+            if (!owner) return '';
+            let content = null;
+            if (lecture.kind === 'abstract') {
+                content = owner._abstractCache || owner.aiAbstract ||
+                    (owner.hasAiAbstract ? await getAbstractContent(owner.id).catch(() => null) : null) ||
+                    owner.abstract;
+            } else if (lecture.kind === 'classroom') {
+                content = String(await ensureClassroomNoteContent(owner) || '').replace(/\{ref:[^}]+\}/g, '');
+            } else if (owner.status === 'ready') {
+                content = owner._contentCache || await getLectureContent(lecture.bookId, owner.id).catch(() => null);
+            }
+            return String(content || '').trim();
+        }
+
+        async function openLectureChat() {
+            const target = getLectureChatTarget();
+            if (!target) return;
+            if (!await loadLectureChatContent(target.lecture)) {
+                const generating = getLectureChatOwner(target.lecture)?.status === 'generating';
+                showToast(i18n(generating ? 'generating_lecture_content' : 'lecture_content_not_found'));
+                return;
+            }
+            await openReaderChat(target);
         }
 
         // ==================== 讲义选择询问AI ====================
@@ -24922,6 +25109,13 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 : [];
             if (options.replaceExisting) {
                 current.session.notes = current.session.notes.filter(item => item?.materialId !== material.id);
+            }
+            // 讲义问 AI 的对话记录跟着重新生成的笔记保留
+            const chatSource = replaced.filter(item => item?.chatHistory)
+                .sort((a, b) => (Number(b.chatUpdatedAt) || 0) - (Number(a.chatUpdatedAt) || 0))[0];
+            if (chatSource) {
+                note.chatHistory = chatSource.chatHistory;
+                note.chatUpdatedAt = chatSource.chatUpdatedAt;
             }
             current.session.notes.push(note);
             const metadataSaved = saveData();
@@ -31581,7 +31775,7 @@ ${paper.abstract ? i18n('prompt_abstract_original') + paper.abstract : ''}`;
                 id,
                 title: i18n('question_number', (q.questionIndex ?? questionIndex) + 1),
                 question,
-                wrongFirstTurnPending: !loadReaderChatHistory(id, question).some(message => message.role === 'user'),
+                wrongFirstTurnPending: !loadReaderChatHistory({ id, question }).some(message => message.role === 'user'),
                 wrongContext: questionsText,
                 wrongReference: previousAnalysis,
                 wrongImages
